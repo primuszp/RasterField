@@ -1,0 +1,90 @@
+name: Release
+
+# Builds self-contained RasterField app archives for every supported platform and attaches
+# them to a GitHub Release whenever a "v*" tag is pushed (e.g. v1.2.0).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish artifacts under (e.g. v1.2.0) — for a manual re-run"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish (${{ matrix.rid }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rid: [win-x64, linux-x64, osx-x64, osx-arm64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore RasterField.slnx
+
+      - name: Test
+        run: dotnet test RasterField.slnx --configuration Release
+
+      - name: Publish self-contained build
+        run: >
+          dotnet publish Source/RasterField/RasterField.csproj
+          --configuration Release
+          --runtime ${{ matrix.rid }}
+          --self-contained true
+          -p:PublishSingleFile=true
+          --output publish/${{ matrix.rid }}
+
+      - name: Archive
+        shell: bash
+        run: |
+          cd publish/${{ matrix.rid }}
+          if [[ "${{ matrix.rid }}" == win-* ]]; then
+            zip -r ../../RasterField-${{ matrix.rid }}.zip .
+          else
+            tar -czf ../../RasterField-${{ matrix.rid }}.tar.gz .
+          fi
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            RasterField-${{ matrix.rid }}.zip
+            RasterField-${{ matrix.rid }}.tar.gz
+          fail_on_unmatched_files: false
+
+  pack-core:
+    name: Pack RasterField.Core NuGet package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Pack
+        run: >
+          dotnet pack Source/RasterField.Core/RasterField.Core.csproj
+          --configuration Release
+          --output nupkg
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: nupkg/*.nupkg

@@ -1,0 +1,22 @@
+<Project>
+
+  <!--
+    Shared settings for every project in the solution. Individual .csproj files keep their own
+    TargetFramework(s), package references and metadata; this file only centralises the
+    quality-gate switches so they can't drift between projects.
+  -->
+  <PropertyGroup>
+    <!-- The whole session's working convention has been "0 warnings" — this makes it a build
+         failure instead of a habit, so a regression is caught locally and in CI, not just
+         noticed by re-reading the build log. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+
+    <Company>RasterField</Company>
+    <Copyright>RasterField contributors</Copyright>
+  </PropertyGroup>
+
+</Project>

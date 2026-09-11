@@ -1,0 +1,41 @@
+
+
+
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- net10.0-only (unlike RasterField.Core, which stays at the default analysis level so its
+         netstandard2.0 target isn't pushed toward APIs, like ArgumentNullException.ThrowIfNull,
+         that don't exist there). -->
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <RootNamespace>RasterField</RootNamespace>
+    <AssemblyName>RasterField</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Cross-platform: runs on Windows, Linux and macOS wherever the .NET 10 runtime exists. -->
+    <RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.6" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.6" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.6" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.6" />
+    <!-- Transitive override: clears the NU1903 advisory on the Linux D-Bus dependency. -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RasterField.Core\RasterField.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="palette\**\*" CopyToOutputDirectory="PreserveNewest" LinkBase="palette\" />
+  </ItemGroup>
+
+</Project>

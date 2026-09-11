@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Fully portable: no System.Drawing / OS dependency anywhere in the library.
+         netstandard2.0 keeps it usable from .NET Framework and Unity;
+         net10.0 is the primary modern target. -->
+    <TargetFrameworks>netstandard2.0;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <RootNamespace>RasterField</RootNamespace>
+    <AssemblyName>RasterField.Core</AssemblyName>
+    <Product>RasterField</Product>
+    <Description>Portable .NET library for the ERDAS ER Mapper raster dataset format (.ers header + BIL data file): robust reading and writing, georeferencing, statistics, and palette-based colourisation into a plain BGRA image buffer.</Description>
+    <Authors>RasterField</Authors>
+    <Version>1.0.0</Version>
+    <PackageId>RasterField.Core</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

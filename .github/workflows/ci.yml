@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore RasterField.slnx
+
+      # TreatWarningsAsErrors (Directory.Build.props) turns any new compiler/analyzer warning
+      # into a build failure here, on every OS — the whole point of the "0 warnings" convention.
+      - name: Build (Release)
+        run: dotnet build RasterField.slnx --configuration Release --no-restore
+
+      - name: Test
+        run: >
+          dotnet test RasterField.slnx --configuration Release --no-build
+          --logger "trx;LogFileName=test-results.trx"
+          --collect:"XPlat Code Coverage"
+          --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}
+          path: TestResults/**
+          retention-days: 14
+
+  # RasterField (the Avalonia app) only targets net10.0, so it only needs building once — but do
+  # it per-RID so a packaging regression for any platform is caught before a release attempt.
+  publish-smoke-test:
+    name: Publish smoke test (${{ matrix.rid }})
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: [win-x64, linux-x64, osx-x64, osx-arm64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish (self-contained, no run)
+        run: >
+          dotnet publish Source/RasterField/RasterField.csproj
+          --configuration Release
+          --runtime ${{ matrix.rid }}
+          --self-contained true
+          --output publish/${{ matrix.rid }}

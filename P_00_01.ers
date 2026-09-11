@@ -1,0 +1,26 @@
+DatasetHeader Begin
+	DataFile = "P_00_01.dat"
+	DataSetType = ERStorage
+	DataType = Raster
+	ByteOrder = LSBFirst
+	CoordinateSpace Begin
+		Datum = "EPSG:6237"
+		Projection = "BMG:EOV"
+		CoordinateType = EN
+		Rotation = 0:0:0.0
+	CoordinateSpace End
+	RasterInfo Begin
+		CellType = IEEE4ByteReal
+		CellInfo Begin
+			Xdimension = 1000
+			Ydimension = 1000
+		CellInfo End
+		NrOfLines = 450
+		NrOfCellsPerLine = 640
+		RegistrationCoord Begin
+			Eastings = 360000
+			Northings = 430000
+		RegistrationCoord End
+		NrOfBands	= 1
+	RasterInfo End
+DatasetHeader End

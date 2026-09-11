@@ -1,0 +1,1818 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
+using Avalonia.VisualTree;
+using RasterField.ErMapper;
+using RasterField.Rasters;
+using RasterField.Rendering;
+using RasterField.Vectors;
+
+namespace RasterField
+{
+    /// <summary>Readout describing what is under the pointer, raised by <see cref="RasterView.PointerReadout"/>.</summary>
+    public sealed class RasterReadoutEventArgs : EventArgs
+    {
+        public bool InsideRaster { get; init; }
+        public double WorldX { get; init; }
+        public double WorldY { get; init; }
+        public int Column { get; init; } = -1;
+        public int Row { get; init; } = -1;
+        public float? Value { get; init; }
+    }
+
+    /// <summary>
+    /// A cross-platform pan/zoom raster viewer that can show several datasets at once as an
+    /// ordered stack of <see cref="RasterLayer"/>s (later in <see cref="Layers"/> = drawn on
+    /// top), each with its own independent palette/stretch/gamma/band/RGB-composite display
+    /// state, and its own visibility. Pan, zoom and every interactive tool (selection, profile
+    /// line, the pointer value readout) operate against the <see cref="ActiveLayer"/>'s own
+    /// pixel grid; every other visible layer is projected into that same screen space through its
+    /// own georeference, so layers with different origins, cell sizes or even rotation still line
+    /// up correctly.
+    /// </summary>
+    /// <remarks>
+    /// For a layer where <see cref="ErsDocument.IsLargeDataset"/> is <see langword="true"/>, the
+    /// view never materialises the full raster: it opens a <see cref="RasterSource"/> and, on
+    /// every pan/zoom, re-reads only the currently visible window (with a small margin, and
+    /// decimated to match the zoom level) for every streaming layer — not just the active one.
+    /// </remarks>
+    public sealed class RasterView : Control, IDisposable
+    {
+        private readonly List<RasterLayer> _layers = new List<RasterLayer>();
+        // A single stack is the source of truth for paint order. Keeping raster and vector
+        // ownership lists as well makes the existing public API and active-raster tools simple.
+        private readonly List<object> _drawOrder = new List<object>();
+        private int _activeLayerIndex = -1;
+
+        private double _scale = 1.0;
+        private double _offsetX;
+        private double _offsetY;
+        private bool _needsFit = true;
+
+        private bool _panning;
+        private Point _panLast;
+
+        /// <summary>Which part of the clip-selection rectangle a drag is currently manipulating.</summary>
+        private enum SelDrag { None, Create, Move, TL, TR, BL, BR, T, B, L, R }
+
+        private SelDrag _selDrag = SelDrag.None;
+        private bool _hasSelection;
+        private double _selX0, _selY0, _selX1, _selY1; // selection rectangle in cell (raster pixel) coordinates
+        private Point _dragStartScreen;
+        private double _dragStartX0, _dragStartY0, _dragStartX1, _dragStartY1;
+
+        /// <summary>Which endpoint of the profile line a drag is currently manipulating.</summary>
+        private enum LineDrag { None, Create, Start, End }
+
+        private LineDrag _lineDrag = LineDrag.None;
+        private bool _hasLine;
+        private double _lineX0, _lineY0, _lineX1, _lineY1; // profile line, in cell (raster pixel) coordinates
+
+        private const double MinScale = 1.0 / 4096.0;
+        private const double MaxScale = 4096.0;
+
+        /// <summary>Extra pixels fetched beyond the viewport in streaming mode, so a small pan doesn't force an immediate re-read.</summary>
+        private const int StreamingMargin = 160;
+
+        public RasterView()
+        {
+            Focusable = true;
+            ClipToBounds = true;
+            Background = new SolidColorBrush(Color.FromRgb(0x20, 0x20, 0x24));
+            RenderOptions.SetBitmapInterpolationMode(this, BitmapInterpolationMode.None);
+        }
+
+        protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+        {
+            base.OnPropertyChanged(change);
+            if (change.Property == BoundsProperty)
+            {
+                if (_needsFit) ZoomToFit();
+                else RefreshStreamingWindow();
+            }
+        }
+
+        protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+        {
+            base.OnDetachedFromVisualTree(e);
+            foreach (var layer in _layers) layer.DisposeSource();
+        }
+
+        /// <summary>Releases every layer's rendered bitmap and streaming reader. Safe to call more than once.</summary>
+        public void Dispose()
+        {
+            foreach (var layer in _layers) layer.Dispose();
+            _layers.Clear();
+            _drawOrder.Clear();
+            _vectorLayers.Clear();
+            _activeLayerIndex = -1;
+        }
+
+        /// <summary>Raised after the active layer's display state has changed (a new dataset, a different band, RGB toggle, …).</summary>
+        public event EventHandler? RasterLoaded;
+
+        /// <summary>Raised whenever the layer list itself changes — added, removed, reordered, visibility toggled, or the active layer switched.</summary>
+        public event EventHandler? LayersChanged;
+
+        /// <summary>Raised on every pointer move with the world position and the active layer's sampled value.</summary>
+        public event EventHandler<RasterReadoutEventArgs>? PointerReadout;
+
+        /// <summary>Raised whenever the pan/zoom transform changes.</summary>
+        public event EventHandler? ViewChanged;
+
+        /// <summary>
+        /// Raised whenever the clip-selection rectangle changes — while it is being drawn,
+        /// moved or resized, and when it is cleared. Read <see cref="CurrentSelection"/> to get
+        /// the current value; there is no separate "completed" event, since the rectangle stays
+        /// interactively adjustable (drag its body to move it, its handles to resize it) until
+        /// the host explicitly acts on it.
+        /// </summary>
+        public event EventHandler? SelectionChanged;
+
+        /// <summary>
+        /// Raised whenever the profile line changes — while it is being drawn, an endpoint is
+        /// dragged, or it is cleared. Read <see cref="CurrentLine"/> for the current value.
+        /// </summary>
+        public event EventHandler? LineChanged;
+
+        /// <summary>Background fill behind the raster.</summary>
+        public IBrush Background { get; set; }
+
+        // ---- layers -----------------------------------------------------------------
+
+        /// <summary>Every loaded layer, in display order (later = drawn on top / in front).</summary>
+        public IReadOnlyList<RasterLayer> Layers => _layers;
+
+        /// <summary>All raster and vector layers in paint order (later entries are drawn in front).</summary>
+        public IReadOnlyList<object> DrawOrder => _drawOrder;
+
+        /// <summary>Index of the active layer within <see cref="Layers"/>, or -1 when there are none.</summary>
+        public int ActiveLayerIndex => _activeLayerIndex;
+
+        /// <summary>
+        /// The layer every tool (selection, profile line, pointer value readout) and every
+        /// display-setting method (<see cref="SetPalette"/>, <see cref="SetActiveBand"/>, …)
+        /// currently targets, or <see langword="null"/> when no layer is loaded.
+        /// </summary>
+        public RasterLayer? ActiveLayer => (uint)_activeLayerIndex < (uint)_layers.Count ? _layers[_activeLayerIndex] : null;
+
+        /// <summary>
+        /// Loads <paramref name="ersPath"/> as a brand-new additional layer on top of the stack
+        /// (existing layers are kept), and makes it the active one.
+        /// </summary>
+        public RasterLayer AddLayerFromPath(string ersPath, Palette? palette = null)
+        {
+            if (string.IsNullOrWhiteSpace(ersPath)) throw new ArgumentException("Path is required.", nameof(ersPath));
+            if (!File.Exists(ersPath)) throw new FileNotFoundException("ERS header not found.", ersPath);
+
+            var document = ErsDocument.LoadHeaderOnly(ersPath);
+            if (!document.IsLargeDataset) document.LoadRaster();
+            return AddLayer(document, Path.GetFileNameWithoutExtension(ersPath), palette);
+        }
+
+        /// <summary>Adds <paramref name="document"/> as a brand-new layer on top of the stack, and makes it the active one.</summary>
+        public RasterLayer AddLayer(ErsDocument document, string name, Palette? palette = null)
+        {
+            var previousActive = ActiveLayer; // null when this is the very first layer
+
+            var layer = CreateLayer(document, name);
+            InitializeLayerDisplay(layer, palette);
+            _layers.Add(layer);
+            _drawOrder.Add(layer);
+            _activeLayerIndex = _layers.Count - 1;
+
+            // The new layer becomes active (the common GIS-viewer convention); keep the same
+            // real-world area on screen by re-basing the pan/zoom into its own cell space, so it
+            // lines up with whatever was already loaded rather than jumping to a stale viewport.
+            if (previousActive == null) { _needsFit = true; ZoomToFit(); }
+            else RebaseViewport(previousActive, layer);
+
+            RefreshStreamingWindow();
+            InvalidateVisual();
+            RasterLoaded?.Invoke(this, EventArgs.Empty);
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+            return layer;
+        }
+
+        /// <summary>Removes the layer at <paramref name="index"/>, disposing its streaming reader/bitmap.</summary>
+        public void RemoveLayer(int index)
+        {
+            if ((uint)index >= (uint)_layers.Count) return;
+
+            var layer = _layers[index];
+            _layers.RemoveAt(index);
+            _drawOrder.Remove(layer);
+            layer.Dispose();
+
+            if (_layers.Count == 0) _activeLayerIndex = -1;
+            else
+            {
+                if (index < _activeLayerIndex) _activeLayerIndex--;
+                _activeLayerIndex = Math.Clamp(_activeLayerIndex, 0, _layers.Count - 1);
+            }
+
+            InvalidateVisual();
+            RasterLoaded?.Invoke(this, EventArgs.Empty);
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Removes this exact raster dataset from the view.</summary>
+        public void RemoveLayer(RasterLayer layer)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            int index = _layers.IndexOf(layer);
+            if (index >= 0) RemoveLayer(index);
+        }
+
+        /// <summary>
+        /// Switches the active layer, re-basing the current view (pan position and on-screen
+        /// scale) so the same real-world area stays visible, converted into the new active
+        /// layer's own pixel-cell coordinate system.
+        /// </summary>
+        public void SetActiveLayerIndex(int index)
+        {
+            if ((uint)index >= (uint)_layers.Count || index == _activeLayerIndex) return;
+
+            var oldActive = ActiveLayer;
+            _activeLayerIndex = index;
+            var newActive = ActiveLayer;
+
+            if (oldActive != null && newActive != null) RebaseViewport(oldActive, newActive);
+
+            // Tool state is expressed in the old active layer's cell space; rather than also
+            // projecting it (rarely worth the complexity for a still-being-drawn selection),
+            // simply clear it — consistent with how switching datasets already behaved.
+            _hasSelection = false; _selDrag = SelDrag.None;
+            _hasLine = false; _lineDrag = LineDrag.None;
+
+            RefreshStreamingWindow();
+            InvalidateVisual();
+            RasterLoaded?.Invoke(this, EventArgs.Empty);
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>
+        /// Makes the specified loaded layer active.  This identity-based overload is intended
+        /// for UI code: a layer card keeps referring to its own dataset even if another action
+        /// has reordered the stack before the UI has had a chance to redraw.
+        /// </summary>
+        public void SetActiveLayer(RasterLayer layer)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            SetActiveLayerIndex(_layers.IndexOf(layer));
+        }
+
+        /// <summary>Moves the layer at <paramref name="index"/> one position higher (drawn more on top).</summary>
+        public void MoveLayerUp(int index)
+        {
+            if ((uint)index < (uint)_layers.Count) MoveInDrawOrder(_layers[index], +1);
+        }
+
+        /// <summary>Moves the layer at <paramref name="index"/> one position lower (drawn more toward the back).</summary>
+        public void MoveLayerDown(int index)
+        {
+            if ((uint)index < (uint)_layers.Count) MoveInDrawOrder(_layers[index], -1);
+        }
+
+        /// <summary>Moves this exact dataset one position higher in the display stack.</summary>
+        public void MoveLayerUp(RasterLayer layer)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            MoveInDrawOrder(layer, +1);
+        }
+
+        /// <summary>Moves this exact dataset one position lower in the display stack.</summary>
+        public void MoveLayerDown(RasterLayer layer)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            MoveInDrawOrder(layer, -1);
+        }
+
+        /// <summary>Whether the exact layer can move one slot toward the front of the shared stack.</summary>
+        public bool CanMoveLayerUp(object layer) => _drawOrder.IndexOf(layer) is int index && index >= 0 && index < _drawOrder.Count - 1;
+
+        /// <summary>Whether the exact layer can move one slot toward the back of the shared stack.</summary>
+        public bool CanMoveLayerDown(object layer) => _drawOrder.IndexOf(layer) > 0;
+
+        private void MoveInDrawOrder(object layer, int delta)
+        {
+            int index = _drawOrder.IndexOf(layer);
+            int newIndex = index + delta;
+            if (index < 0 || (uint)newIndex >= (uint)_drawOrder.Count) return;
+
+            (_drawOrder[index], _drawOrder[newIndex]) = (_drawOrder[newIndex], _drawOrder[index]);
+
+            InvalidateVisual();
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Shows or hides the layer at <paramref name="index"/> without removing it.</summary>
+        public void SetLayerVisible(int index, bool visible)
+        {
+            if ((uint)index >= (uint)_layers.Count) return;
+            var layer = _layers[index];
+            if (layer.IsVisible == visible) return;
+
+            layer.IsVisible = visible;
+            if (visible) RefreshStreamingWindow(); // a hidden streaming layer's window goes stale while skipped
+            InvalidateVisual();
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Changes visibility for this exact dataset, independent of its current stack index.</summary>
+        public void SetLayerVisible(RasterLayer layer, bool visible)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            int index = _layers.IndexOf(layer);
+            if (index >= 0) SetLayerVisible(index, visible);
+        }
+
+        // ---- vector layers ------------------------------------------------------------
+
+        private readonly List<VectorLayer> _vectorLayers = new List<VectorLayer>();
+
+        /// <summary>
+        /// Every loaded vector (<c>.erv</c>) layer. Their position relative to raster layers is
+        /// held by <see cref="DrawOrder"/>.
+        /// </summary>
+        public IReadOnlyList<VectorLayer> VectorLayers => _vectorLayers;
+
+        /// <summary>Loads <paramref name="ervPath"/> as a new vector layer on top of the vector stack.</summary>
+        public VectorLayer AddVectorLayerFromPath(string ervPath)
+        {
+            if (string.IsNullOrWhiteSpace(ervPath)) throw new ArgumentException("Path is required.", nameof(ervPath));
+            if (!File.Exists(ervPath)) throw new FileNotFoundException("ERV header not found.", ervPath);
+
+            var document = ErvDocument.Load(ervPath);
+            return AddVectorLayer(document, Path.GetFileNameWithoutExtension(ervPath));
+        }
+
+        /// <summary>Adds <paramref name="document"/> as a new vector layer on top of the vector stack.</summary>
+        public VectorLayer AddVectorLayer(ErvDocument document, string name)
+        {
+            ArgumentNullException.ThrowIfNull(document);
+            var layer = new VectorLayer(document, name);
+            _vectorLayers.Add(layer);
+            _drawOrder.Add(layer);
+            InvalidateVisual();
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+            return layer;
+        }
+
+        /// <summary>Removes the vector layer at <paramref name="index"/>.</summary>
+        public void RemoveVectorLayer(int index)
+        {
+            if ((uint)index >= (uint)_vectorLayers.Count) return;
+            var layer = _vectorLayers[index];
+            _vectorLayers.RemoveAt(index);
+            _drawOrder.Remove(layer);
+            InvalidateVisual();
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Removes this exact vector dataset from the view.</summary>
+        public void RemoveVectorLayer(VectorLayer layer)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            int index = _vectorLayers.IndexOf(layer);
+            if (index >= 0) RemoveVectorLayer(index);
+        }
+
+        /// <summary>Shows or hides the vector layer at <paramref name="index"/> without removing it.</summary>
+        public void SetVectorLayerVisible(int index, bool visible)
+        {
+            if ((uint)index >= (uint)_vectorLayers.Count) return;
+            var layer = _vectorLayers[index];
+            if (layer.IsVisible == visible) return;
+            layer.IsVisible = visible;
+            InvalidateVisual();
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void SetVectorLayerVisible(VectorLayer layer, bool visible)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            int index = _vectorLayers.IndexOf(layer);
+            if (index >= 0) SetVectorLayerVisible(index, visible);
+        }
+
+        /// <summary>Sets the colour every object in the vector layer at <paramref name="index"/> is drawn with.</summary>
+        public void SetVectorLayerColor(int index, Color color)
+        {
+            if ((uint)index >= (uint)_vectorLayers.Count) return;
+            _vectorLayers[index].Color = color;
+            InvalidateVisual();
+        }
+
+        public void SetVectorLayerColor(VectorLayer layer, Color color)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            int index = _vectorLayers.IndexOf(layer);
+            if (index >= 0) SetVectorLayerColor(index, color);
+        }
+
+        /// <summary>Sets the line width (points) every object in the vector layer at <paramref name="index"/> is drawn with.</summary>
+        public void SetVectorLayerLineWidth(int index, double width)
+        {
+            if ((uint)index >= (uint)_vectorLayers.Count || !(width > 0)) return;
+            _vectorLayers[index].LineWidth = width;
+            InvalidateVisual();
+        }
+
+        public void SetVectorLayerLineWidth(VectorLayer layer, double width)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            int index = _vectorLayers.IndexOf(layer);
+            if (index >= 0) SetVectorLayerLineWidth(index, width);
+        }
+
+        /// <summary>Sets the palette used to colourise a SPECIFIC raster layer (not necessarily the active one).</summary>
+        public void SetLayerPalette(int index, Palette palette)
+        {
+            if ((uint)index >= (uint)_layers.Count || palette == null) return;
+            var layer = _layers[index];
+            if (layer.Colorizer == null) return;
+            layer.Colorizer.Palette = palette;
+            RebuildLayerBitmap(layer);
+            if (index == _activeLayerIndex) LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Changes the palette for this exact dataset, independent of its current stack index.</summary>
+        public void SetLayerPalette(RasterLayer layer, Palette palette)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            int index = _layers.IndexOf(layer);
+            if (index >= 0) SetLayerPalette(index, palette);
+        }
+
+        /// <summary>Moves the vector layer at <paramref name="index"/> one position higher (drawn more on top, among vector layers).</summary>
+        public void MoveVectorLayerUp(int index)
+        {
+            if ((uint)index < (uint)_vectorLayers.Count) MoveInDrawOrder(_vectorLayers[index], +1);
+        }
+
+        /// <summary>Moves the vector layer at <paramref name="index"/> one position lower.</summary>
+        public void MoveVectorLayerDown(int index)
+        {
+            if ((uint)index < (uint)_vectorLayers.Count) MoveInDrawOrder(_vectorLayers[index], -1);
+        }
+
+        public void MoveVectorLayerUp(VectorLayer layer)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            MoveInDrawOrder(layer, +1);
+        }
+
+        public void MoveVectorLayerDown(VectorLayer layer)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            MoveInDrawOrder(layer, -1);
+        }
+
+        private static RasterLayer CreateLayer(ErsDocument document, string name)
+        {
+            ArgumentNullException.ThrowIfNull(document);
+            var layer = new RasterLayer(document, name);
+            if (document.Bands.Count == 0)
+            {
+                if (document.IsLargeDataset) layer.Source = document.OpenSource();
+                else document.LoadRaster();
+            }
+            return layer;
+        }
+
+        private void InitializeLayerDisplay(RasterLayer layer, Palette? palette)
+        {
+            layer.ShowRgbComposite = layer.BandCount == 3;
+
+            if (layer.Source != null)
+            {
+                Raster overview = layer.Source.ReadOverview(1024, 1024);
+                Palette chosen = palette ?? BuiltInPalettes.Elevation;
+                layer.Colorizer = RasterColorizer.Percentile(overview, chosen, 2.0, 98.0);
+                layer.Colorizer.NoDataColor = ColorRgba.Transparent;
+            }
+            else
+            {
+                layer.Raster = layer.Document.Band ?? throw new InvalidOperationException("The dataset has no raster band.");
+                Palette chosen = palette ?? BuiltInPalettes.Elevation;
+                layer.Colorizer = RasterColorizer.Percentile(layer.Raster, chosen, 2.0, 98.0);
+                layer.Colorizer.NoDataColor = ColorRgba.Transparent;
+                layer.BitmapOriginX = 0; layer.BitmapOriginY = 0; layer.BitmapStep = 1.0;
+                RebuildLayerBitmap(layer);
+            }
+        }
+
+        private void RebaseViewport(RasterLayer oldActive, RasterLayer newActive)
+        {
+            double vw = Bounds.Width, vh = Bounds.Height;
+            var oldGeo = oldActive.Document.GeoReference;
+            var newGeo = newActive.Document.GeoReference;
+            if (vw <= 0 || vh <= 0 || !oldGeo.IsInvertible || !newGeo.IsInvertible) { _needsFit = true; return; }
+
+            Point centreScreen = new Point(vw / 2, vh / 2);
+            Point centreOldCell = ScreenToCell(centreScreen);
+            var (wx, wy) = oldGeo.PixelToWorld(centreOldCell.X, centreOldCell.Y);
+            var (newCol, newRow) = newGeo.WorldToPixel(wx, wy);
+
+            double oldWorldPerCell = AverageWorldPerCell(oldGeo);
+            double newWorldPerCell = AverageWorldPerCell(newGeo);
+            if (oldWorldPerCell <= 0 || newWorldPerCell <= 0) { _needsFit = true; return; }
+
+            double worldPerScreenPixel = oldWorldPerCell / _scale;
+            _scale = Clamp(newWorldPerCell / worldPerScreenPixel, MinScale, MaxScale);
+            _offsetX = centreScreen.X - newCol * _scale;
+            _offsetY = centreScreen.Y - newRow * _scale;
+        }
+
+        private static double AverageWorldPerCell(RasterGeoReference geo)
+        {
+            var (_, b, c, _, e, f) = geo.GeoTransform;
+            return (Math.Sqrt(b * b + e * e) + Math.Sqrt(c * c + f * f)) / 2.0;
+        }
+
+        // ---- backward-compatible single-document surface (delegates to ActiveLayer) --------
+
+        /// <summary>The active layer's dataset, or <see langword="null"/>.</summary>
+        public ErsDocument? Document => ActiveLayer?.Document;
+
+        /// <summary>The active layer's fully loaded band, or <see langword="null"/> (not loaded / streaming).</summary>
+        public Raster? Raster => ActiveLayer?.Raster;
+
+        /// <summary><see langword="true"/> when the active layer is being shown via windowed reads rather than fully loaded.</summary>
+        public bool IsStreaming => ActiveLayer?.IsStreaming ?? false;
+
+        /// <summary>Cell columns in the active layer's dataset (0 when none is loaded).</summary>
+        public int DatasetWidth => ActiveLayer?.DatasetWidth ?? 0;
+
+        /// <summary>Cell rows in the active layer's dataset (0 when none is loaded).</summary>
+        public int DatasetHeight => ActiveLayer?.DatasetHeight ?? 0;
+
+        /// <summary>Number of bands in the active layer's dataset (0 when none is loaded).</summary>
+        public int BandCount => ActiveLayer?.BandCount ?? 0;
+
+        /// <summary>Which band the active layer displays (0-based).</summary>
+        public int ActiveBand => ActiveLayer?.ActiveBand ?? 0;
+
+        /// <summary>
+        /// Switches the displayed band of the active layer, re-stretching and re-rendering.
+        /// A no-op when <paramref name="index"/> is already active or out of range.
+        /// </summary>
+        public void SetActiveBand(int index)
+        {
+            var layer = ActiveLayer;
+            if (layer == null || index == layer.ActiveBand || index < 0 || index >= Math.Max(1, layer.BandCount)) return;
+            layer.ActiveBand = index;
+
+            Palette palette = layer.Colorizer?.Palette ?? BuiltInPalettes.Elevation;
+
+            if (layer.Source != null)
+            {
+                layer.WindowRaster = null; // force a re-read at the new band on the next refresh
+                Raster overview = layer.Source.ReadOverview(1024, 1024, layer.ActiveBand);
+                layer.Colorizer = RasterColorizer.Percentile(overview, palette, 2.0, 98.0);
+                layer.Colorizer.NoDataColor = ColorRgba.Transparent;
+                RefreshStreamingWindow();
+                InvalidateVisual();
+            }
+            else if (layer.Document.Bands.Count > layer.ActiveBand)
+            {
+                layer.Raster = layer.Document.Bands[layer.ActiveBand];
+                layer.Colorizer = RasterColorizer.Percentile(layer.Raster, palette, 2.0, 98.0);
+                layer.Colorizer.NoDataColor = ColorRgba.Transparent;
+                RebuildLayerBitmap(layer);
+            }
+
+            RasterLoaded?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary><see langword="true"/> when the active layer has (at least) the three bands a true-colour composite needs.</summary>
+        public bool CanShowRgbComposite => ActiveLayer?.CanShowRgbComposite ?? false;
+
+        /// <summary>
+        /// When <see langword="true"/> (and <see cref="CanShowRgbComposite"/>), the active
+        /// layer's bands 1-3 are composited directly as true colour (no palette) instead of
+        /// showing <see cref="ActiveBand"/> through its palette.
+        /// </summary>
+        public bool ShowRgbComposite
+        {
+            get => ActiveLayer?.ShowRgbComposite ?? false;
+            set
+            {
+                var layer = ActiveLayer;
+                if (layer == null) return;
+                bool v = value && layer.CanShowRgbComposite;
+                if (layer.ShowRgbComposite == v) return;
+                layer.ShowRgbComposite = v;
+
+                if (layer.Source != null)
+                {
+                    layer.WindowRaster = null; layer.WindowRasterG = null; layer.WindowRasterB = null;
+                    RefreshStreamingWindow();
+                }
+                RebuildLayerBitmap(layer);
+                RasterLoaded?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        /// <summary>The active layer's colorizer, or <see langword="null"/>.</summary>
+        public RasterColorizer? Colorizer => ActiveLayer?.Colorizer;
+
+        /// <summary>Statistics backing the active layer's current display, or <see langword="null"/> when nothing is loaded.</summary>
+        public RasterStatistics? CurrentStatistics => ActiveLayer?.CurrentStatistics;
+
+        /// <summary>Current magnification (device-independent pixels per active-layer cell).</summary>
+        public double Zoom => _scale;
+
+        /// <summary>Draw a faint per-cell grid (of the active layer) once magnified past 8&#215;.</summary>
+        public bool ShowGrid { get; set; }
+
+        /// <summary>
+        /// When <see langword="true"/>, left-drag draws a rectangular clip selection instead of
+        /// panning (use the middle mouse button, or arrow keys, to pan while active). Once drawn,
+        /// the rectangle stays on screen with draggable handles: drag its body to move it, an
+        /// edge/corner handle to resize it, <c>Escape</c> to clear it. Turning the mode off
+        /// clears any selection. The selection lives in the active layer's cell space.
+        /// </summary>
+        public bool SelectionMode
+        {
+            get => _selectionModeField;
+            set
+            {
+                _selectionModeField = value;
+                if (!value) { _hasSelection = false; _selDrag = SelDrag.None; }
+                Cursor = value ? new Cursor(StandardCursorType.Cross) : Cursor.Default;
+                RaiseSelectionChanged();
+                InvalidateVisual();
+            }
+        }
+        private bool _selectionModeField;
+
+        /// <summary>The current clip-selection rectangle, in the active layer's cell coordinates, or <see langword="null"/> when there is none.</summary>
+        public PixelRect? CurrentSelection
+        {
+            get
+            {
+                if (!_hasSelection) return null;
+                int x0 = (int)Math.Floor(Math.Min(_selX0, _selX1));
+                int y0 = (int)Math.Floor(Math.Min(_selY0, _selY1));
+                int x1 = (int)Math.Ceiling(Math.Max(_selX0, _selX1));
+                int y1 = (int)Math.Ceiling(Math.Max(_selY0, _selY1));
+                int w = x1 - x0, h = y1 - y0;
+                return w >= 1 && h >= 1 ? new PixelRect(x0, y0, w, h) : (PixelRect?)null;
+            }
+        }
+
+        /// <summary>Clears the clip-selection rectangle without changing <see cref="SelectionMode"/>.</summary>
+        public void ClearSelection()
+        {
+            _hasSelection = false;
+            _selDrag = SelDrag.None;
+            RaiseSelectionChanged();
+            InvalidateVisual();
+        }
+
+        private void RaiseSelectionChanged() => SelectionChanged?.Invoke(this, EventArgs.Empty);
+
+        /// <summary>
+        /// When <see langword="true"/>, left-drag draws a two-point profile line instead of
+        /// panning (mirrors <see cref="SelectionMode"/>). Once drawn, drag either endpoint to
+        /// adjust it, or click elsewhere to start a new line; <c>Escape</c> clears it. The line
+        /// lives in the active layer's cell space.
+        /// </summary>
+        public bool LineToolMode
+        {
+            get => _lineToolModeField;
+            set
+            {
+                _lineToolModeField = value;
+                if (!value) { _hasLine = false; _lineDrag = LineDrag.None; }
+                Cursor = value ? new Cursor(StandardCursorType.Cross) : Cursor.Default;
+                RaiseLineChanged();
+                InvalidateVisual();
+            }
+        }
+        private bool _lineToolModeField;
+
+        /// <summary>The current profile line, in the active layer's cell coordinates, or <see langword="null"/> when there is none.</summary>
+        public (double X0, double Y0, double X1, double Y1)? CurrentLine =>
+            _hasLine ? (_lineX0, _lineY0, _lineX1, _lineY1) : null;
+
+        /// <summary>Clears the profile line without changing <see cref="LineToolMode"/>.</summary>
+        public void ClearLine()
+        {
+            _hasLine = false;
+            _lineDrag = LineDrag.None;
+            RaiseLineChanged();
+            InvalidateVisual();
+        }
+
+        private void RaiseLineChanged() => LineChanged?.Invoke(this, EventArgs.Empty);
+
+        /// <summary>
+        /// World units per screen pixel at the current zoom (the "ground sample distance" on
+        /// screen), for the active layer, or <see langword="null"/> when nothing is loaded.
+        /// </summary>
+        public double? GroundSampleDistance
+        {
+            get
+            {
+                var doc = Document;
+                return doc == null ? (double?)null : AverageWorldPerCell(doc.GeoReference) / _scale;
+            }
+        }
+
+        /// <summary>
+        /// Approximate map scale denominator (as in "1 : N"), assuming the given screen
+        /// resolution in dots per inch (96 is the common CSS/DIP baseline; pass the display's
+        /// actual DPI — e.g. via <c>TopLevel.RenderScaling * 96</c> — for a closer figure).
+        /// </summary>
+        public double? MapScaleDenominator(double screenDpi = 96.0)
+        {
+            double? gsd = GroundSampleDistance;
+            if (gsd == null) return null;
+            const double metersPerInch = 0.0254;
+            return gsd.Value * screenDpi / metersPerInch;
+        }
+
+        /// <summary>Use smooth (bilinear) interpolation instead of nearest-neighbour when magnified.</summary>
+        public bool SmoothScaling
+        {
+            get => RenderOptions.GetBitmapInterpolationMode(this) != BitmapInterpolationMode.None;
+            set => RenderOptions.SetBitmapInterpolationMode(this,
+                value ? BitmapInterpolationMode.HighQuality : BitmapInterpolationMode.None);
+        }
+
+        // ---- loading ----------------------------------------------------------------
+
+        /// <summary>
+        /// Loads an <c>.ers</c> dataset as the view's <i>sole</i> layer — any existing layers are
+        /// discarded first. Use <see cref="AddLayerFromPath"/> to add a source alongside what is
+        /// already loaded. Auto-stretches (2–98%) and fits it to the control. A dataset over
+        /// <see cref="ErsDocument.LargeDatasetCellThreshold"/> cells is <i>not</i> read into
+        /// memory here — see <see cref="IsStreaming"/>.
+        /// </summary>
+        public void LoadErs(string ersPath, Palette? palette = null)
+        {
+            if (string.IsNullOrWhiteSpace(ersPath)) throw new ArgumentException("Path is required.", nameof(ersPath));
+            if (!File.Exists(ersPath)) throw new FileNotFoundException("ERS header not found.", ersPath);
+
+            var document = ErsDocument.LoadHeaderOnly(ersPath);
+            if (!document.IsLargeDataset) document.LoadRaster();
+            SetDocumentCore(document, palette, Path.GetFileNameWithoutExtension(ersPath));
+        }
+
+        /// <summary>
+        /// Displays <paramref name="document"/> as the view's <i>sole</i> layer — any existing
+        /// layers are discarded first. Use <see cref="AddLayer"/> to add a source alongside what
+        /// is already loaded.
+        /// </summary>
+        public void SetDocument(ErsDocument document, Palette? palette = null) => SetDocumentCore(document, palette, null);
+
+        private void SetDocumentCore(ErsDocument document, Palette? palette, string? name)
+        {
+            foreach (var l in _layers) l.Dispose();
+            _layers.Clear();
+            _drawOrder.Clear();
+            _vectorLayers.Clear();
+            _activeLayerIndex = -1;
+
+            var layer = CreateLayer(document, name ?? "Layer 1");
+            InitializeLayerDisplay(layer, palette);
+            _layers.Add(layer);
+            _drawOrder.Add(layer);
+            _activeLayerIndex = 0;
+
+            _needsFit = true;
+            ZoomToFit();
+
+            RasterLoaded?.Invoke(this, EventArgs.Empty);
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        // ---- colourisation (active layer) ------------------------------------------
+
+        public void SetPalette(Palette palette)
+        {
+            var layer = ActiveLayer;
+            if (layer?.Colorizer == null || palette == null) return;
+            layer.Colorizer.Palette = palette;
+            RebuildLayerBitmap(layer);
+        }
+
+        public void SetValueRange(double min, double max)
+        {
+            var layer = ActiveLayer;
+            if (layer?.Colorizer == null || !(max > min)) return;
+            layer.Colorizer.Minimum = min;
+            layer.Colorizer.Maximum = max;
+            RebuildLayerBitmap(layer);
+        }
+
+        public void AutoRange(RangeMode mode)
+        {
+            var layer = ActiveLayer;
+            Raster? r = layer?.ActiveRaster;
+            if (layer?.Colorizer == null || r == null) return;
+            (double lo, double hi) = mode switch
+            {
+                RangeMode.MinMax => (r.Statistics.Minimum, r.Statistics.Maximum),
+                RangeMode.TwoSigma => r.Statistics.SigmaRange(2.0),
+                _ => RasterHistogram.Build(r).PercentileRange(2.0, 98.0),
+            };
+            SetValueRange(lo, hi);
+        }
+
+        public void SetGamma(double gamma)
+        {
+            var layer = ActiveLayer;
+            if (layer?.Colorizer == null) return;
+            layer.Colorizer.Gamma = gamma <= 0 ? 1.0 : gamma;
+            RebuildLayerBitmap(layer);
+        }
+
+        public void SetRenderMode(PaletteRenderMode mode, int classCount = 8)
+        {
+            var layer = ActiveLayer;
+            if (layer?.Colorizer == null) return;
+            layer.Colorizer.Mode = mode;
+            layer.Colorizer.ClassCount = Math.Max(2, classCount);
+            RebuildLayerBitmap(layer);
+        }
+
+        /// <summary>
+        /// Re-reads the active layer's displayed band from its document (e.g. after
+        /// <see cref="ErsDocument.ReplaceBand"/> — a gap fill) and re-renders, without disturbing
+        /// the current pan/zoom. Only meaningful when the layer is fully loaded (not streaming).
+        /// </summary>
+        public void RefreshFromDocument()
+        {
+            var layer = ActiveLayer;
+            if (layer == null) return;
+            layer.Raster = layer.Document.Band;
+            if (layer.Raster == null || layer.Colorizer == null) return;
+            RebuildLayerBitmap(layer);
+        }
+
+        /// <summary>The active layer's currently displayed pixels, colourised (or RGB-composited), as a plain image.</summary>
+        public RasterImage? RenderToImage()
+        {
+            var layer = ActiveLayer;
+            if (layer == null) return null;
+
+            if (layer.ShowRgbComposite)
+            {
+                var bands = layer.RgbBands;
+                return bands == null ? null : RgbCompositeRenderer.Render(bands.Value.R, bands.Value.G, bands.Value.B, layer.RgbNeedsAutoStretch);
+            }
+
+            Raster? r = layer.ActiveRaster;
+            return r != null && layer.Colorizer != null ? RasterImageRenderer.Render(r, layer.Colorizer) : null;
+        }
+
+        // ---- view -----------------------------------------------------------------
+
+        public void ZoomToFit()
+        {
+            double vw = Bounds.Width, vh = Bounds.Height;
+            if (vw <= 0 || vh <= 0) { _needsFit = true; return; }
+
+            var layer = ActiveLayer;
+            if (layer == null) { _needsFit = true; return; }
+
+            double contentW, contentH;
+            if (layer.Source != null) { contentW = layer.DatasetWidth; contentH = layer.DatasetHeight; }
+            else if (layer.Bitmap != null) { contentW = layer.Bitmap.PixelSize.Width; contentH = layer.Bitmap.PixelSize.Height; }
+            else { _needsFit = true; return; }
+
+            if (contentW <= 0 || contentH <= 0) { _needsFit = true; return; }
+
+            _scale = Clamp(Math.Min(vw / contentW, vh / contentH) * 0.98, MinScale, MaxScale);
+            _offsetX = (vw - contentW * _scale) / 2.0;
+            _offsetY = (vh - contentH * _scale) / 2.0;
+            _needsFit = false;
+            RaiseViewChanged();
+        }
+
+        public void ZoomBy(double factor) => ZoomAt(new Point(Bounds.Width / 2, Bounds.Height / 2), factor);
+
+        private void ZoomAt(Point pivot, double factor)
+        {
+            double newScale = Clamp(_scale * factor, MinScale, MaxScale);
+            if (Math.Abs(newScale - _scale) < double.Epsilon) return;
+
+            double wx = (pivot.X - _offsetX) / _scale;
+            double wy = (pivot.Y - _offsetY) / _scale;
+            _scale = newScale;
+            _offsetX = pivot.X - wx * _scale;
+            _offsetY = pivot.Y - wy * _scale;
+
+            RaiseViewChanged();
+        }
+
+        private void RaiseViewChanged()
+        {
+            RefreshStreamingWindow();
+            ViewChanged?.Invoke(this, EventArgs.Empty);
+            InvalidateVisual();
+        }
+
+        /// <summary>
+        /// Re-reads a window covering the visible area (plus a margin) for every visible
+        /// streaming layer — the active layer directly in its own cell space (as before), every
+        /// other one by projecting the same viewport through world coordinates into that layer's
+        /// own georeference — decimated to match the current zoom, re-colourised, but only when a
+        /// layer's current cache no longer comfortably covers what is on screen.
+        /// </summary>
+        private void RefreshStreamingWindow()
+        {
+            var active = ActiveLayer;
+            if (active == null) return;
+
+            double vw = Bounds.Width, vh = Bounds.Height;
+            if (vw <= 0 || vh <= 0) return;
+
+            int bitmapW = (int)Math.Ceiling(vw) + StreamingMargin * 2;
+            int bitmapH = (int)Math.Ceiling(vh) + StreamingMargin * 2;
+            Point activeCentreCell = ScreenToCell(new Point(vw / 2.0, vh / 2.0));
+
+            foreach (var layer in _layers)
+            {
+                if (layer.Source == null || !layer.IsVisible) continue;
+                RefreshLayerStreamingWindow(layer, active, activeCentreCell, bitmapW, bitmapH);
+            }
+        }
+
+        private void RefreshLayerStreamingWindow(RasterLayer layer, RasterLayer active, Point activeCentreCell, int bitmapW, int bitmapH)
+        {
+            int originX, originY, width, height, step;
+
+            if (ReferenceEquals(layer, active))
+            {
+                step = _scale >= 1.0 ? 1 : Math.Max(1, (int)Math.Round(1.0 / _scale));
+                double windowWidthCells = (double)bitmapW * step;
+                double windowHeightCells = (double)bitmapH * step;
+                originX = (int)Math.Floor(activeCentreCell.X - windowWidthCells / 2.0);
+                originY = (int)Math.Floor(activeCentreCell.Y - windowHeightCells / 2.0);
+                width = (int)windowWidthCells;
+                height = (int)windowHeightCells;
+            }
+            else
+            {
+                var activeGeo = active.Document.GeoReference;
+                var layerGeo = layer.Document.GeoReference;
+                if (!layerGeo.IsInvertible) return;
+
+                int activeStep = _scale >= 1.0 ? 1 : Math.Max(1, (int)Math.Round(1.0 / _scale));
+                double halfW = bitmapW * activeStep / 2.0, halfH = bitmapH * activeStep / 2.0;
+
+                var corners = new[]
+                {
+                    activeGeo.PixelToWorld(activeCentreCell.X - halfW, activeCentreCell.Y - halfH),
+                    activeGeo.PixelToWorld(activeCentreCell.X + halfW, activeCentreCell.Y - halfH),
+                    activeGeo.PixelToWorld(activeCentreCell.X - halfW, activeCentreCell.Y + halfH),
+                    activeGeo.PixelToWorld(activeCentreCell.X + halfW, activeCentreCell.Y + halfH),
+                };
+
+                double minCol = double.PositiveInfinity, minRow = double.PositiveInfinity;
+                double maxCol = double.NegativeInfinity, maxRow = double.NegativeInfinity;
+                foreach (var (wx, wy) in corners)
+                {
+                    var (col, row) = layerGeo.WorldToPixel(wx, wy);
+                    if (col < minCol) minCol = col; if (col > maxCol) maxCol = col;
+                    if (row < minRow) minRow = row; if (row > maxRow) maxRow = row;
+                }
+
+                double activeWorldPerCell = AverageWorldPerCell(activeGeo);
+                double layerWorldPerCell = AverageWorldPerCell(layerGeo);
+                double screenWorldPerPixel = activeWorldPerCell / _scale;
+                step = layerWorldPerCell > 0 ? Math.Max(1, (int)Math.Round(screenWorldPerPixel / layerWorldPerCell)) : 1;
+
+                originX = (int)Math.Floor(minCol);
+                originY = (int)Math.Floor(minRow);
+                width = Math.Max(1, (int)Math.Ceiling(maxCol) - originX);
+                height = Math.Max(1, (int)Math.Ceiling(maxRow) - originY);
+            }
+
+            if (IsLayerStreamingCacheGood(layer, originX, originY, step, width, height)) return;
+
+            if (layer.ShowRgbComposite)
+            {
+                Raster r = layer.Source!.ReadWindow(originX, originY, width, height, step, step, band: 0);
+                if (r.Width == 0 || r.Height == 0) return; // panned entirely outside this layer's dataset; keep the last good frame
+                Raster g = layer.Source!.ReadWindow(originX, originY, width, height, step, step, band: 1);
+                Raster b = layer.Source!.ReadWindow(originX, originY, width, height, step, step, band: 2);
+                layer.WindowRaster = r; layer.WindowRasterG = g; layer.WindowRasterB = b;
+            }
+            else
+            {
+                Raster window = layer.Source!.ReadWindow(originX, originY, width, height, step, step, layer.ActiveBand);
+                if (window.Width == 0 || window.Height == 0) return;
+                layer.WindowRaster = window; layer.WindowRasterG = null; layer.WindowRasterB = null;
+            }
+
+            layer.BitmapOriginX = originX;
+            layer.BitmapOriginY = originY;
+            layer.BitmapStep = step;
+            RebuildLayerBitmap(layer);
+        }
+
+        private static bool IsLayerStreamingCacheGood(RasterLayer layer, int requestedX, int requestedY, int step, int width, int height)
+        {
+            if (layer.WindowRaster == null || layer.BitmapStep != step) return false;
+
+            double cachedX0 = layer.BitmapOriginX, cachedY0 = layer.BitmapOriginY;
+            double cachedX1 = layer.BitmapOriginX + layer.WindowRaster.Width * layer.BitmapStep;
+            double cachedY1 = layer.BitmapOriginY + layer.WindowRaster.Height * layer.BitmapStep;
+
+            double reqX0 = requestedX, reqY0 = requestedY;
+            double reqX1 = requestedX + (double)width;
+            double reqY1 = requestedY + (double)height;
+
+            // Require at least half of the streaming margin to remain in hand on every side.
+            double shrink = StreamingMargin * step * 0.5;
+            return reqX0 + shrink >= cachedX0 && reqY0 + shrink >= cachedY0 &&
+                   reqX1 - shrink <= cachedX1 && reqY1 - shrink <= cachedY1;
+        }
+
+        private void RebuildLayerBitmap(RasterLayer layer)
+        {
+            RasterImage image;
+
+            if (layer.ShowRgbComposite)
+            {
+                var bands = layer.RgbBands;
+                if (bands == null)
+                {
+                    layer.Bitmap?.Dispose();
+                    layer.Bitmap = null;
+                    InvalidateVisual();
+                    return;
+                }
+                image = RgbCompositeRenderer.Render(bands.Value.R, bands.Value.G, bands.Value.B, layer.RgbNeedsAutoStretch);
+            }
+            else
+            {
+                Raster? r = layer.ActiveRaster;
+                if (r == null || layer.Colorizer == null)
+                {
+                    layer.Bitmap?.Dispose();
+                    layer.Bitmap = null;
+                    InvalidateVisual();
+                    return;
+                }
+                image = RasterImageRenderer.Render(r, layer.Colorizer);
+            }
+
+            if (layer.Bitmap == null || layer.Bitmap.PixelSize.Width != image.Width || layer.Bitmap.PixelSize.Height != image.Height)
+            {
+                layer.Bitmap?.Dispose();
+                layer.Bitmap = new WriteableBitmap(
+                    new PixelSize(image.Width, image.Height),
+                    new Vector(96, 96),
+                    PixelFormat.Bgra8888,
+                    AlphaFormat.Unpremul);
+            }
+
+            using (ILockedFramebuffer fb = layer.Bitmap.Lock())
+            {
+                int srcStride = image.Stride;
+                int dstStride = fb.RowBytes;
+                if (srcStride == dstStride)
+                {
+                    Marshal.Copy(image.Pixels, 0, fb.Address, image.Pixels.Length);
+                }
+                else
+                {
+                    for (int y = 0; y < image.Height; y++)
+                        Marshal.Copy(image.Pixels, y * srcStride, fb.Address + y * dstStride, srcStride);
+                }
+            }
+
+            InvalidateVisual();
+        }
+
+        // ---- rendering ----------------------------------------------------------
+
+        public override void Render(DrawingContext context)
+        {
+            context.FillRectangle(Background, new Rect(Bounds.Size));
+
+            var active = ActiveLayer;
+            if (active == null || !_layers.Any(l => l.IsVisible && l.Bitmap != null))
+            {
+                var text = new FormattedText("No raster loaded — File ▸ Open .ers…",
+                    System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+                    Typeface.Default, 14, Brushes.Gainsboro);
+                context.DrawText(text, new Point((Bounds.Width - text.Width) / 2, (Bounds.Height - text.Height) / 2));
+                return;
+            }
+
+            bool activeInvertible = active.Document.GeoReference.IsInvertible;
+            foreach (var layer in _drawOrder)
+            {
+                switch (layer)
+                {
+                    case RasterLayer rasterLayer when rasterLayer.IsVisible && rasterLayer.Bitmap != null:
+                        DrawLayer(context, rasterLayer, active, activeInvertible);
+                        break;
+                    case VectorLayer vectorLayer when vectorLayer.IsVisible && activeInvertible:
+                        DrawVectorLayer(context, vectorLayer, active);
+                        break;
+                }
+            }
+
+            if (ShowGrid && _scale >= 8.0 && active.Bitmap != null)
+                DrawGrid(context, active);
+
+            if (_hasSelection)
+                DrawSelection(context);
+
+            if (_hasLine)
+                DrawLine(context);
+
+            string hintText = $"zoom {_scale:0.###}×  ·  {_layers.Count} layer{(_layers.Count == 1 ? "" : "s")}";
+            if (_vectorLayers.Count > 0) hintText += $" + {_vectorLayers.Count} vector";
+            if (active.IsStreaming) hintText += "  (streaming)";
+            double? gsd = GroundSampleDistance;
+            if (gsd.HasValue)
+            {
+                string unit = active.Document.Header.CoordinateSpace.EffectiveUnits;
+                hintText += $"   ·   {FormatDistance(gsd.Value)} {unit}/px";
+                double? denom = MapScaleDenominator(EffectiveDpi());
+                if (denom.HasValue) hintText += $"   ·   1 : {FormatScale(denom.Value)}";
+            }
+
+            var hint = new FormattedText(hintText,
+                System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                Typeface.Default, 11, Brushes.Gainsboro);
+            context.FillRectangle(new SolidColorBrush(Color.FromArgb(140, 0, 0, 0)),
+                new Rect(6, Bounds.Height - hint.Height - 8, hint.Width + 8, hint.Height + 4));
+            context.DrawText(hint, new Point(10, Bounds.Height - hint.Height - 6));
+        }
+
+        /// <summary>
+        /// Draws one layer's bitmap onto the shared screen space. The active layer (or, as a
+        /// degenerate fallback, any layer when the active one's georeference isn't invertible)
+        /// draws directly via its own bitmap origin/step; every other layer is placed by
+        /// computing the affine transform from its bitmap's own pixel space into the active
+        /// layer's cell space (via world coordinates) and applying it as a draw-time transform —
+        /// exact for a pure scale/translate difference between layers, and correct even when they
+        /// are relatively rotated to each other.
+        /// </summary>
+        private void DrawLayer(DrawingContext context, RasterLayer layer, RasterLayer active, bool activeInvertible)
+        {
+            var bmp = layer.Bitmap!;
+            double bw = bmp.PixelSize.Width, bh = bmp.PixelSize.Height;
+
+            if (ReferenceEquals(layer, active) || !activeInvertible)
+            {
+                if (!ReferenceEquals(layer, active)) return; // can't place a non-active layer without an invertible active geo
+
+                double destX = _offsetX + layer.BitmapOriginX * _scale;
+                double destY = _offsetY + layer.BitmapOriginY * _scale;
+                var dest = new Rect(destX, destY, bw * layer.BitmapStep * _scale, bh * layer.BitmapStep * _scale);
+                context.DrawImage(bmp, new Rect(0, 0, bw, bh), dest);
+                return;
+            }
+
+            Point p0 = LayerBitmapPixelToScreen(layer, active, 0, 0);
+            Point p1 = LayerBitmapPixelToScreen(layer, active, bw, 0);
+            Point p2 = LayerBitmapPixelToScreen(layer, active, 0, bh);
+
+            var matrix = new Matrix(
+                (p1.X - p0.X) / bw, (p1.Y - p0.Y) / bw,
+                (p2.X - p0.X) / bh, (p2.Y - p0.Y) / bh,
+                p0.X, p0.Y);
+
+            using (context.PushTransform(matrix))
+                context.DrawImage(bmp, new Rect(0, 0, bw, bh), new Rect(0, 0, bw, bh));
+        }
+
+        private Point LayerBitmapPixelToScreen(RasterLayer layer, RasterLayer active, double bx, double by)
+        {
+            double col = layer.BitmapOriginX + bx * layer.BitmapStep;
+            double row = layer.BitmapOriginY + by * layer.BitmapStep;
+            var (wx, wy) = layer.Document.GeoReference.PixelToWorld(col, row);
+            var (acol, arow) = active.Document.GeoReference.WorldToPixel(wx, wy);
+            return new Point(_offsetX + acol * _scale, _offsetY + arow * _scale);
+        }
+
+        // ---- vector layer rendering -----------------------------------------------
+
+        /// <summary>
+        /// A vector object's (X, Y) is already a world coordinate in the same sense as a raster
+        /// cell's <c>PixelToWorld</c> result (both interpreted per the shared <c>CoordinateSpace</c>
+        /// convention) — so placing it only needs the active layer's <c>WorldToPixel</c>, not a
+        /// second layer-to-layer projection the way one raster layer needs to place another.
+        /// </summary>
+        private Point WorldToScreen(RasterLayer active, double worldX, double worldY)
+        {
+            var (col, row) = active.Document.GeoReference.WorldToPixel(worldX, worldY);
+            return new Point(_offsetX + col * _scale, _offsetY + row * _scale);
+        }
+
+        /// <summary>
+        /// The world-space rectangle currently on screen (all four viewport corners, so it's
+        /// still correct under rotation), expanded by <see cref="StreamingMargin"/> screen pixels'
+        /// worth of world space — generous enough that a point marker, stroke width or short text
+        /// run anchored just outside the strict viewport still gets drawn. Used to cull vector
+        /// objects that are nowhere near the screen before doing any per-vertex work on them.
+        /// </summary>
+        private (double MinX, double MinY, double MaxX, double MaxY) VisibleWorldRect(RasterLayer active)
+        {
+            double vw = Bounds.Width, vh = Bounds.Height;
+            var geo = active.Document.GeoReference;
+            if (vw <= 0 || vh <= 0 || !geo.IsInvertible)
+                return (double.NegativeInfinity, double.NegativeInfinity, double.PositiveInfinity, double.PositiveInfinity);
+
+            Span<Point> screenCorners = stackalloc Point[] { new Point(0, 0), new Point(vw, 0), new Point(0, vh), new Point(vw, vh) };
+            double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+            foreach (var sc in screenCorners)
+            {
+                Point cell = ScreenToCell(sc);
+                var (wx, wy) = geo.PixelToWorld(cell.X, cell.Y);
+                if (wx < minX) minX = wx;
+                if (wx > maxX) maxX = wx;
+                if (wy < minY) minY = wy;
+                if (wy > maxY) maxY = wy;
+            }
+
+            double margin = StreamingMargin * AverageWorldPerCell(geo) / Math.Max(_scale, 1e-9);
+            return (minX - margin, minY - margin, maxX + margin, maxY + margin);
+        }
+
+        /// <summary>
+        /// Draws every object in a vector layer, in that layer's own <see cref="VectorLayer.Color"/>
+        /// and <see cref="VectorLayer.LineWidth"/> (a per-layer override, rather than honouring
+        /// each object's own embedded colour/width — simpler and more predictable). Page-relative
+        /// objects (print-composition coordinates, not image/world ones) are skipped — this is an
+        /// interactive data viewer, not a map-composition renderer.
+        ///
+        /// Two things that used to make a large <c>.erv</c> render sluggishly, fixed here: every
+        /// object was allocating its own <see cref="SolidColorBrush"/>/<see cref="Pen"/> on every
+        /// single repaint even though a layer's colour/width is shared by all its objects (now
+        /// built once per layer per frame), and every object was walked and tessellated even when
+        /// nowhere near the viewport (now culled up front against each object's precomputed
+        /// <see cref="VectorLayer.ObjectBounds"/>, without touching its point list at all).
+        /// </summary>
+        private void DrawVectorLayer(DrawingContext context, VectorLayer layer, RasterLayer active)
+        {
+            var objects = layer.Document.Objects;
+            var bounds = layer.ObjectBounds;
+            var (minX, minY, maxX, maxY) = VisibleWorldRect(active);
+
+            var strokeBrush = new SolidColorBrush(layer.Color);
+            var pen = new Pen(strokeBrush, Math.Max(0.5, layer.LineWidth));
+            var fillBrush = new SolidColorBrush(layer.Color, 0.35);
+
+            for (int i = 0; i < objects.Count; i++)
+            {
+                var (bMinX, bMinY, bMaxX, bMaxY) = bounds[i];
+                if (bMaxX < minX || bMinX > maxX || bMaxY < minY || bMinY > maxY) continue;
+
+                switch (objects[i])
+                {
+                    case VectorPoint p: DrawVectorPoint(context, active, strokeBrush, p); break;
+                    case VectorPolyObject poly: DrawVectorPoly(context, active, pen, fillBrush, poly); break;
+                    case VectorRectangleObject rect: DrawVectorRect(context, active, pen, fillBrush, rect); break;
+                    case VectorTextObject text: DrawVectorText(context, active, strokeBrush, text); break;
+                }
+            }
+        }
+
+        private void DrawVectorPoint(DrawingContext context, RasterLayer active, IBrush brush, VectorPoint p)
+        {
+            if (p.Page) return;
+            Point pt = WorldToScreen(active, p.X, p.Y);
+            const double r = 4;
+            context.DrawEllipse(brush, new Pen(Brushes.Black, 1), pt, r, r);
+        }
+
+        private void DrawVectorPoly(DrawingContext context, RasterLayer active, Pen pen, IBrush fillBrush, VectorPolyObject poly)
+        {
+            if (poly.Page || poly.Points.Count < 2) return;
+
+            bool closed = poly is VectorPolygon or VectorMapPolygon;
+
+            var geometry = new StreamGeometry();
+            using (var gc = geometry.Open())
+            {
+                var pts = poly.Points;
+                gc.BeginFigure(WorldToScreen(active, pts[0].X, pts[0].Y), closed && poly.Fill != 0);
+                for (int i = 1; i < pts.Count; i++)
+                    gc.LineTo(WorldToScreen(active, pts[i].X, pts[i].Y));
+                gc.EndFigure(closed);
+            }
+
+            IBrush? fill = closed && poly.Fill != 0 ? fillBrush : null;
+            context.DrawGeometry(fill, pen, geometry);
+        }
+
+        private void DrawVectorRect(DrawingContext context, RasterLayer active, Pen pen, IBrush fillBrush, VectorRectangleObject rect)
+        {
+            if (rect.Page) return;
+
+            Point p0 = WorldToScreen(active, rect.Ltx, rect.Lty);
+            Point p1 = WorldToScreen(active, rect.Rbx, rect.Rby);
+            var screenRect = new Rect(Math.Min(p0.X, p1.X), Math.Min(p0.Y, p1.Y), Math.Abs(p1.X - p0.X), Math.Abs(p1.Y - p0.Y));
+
+            IBrush? fill = rect.Fill != 0 ? fillBrush : null;
+
+            if (rect is VectorOval)
+                context.DrawEllipse(fill, pen, screenRect.Center, screenRect.Width / 2, screenRect.Height / 2);
+            else
+                context.DrawRectangle(fill, pen, screenRect);
+        }
+
+        private void DrawVectorText(DrawingContext context, RasterLayer active, IBrush brush, VectorTextObject text)
+        {
+            if (text.Page || text.Lines.Count == 0) return;
+
+            Point anchor = WorldToScreen(active, text.X, text.Y);
+            string joined = string.Join("\n", text.Lines);
+            var ft = new FormattedText(joined, System.Globalization.CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight, Typeface.Default, Math.Max(6, text.Size), brush);
+
+            // The format anchors text at the bottom-left of its first line.
+            context.DrawText(ft, new Point(anchor.X, anchor.Y - ft.Height));
+        }
+
+        private Rect SelectionScreenRect()
+        {
+            double sx0 = _offsetX + _selX0 * _scale, sy0 = _offsetY + _selY0 * _scale;
+            double sx1 = _offsetX + _selX1 * _scale, sy1 = _offsetY + _selY1 * _scale;
+            return new Rect(Math.Min(sx0, sx1), Math.Min(sy0, sy1), Math.Abs(sx1 - sx0), Math.Abs(sy1 - sy0));
+        }
+
+        /// <summary>The 8 handle positions (screen space) for a selection rectangle, paired with what dragging each one does.</summary>
+        private static (Point Point, SelDrag Drag)[] HandlePoints(Rect r) => new[]
+        {
+            (new Point(r.Left, r.Top), SelDrag.TL),
+            (new Point(r.Right, r.Top), SelDrag.TR),
+            (new Point(r.Left, r.Bottom), SelDrag.BL),
+            (new Point(r.Right, r.Bottom), SelDrag.BR),
+            (new Point((r.Left + r.Right) / 2, r.Top), SelDrag.T),
+            (new Point((r.Left + r.Right) / 2, r.Bottom), SelDrag.B),
+            (new Point(r.Left, (r.Top + r.Bottom) / 2), SelDrag.L),
+            (new Point(r.Right, (r.Top + r.Bottom) / 2), SelDrag.R),
+        };
+
+        private void DrawSelection(DrawingContext context)
+        {
+            Rect rect = SelectionScreenRect();
+
+            context.FillRectangle(new SolidColorBrush(Color.FromArgb(60, 255, 210, 0)), rect);
+            var dash = new DashStyle(new double[] { 4, 2 }, 0);
+            context.DrawRectangle(new Pen(new SolidColorBrush(Color.FromArgb(230, 255, 210, 0)), 1.5, dash), rect);
+
+            var handleFill = new SolidColorBrush(Color.FromArgb(255, 255, 210, 0));
+            var handleOutline = new Pen(Brushes.Black, 1);
+            const double hs = 5;
+            foreach (var (pt, _) in HandlePoints(rect))
+                context.DrawRectangle(handleFill, handleOutline, new Rect(pt.X - hs, pt.Y - hs, hs * 2, hs * 2));
+
+            DrawSelectionLabel(context, rect);
+        }
+
+        private void DrawSelectionLabel(DrawingContext context, Rect rect)
+        {
+            int w = Math.Max(0, (int)Math.Round(rect.Width / _scale));
+            int h = Math.Max(0, (int)Math.Round(rect.Height / _scale));
+            string label = $"{w} × {h} px";
+
+            if (Document != null)
+            {
+                var (_, b, c, _, e, f) = Document.GeoReference.GeoTransform;
+                double worldW = Math.Sqrt(b * b + e * e) * w;
+                double worldH = Math.Sqrt(c * c + f * f) * h;
+                string unit = Document.Header.CoordinateSpace.EffectiveUnits;
+                label += $"   ({FormatDistance(worldW)} × {FormatDistance(worldH)} {unit})";
+            }
+
+            var text = new FormattedText(label, System.Globalization.CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight, Typeface.Default, 11, Brushes.Black);
+
+            double lx = rect.Left, ly = rect.Top - text.Height - 6;
+            if (ly < 0) ly = rect.Bottom + 6;
+
+            context.FillRectangle(new SolidColorBrush(Color.FromArgb(235, 255, 210, 0)),
+                new Rect(lx - 2, ly - 1, text.Width + 4, text.Height + 2));
+            context.DrawText(text, new Point(lx, ly));
+        }
+
+        private void DrawLine(DrawingContext context)
+        {
+            Point p0 = new Point(_offsetX + _lineX0 * _scale, _offsetY + _lineY0 * _scale);
+            Point p1 = new Point(_offsetX + _lineX1 * _scale, _offsetY + _lineY1 * _scale);
+
+            var brush = new SolidColorBrush(Color.FromArgb(255, 80, 200, 255));
+            context.DrawLine(new Pen(brush, 2), p0, p1);
+
+            const double hs = 5;
+            var handleOutline = new Pen(Brushes.Black, 1);
+            context.DrawEllipse(brush, handleOutline, p0, hs, hs);
+            context.DrawEllipse(brush, handleOutline, p1, hs, hs);
+
+            string label = $"{Math.Round(Distance(new Point(_lineX0, _lineY0), new Point(_lineX1, _lineY1)), 1)} px";
+            if (Document != null)
+            {
+                var (wx0, wy0) = Document.GeoReference.PixelToWorld(_lineX0, _lineY0);
+                var (wx1, wy1) = Document.GeoReference.PixelToWorld(_lineX1, _lineY1);
+                double worldDist = Distance(new Point(wx0, wy0), new Point(wx1, wy1));
+                string unit = Document.Header.CoordinateSpace.EffectiveUnits;
+                label = $"{FormatDistance(worldDist)} {unit}";
+            }
+
+            var text = new FormattedText(label, System.Globalization.CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight, Typeface.Default, 11, Brushes.Black);
+            Point mid = new Point((p0.X + p1.X) / 2, (p0.Y + p1.Y) / 2 - text.Height - 6);
+            context.FillRectangle(new SolidColorBrush(Color.FromArgb(235, 80, 200, 255)),
+                new Rect(mid.X - 2, mid.Y - 1, text.Width + 4, text.Height + 2));
+            context.DrawText(text, mid);
+        }
+
+        private SelDrag HitTestHandle(Point screen)
+        {
+            if (!_hasSelection) return SelDrag.None;
+            Rect rect = SelectionScreenRect();
+            const double tol = 8;
+
+            foreach (var (pt, drag) in HandlePoints(rect))
+            {
+                double dx = pt.X - screen.X, dy = pt.Y - screen.Y;
+                if (Math.Sqrt(dx * dx + dy * dy) <= tol) return drag;
+            }
+            return rect.Contains(screen) ? SelDrag.Move : SelDrag.None;
+        }
+
+        private void NormalizeAndClampSelection()
+        {
+            if (Document == null) { _hasSelection = false; return; }
+
+            double x0 = Clamp(Math.Min(_selX0, _selX1), 0, DatasetWidth);
+            double x1 = Clamp(Math.Max(_selX0, _selX1), 0, DatasetWidth);
+            double y0 = Clamp(Math.Min(_selY0, _selY1), 0, DatasetHeight);
+            double y1 = Clamp(Math.Max(_selY0, _selY1), 0, DatasetHeight);
+
+            if (x1 - x0 < 1 || y1 - y0 < 1) { _hasSelection = false; return; }
+            _selX0 = x0; _selX1 = x1; _selY0 = y0; _selY1 = y1;
+        }
+
+        /// <summary>Best available screen DPI (96 &#215; the platform's render scaling), falling back to 96.</summary>
+        private double EffectiveDpi() => (this.GetVisualRoot() as TopLevel)?.RenderScaling is double s ? s * 96.0 : 96.0;
+
+        private static string FormatDistance(double metersPerPixel) =>
+            metersPerPixel >= 1
+                ? metersPerPixel.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)
+                : metersPerPixel.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+
+        private static string FormatScale(double denominator) =>
+            denominator >= 1000
+                ? $"{denominator / 1000.0:0.#}k"
+                : denominator.ToString("0", System.Globalization.CultureInfo.InvariantCulture);
+
+        private void DrawGrid(DrawingContext context, RasterLayer active)
+        {
+            if (active.Bitmap == null) return;
+            var pen = new Pen(new SolidColorBrush(Color.FromArgb(48, 255, 255, 255)), 1);
+
+            double datasetMinX = active.BitmapOriginX, datasetMaxX = active.BitmapOriginX + active.Bitmap.PixelSize.Width * active.BitmapStep;
+            double datasetMinY = active.BitmapOriginY, datasetMaxY = active.BitmapOriginY + active.Bitmap.PixelSize.Height * active.BitmapStep;
+
+            int firstCol = (int)Math.Max(datasetMinX, Math.Floor(ScreenToCell(new Point(0, 0)).X));
+            int lastCol = (int)Math.Min(datasetMaxX, Math.Ceiling(ScreenToCell(new Point(Bounds.Width, 0)).X));
+            for (int c = firstCol; c <= lastCol; c++)
+            {
+                double x = _offsetX + c * _scale;
+                context.DrawLine(pen, new Point(x, 0), new Point(x, Bounds.Height));
+            }
+
+            int firstRow = (int)Math.Max(datasetMinY, Math.Floor(ScreenToCell(new Point(0, 0)).Y));
+            int lastRow = (int)Math.Min(datasetMaxY, Math.Ceiling(ScreenToCell(new Point(0, Bounds.Height)).Y));
+            for (int r = firstRow; r <= lastRow; r++)
+            {
+                double y = _offsetY + r * _scale;
+                context.DrawLine(pen, new Point(0, y), new Point(Bounds.Width, y));
+            }
+        }
+
+        // ---- input ------------------------------------------------------------
+
+        protected override void OnPointerPressed(PointerPressedEventArgs e)
+        {
+            base.OnPointerPressed(e);
+            Focus();
+            var p = e.GetCurrentPoint(this);
+
+            if (SelectionMode && p.Properties.IsLeftButtonPressed && Document != null)
+            {
+                SelDrag hit = _hasSelection ? HitTestHandle(p.Position) : SelDrag.None;
+
+                if (hit == SelDrag.None)
+                {
+                    // clicked outside any existing selection (or there wasn't one): start a new one
+                    Point c = ScreenToCell(p.Position);
+                    _selX0 = _selX1 = Clamp(c.X, 0, DatasetWidth);
+                    _selY0 = _selY1 = Clamp(c.Y, 0, DatasetHeight);
+                    _hasSelection = true;
+                    _selDrag = SelDrag.Create;
+                }
+                else
+                {
+                    _selDrag = hit;
+                    _dragStartX0 = _selX0; _dragStartY0 = _selY0;
+                    _dragStartX1 = _selX1; _dragStartY1 = _selY1;
+                }
+
+                _dragStartScreen = p.Position;
+                e.Pointer.Capture(this);
+                RaiseSelectionChanged();
+                InvalidateVisual();
+                return;
+            }
+
+            if (LineToolMode && p.Properties.IsLeftButtonPressed && Document != null)
+            {
+                LineDrag hit = _hasLine ? HitTestLineHandle(p.Position) : LineDrag.None;
+
+                if (hit == LineDrag.None)
+                {
+                    Point c = ScreenToCell(p.Position);
+                    _lineX0 = _lineX1 = Clamp(c.X, 0, DatasetWidth);
+                    _lineY0 = _lineY1 = Clamp(c.Y, 0, DatasetHeight);
+                    _hasLine = true;
+                    _lineDrag = LineDrag.Create;
+                }
+                else
+                {
+                    _lineDrag = hit;
+                }
+
+                e.Pointer.Capture(this);
+                RaiseLineChanged();
+                InvalidateVisual();
+                return;
+            }
+
+            if (p.Properties.IsLeftButtonPressed || p.Properties.IsMiddleButtonPressed)
+            {
+                _panning = true;
+                _panLast = p.Position;
+                e.Pointer.Capture(this);
+                Cursor = new Cursor(StandardCursorType.SizeAll);
+            }
+        }
+
+        protected override void OnPointerReleased(PointerReleasedEventArgs e)
+        {
+            base.OnPointerReleased(e);
+
+            if (_selDrag != SelDrag.None)
+            {
+                _selDrag = SelDrag.None;
+                e.Pointer.Capture(null);
+                NormalizeAndClampSelection();
+                RaiseSelectionChanged();
+                InvalidateVisual();
+                return;
+            }
+
+            if (_lineDrag != LineDrag.None)
+            {
+                _lineDrag = LineDrag.None;
+                e.Pointer.Capture(null);
+                NormalizeAndClampLine();
+                RaiseLineChanged();
+                InvalidateVisual();
+                return;
+            }
+
+            if (_panning)
+            {
+                _panning = false;
+                e.Pointer.Capture(null);
+                Cursor = SelectionMode ? new Cursor(StandardCursorType.Cross) : Cursor.Default;
+            }
+        }
+
+        protected override void OnPointerMoved(PointerEventArgs e)
+        {
+            base.OnPointerMoved(e);
+            Point pos = e.GetPosition(this);
+
+            if (_selDrag != SelDrag.None)
+            {
+                UpdateSelectionDrag(pos);
+                RaiseSelectionChanged();
+                InvalidateVisual();
+            }
+            else if (_lineDrag != LineDrag.None)
+            {
+                UpdateLineDrag(pos);
+                RaiseLineChanged();
+                InvalidateVisual();
+            }
+            else if (_panning)
+            {
+                _offsetX += pos.X - _panLast.X;
+                _offsetY += pos.Y - _panLast.Y;
+                _panLast = pos;
+                RaiseViewChanged();
+            }
+            else if (SelectionMode)
+            {
+                var hover = HitTestHandle(pos);
+                Cursor = hover != SelDrag.None ? new Cursor(StandardCursorType.SizeAll) : new Cursor(StandardCursorType.Cross);
+            }
+            else if (LineToolMode)
+            {
+                var hover = HitTestLineHandle(pos);
+                Cursor = hover != LineDrag.None ? new Cursor(StandardCursorType.SizeAll) : new Cursor(StandardCursorType.Cross);
+            }
+
+            RaiseReadout(pos);
+        }
+
+        private void UpdateLineDrag(Point screenPos)
+        {
+            double maxW = DatasetWidth, maxH = DatasetHeight;
+            Point cur = ScreenToCell(screenPos);
+            double cx = Clamp(cur.X, 0, maxW), cy = Clamp(cur.Y, 0, maxH);
+
+            switch (_lineDrag)
+            {
+                case LineDrag.Create: _lineX1 = cx; _lineY1 = cy; break;
+                case LineDrag.Start: _lineX0 = cx; _lineY0 = cy; break;
+                case LineDrag.End: _lineX1 = cx; _lineY1 = cy; break;
+            }
+        }
+
+        private LineDrag HitTestLineHandle(Point screen)
+        {
+            if (!_hasLine) return LineDrag.None;
+            const double tol = 8;
+
+            Point p0 = new Point(_offsetX + _lineX0 * _scale, _offsetY + _lineY0 * _scale);
+            Point p1 = new Point(_offsetX + _lineX1 * _scale, _offsetY + _lineY1 * _scale);
+
+            if (Distance(p0, screen) <= tol) return LineDrag.Start;
+            if (Distance(p1, screen) <= tol) return LineDrag.End;
+            return LineDrag.None;
+        }
+
+        private static double Distance(Point a, Point b)
+        {
+            double dx = a.X - b.X, dy = a.Y - b.Y;
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        private void NormalizeAndClampLine()
+        {
+            if (Document == null) { _hasLine = false; return; }
+
+            double x0 = Clamp(_lineX0, 0, DatasetWidth);
+            double y0 = Clamp(_lineY0, 0, DatasetHeight);
+            double x1 = Clamp(_lineX1, 0, DatasetWidth);
+            double y1 = Clamp(_lineY1, 0, DatasetHeight);
+
+            if (Distance(new Point(x0, y0), new Point(x1, y1)) < 0.5) { _hasLine = false; return; }
+            _lineX0 = x0; _lineY0 = y0; _lineX1 = x1; _lineY1 = y1;
+        }
+
+        private void UpdateSelectionDrag(Point screenPos)
+        {
+            double maxW = DatasetWidth, maxH = DatasetHeight;
+            Point cur = ScreenToCell(screenPos);
+            double cx = Clamp(cur.X, 0, maxW), cy = Clamp(cur.Y, 0, maxH);
+
+            switch (_selDrag)
+            {
+                case SelDrag.Create: _selX1 = cx; _selY1 = cy; break;
+                case SelDrag.TL: _selX0 = cx; _selY0 = cy; break;
+                case SelDrag.TR: _selX1 = cx; _selY0 = cy; break;
+                case SelDrag.BL: _selX0 = cx; _selY1 = cy; break;
+                case SelDrag.BR: _selX1 = cx; _selY1 = cy; break;
+                case SelDrag.T: _selY0 = cy; break;
+                case SelDrag.B: _selY1 = cy; break;
+                case SelDrag.L: _selX0 = cx; break;
+                case SelDrag.R: _selX1 = cx; break;
+                case SelDrag.Move:
+                {
+                    Point start = ScreenToCell(_dragStartScreen);
+                    double dx = cur.X - start.X, dy = cur.Y - start.Y;
+                    double nx0 = _dragStartX0 + dx, nx1 = _dragStartX1 + dx;
+                    double ny0 = _dragStartY0 + dy, ny1 = _dragStartY1 + dy;
+                    double w = nx1 - nx0, h = ny1 - ny0;
+
+                    if (nx0 < 0) { nx0 = 0; nx1 = w; }
+                    if (nx1 > maxW) { nx1 = maxW; nx0 = maxW - w; }
+                    if (ny0 < 0) { ny0 = 0; ny1 = h; }
+                    if (ny1 > maxH) { ny1 = maxH; ny0 = maxH - h; }
+
+                    _selX0 = nx0; _selX1 = nx1; _selY0 = ny0; _selY1 = ny1;
+                    break;
+                }
+            }
+        }
+
+        private Point ScreenToCell(Point screen) => new Point((screen.X - _offsetX) / _scale, (screen.Y - _offsetY) / _scale);
+
+        protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
+        {
+            base.OnPointerWheelChanged(e);
+            double factor = e.Delta.Y > 0 ? 1.2 : 1.0 / 1.2;
+            ZoomAt(e.GetPosition(this), factor);
+            RaiseReadout(e.GetPosition(this));
+            e.Handled = true;
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            const double step = 40;
+            switch (e.Key)
+            {
+                case Key.OemPlus or Key.Add: ZoomBy(1.2); break;
+                case Key.OemMinus or Key.Subtract: ZoomBy(1.0 / 1.2); break;
+                case Key.D0 or Key.F: ZoomToFit(); break;
+                case Key.Left: _offsetX += step; RaiseViewChanged(); break;
+                case Key.Right: _offsetX -= step; RaiseViewChanged(); break;
+                case Key.Up: _offsetY += step; RaiseViewChanged(); break;
+                case Key.Down: _offsetY -= step; RaiseViewChanged(); break;
+                case Key.Escape:
+                    if (_hasSelection) ClearSelection();
+                    else if (_hasLine) ClearLine();
+                    else return;
+                    break;
+                default: return;
+            }
+            e.Handled = true;
+        }
+
+        private void RaiseReadout(Point screen)
+        {
+            if (PointerReadout == null) return;
+            var layer = ActiveLayer;
+            if (layer == null)
+            {
+                PointerReadout(this, new RasterReadoutEventArgs());
+                return;
+            }
+
+            double cellX = (screen.X - _offsetX) / _scale;
+            double cellY = (screen.Y - _offsetY) / _scale;
+            var (wx, wy) = layer.Document.GeoReference.PixelToWorld(cellX, cellY);
+
+            int col = (int)Math.Floor(cellX);
+            int row = (int)Math.Floor(cellY);
+            bool inside = col >= 0 && row >= 0 && col < layer.DatasetWidth && row < layer.DatasetHeight;
+
+            float? value = null;
+            if (inside)
+            {
+                if (layer.Raster != null)
+                {
+                    value = layer.Raster.GetValueOrNull(row, col);
+                }
+                else if (layer.Source != null)
+                {
+                    try
+                    {
+                        Raster single = layer.Source.ReadWindow(col, row, 1, 1, band: layer.ActiveBand);
+                        if (single.Width == 1 && single.Height == 1) value = single.GetValueOrNull(0, 0);
+                    }
+                    catch (IOException) { /* best-effort hover sampling */ }
+                }
+            }
+
+            PointerReadout(this, new RasterReadoutEventArgs
+            {
+                InsideRaster = inside,
+                WorldX = wx,
+                WorldY = wy,
+                Column = inside ? col : -1,
+                Row = inside ? row : -1,
+                Value = value,
+            });
+        }
+
+        private static double Clamp(double v, double lo, double hi) => v < lo ? lo : v > hi ? hi : v;
+    }
+
+    /// <summary>Display-range strategies offered by <see cref="RasterView.AutoRange"/>.</summary>
+    public enum RangeMode
+    {
+        MinMax,
+        TwoSigma,
+        Percentile,
+    }
+}
