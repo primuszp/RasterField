@@ -90,6 +90,50 @@ namespace RasterField.Rasters
         }
 
         /// <summary>
+        /// Samples along a multi-vertex path given in world coordinates, every
+        /// <paramref name="spacing"/> world units (each vertex is always included, so bends are
+        /// never cut). <see cref="ProfileSample.Distance"/> is the cumulative distance along the
+        /// path. <paramref name="sampler"/> chooses the interpolation (defaults to
+        /// <see cref="BilinearSample"/>); it receives pixel coordinates.
+        /// </summary>
+        public static IReadOnlyList<ProfileSample> SamplePolylineWorld(
+            Raster raster, RasterGeoReference geoReference, IReadOnlyList<(double X, double Y)> vertices, double spacing,
+            Func<Raster, double, double, float?>? sampler = null)
+        {
+            if (raster == null) throw new ArgumentNullException(nameof(raster));
+            if (geoReference == null) throw new ArgumentNullException(nameof(geoReference));
+            if (vertices == null) throw new ArgumentNullException(nameof(vertices));
+            if (vertices.Count < 2) throw new ArgumentException("A path needs at least two vertices.", nameof(vertices));
+            if (!(spacing > 0)) throw new ArgumentOutOfRangeException(nameof(spacing), "The sample spacing must be positive.");
+            if (!geoReference.IsInvertible) throw new InvalidOperationException("The georeference is not invertible.");
+            sampler ??= BilinearSample;
+
+            var result = new List<ProfileSample>();
+            double travelled = 0;
+            void Add(double wx, double wy, double distance)
+            {
+                var (col, row) = geoReference.WorldToPixel(wx, wy);
+                result.Add(new ProfileSample(distance, wx, wy, sampler(raster, col, row)));
+            }
+
+            Add(vertices[0].X, vertices[0].Y, 0);
+            for (int i = 1; i < vertices.Count; i++)
+            {
+                var (ax, ay) = vertices[i - 1];
+                var (bx, by) = vertices[i];
+                double len = Math.Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+                int steps = Math.Max(1, (int)Math.Ceiling(len / spacing));
+                for (int s = 1; s <= steps; s++)
+                {
+                    double t = s / (double)steps;
+                    Add(ax + (bx - ax) * t, ay + (by - ay) * t, travelled + len * t);
+                }
+                travelled += len;
+            }
+            return result;
+        }
+
+        /// <summary>
         /// Bilinearly interpolated value at pixel coordinate (<paramref name="col"/>,
         /// <paramref name="row"/>), using the same corner-addressed convention as
         /// <see cref="RasterGeoReference"/> (whole numbers are cell corners; a cell's own value
