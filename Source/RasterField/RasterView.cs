@@ -1770,7 +1770,7 @@ namespace RasterField
             {
                 var text = new FormattedText(L.T("Drop .ers / .erv / .geojson / .csv / .rfproj files here, or File ▸ Open…"),
                     System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-                    Typeface.Default, 14, Brushes.Gainsboro);
+                    Typeface.Default, 13, AppTheme.TextSecondary);
                 context.DrawText(text, new Point((Bounds.Width - text.Width) / 2, (Bounds.Height - text.Height) / 2));
                 return;
             }
@@ -1814,10 +1814,10 @@ namespace RasterField
 
             var hint = new FormattedText(hintText,
                 System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                Typeface.Default, 11, Brushes.Gainsboro);
-            context.FillRectangle(new SolidColorBrush(Color.FromArgb(140, 0, 0, 0)),
-                new Rect(6, Bounds.Height - hint.Height - 8, hint.Width + 8, hint.Height + 4));
-            context.DrawText(hint, new Point(10, Bounds.Height - hint.Height - 6));
+                Typeface.Default, 10.5, new SolidColorBrush(Color.FromRgb(0xE2, 0xE5, 0xEA)));
+            var hintBox = new Rect(10, Bounds.Height - hint.Height - 16, hint.Width + 16, hint.Height + 8);
+            context.FillRectangle(new SolidColorBrush(Color.FromArgb(150, 0x15, 0x18, 0x1D)), hintBox, 6);
+            context.DrawText(hint, new Point(hintBox.X + 8, hintBox.Y + 4));
         }
 
         /// <summary>

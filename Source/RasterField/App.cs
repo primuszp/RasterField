@@ -9,7 +9,9 @@ namespace RasterField
     {
         public override void Initialize()
         {
-            Styles.Add(new FluentTheme());
+            Styles.Add(AppStyles.CreateFluentTheme());
+            Styles.Add(AppStyles.Create());
+            AppStyles.AddResources(Resources);
             L.SetLanguage(AppSettings.Load().Language);
 
             // Follow the OS light/dark setting by default (live — FluentTheme reacts to it

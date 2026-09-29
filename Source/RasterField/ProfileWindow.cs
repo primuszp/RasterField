@@ -134,7 +134,7 @@ namespace RasterField
         public override void Render(DrawingContext context)
         {
             var bounds = new Rect(Bounds.Size);
-            context.FillRectangle(new SolidColorBrush(Color.FromRgb(0x20, 0x20, 0x24)), bounds);
+            context.FillRectangle(AppTheme.BarBackground, bounds, 6);
 
             var all = _series.SelectMany(s => s.Samples).Where(s => s.Value.HasValue).ToList();
             if (all.Count < 2)
@@ -158,20 +158,20 @@ namespace RasterField
             double Sx(double d) => marginLeft + (d - minDist) / (maxDist - minDist) * plotW;
             double Sy(double v) => marginTop + plotH - (v - minVal) / (maxVal - minVal) * plotH;
 
-            var axisPen = new Pen(new SolidColorBrush(Color.FromArgb(160, 200, 200, 200)), 1);
-            var gridPen = new Pen(new SolidColorBrush(Color.FromArgb(40, 200, 200, 200)), 1);
+            var axisPen = new Pen(AppTheme.TextSecondary, 1);
+            var gridPen = new Pen(AppTheme.Border, 1);
 
             for (int i = 0; i <= 4; i++)
             {
                 double v = minVal + (maxVal - minVal) * i / 4.0;
                 double y = Sy(v);
                 context.DrawLine(gridPen, new Point(marginLeft, y), new Point(marginLeft + plotW, y));
-                DrawText(context, v.ToString("g4", CultureInfo.InvariantCulture), new Point(4, y - 7), Brushes.Gainsboro, 10);
+                DrawText(context, v.ToString("g4", CultureInfo.InvariantCulture), new Point(4, y - 7), AppTheme.TextSecondary, 10);
             }
             foreach (double d in new[] { minDist, (minDist + maxDist) / 2, maxDist })
             {
                 double x = Sx(d);
-                var t = FormatText(d.ToString("0.##", CultureInfo.InvariantCulture), 10, Brushes.Gainsboro);
+                var t = FormatText(d.ToString("0.##", CultureInfo.InvariantCulture), 10, AppTheme.TextSecondary);
                 context.DrawText(t, new Point(Math.Clamp(x - t.Width / 2, marginLeft, marginLeft + plotW - t.Width), marginTop + plotH + 4));
             }
             context.DrawLine(axisPen, new Point(marginLeft, marginTop), new Point(marginLeft, marginTop + plotH));
@@ -198,20 +198,20 @@ namespace RasterField
             }
 
             string axisLabel = L.F("distance ({0})", _distanceUnit) + (_valueUnit != null ? "   ·   " + L.F("value ({0})", _valueUnit) : "");
-            DrawText(context, axisLabel, new Point(marginLeft, marginTop + plotH + 18), Brushes.Gray, 10);
+            DrawText(context, axisLabel, new Point(marginLeft, marginTop + plotH + 18), AppTheme.TextSecondary, 10);
 
             double ly = marginTop + plotH + 32;
             foreach (var series in _series.Take(4))
             {
                 context.DrawLine(new Pen(new SolidColorBrush(series.Color), 3), new Point(marginLeft, ly + 6), new Point(marginLeft + 18, ly + 6));
-                DrawText(context, series.Name, new Point(marginLeft + 24, ly - 1), Brushes.Gainsboro, 10);
+                DrawText(context, series.Name, new Point(marginLeft + 24, ly - 1), AppTheme.TextSecondary, 10);
                 ly += 14;
             }
         }
 
         private static void DrawCentredText(DrawingContext context, Rect bounds, string message)
         {
-            var text = FormatText(message, 12, Brushes.Gainsboro);
+            var text = FormatText(message, 12, AppTheme.TextSecondary);
             text.MaxTextWidth = Math.Max(50, bounds.Width - 20);
             context.DrawText(text, new Point(Math.Max(10, (bounds.Width - text.Width) / 2), (bounds.Height - text.Height) / 2));
         }

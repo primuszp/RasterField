@@ -36,8 +36,8 @@ namespace RasterField
         private readonly CheckBox _reverseBox = new CheckBox { Content = T("Reverse palette") };
         private readonly ComboBox _stretchBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         private readonly ComboBox _modeBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
-        private readonly NumericUpDown _minBox = new NumericUpDown { FormatString = "0.###", Increment = 1, Width = 110, HorizontalAlignment = HorizontalAlignment.Left };
-        private readonly NumericUpDown _maxBox = new NumericUpDown { FormatString = "0.###", Increment = 1, Width = 110, HorizontalAlignment = HorizontalAlignment.Left };
+        private readonly NumericUpDown _minBox = new NumericUpDown { FormatString = "0.###", Increment = 1, ShowButtonSpinner = false, HorizontalAlignment = HorizontalAlignment.Stretch };
+        private readonly NumericUpDown _maxBox = new NumericUpDown { FormatString = "0.###", Increment = 1, ShowButtonSpinner = false, HorizontalAlignment = HorizontalAlignment.Stretch };
         private readonly Slider _gammaSlider = new Slider { Minimum = 0.1, Maximum = 3.0, Value = 1.0, TickFrequency = 0.1 };
         private readonly ComboBox _outTypeBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         private readonly ComboBox _outOrderBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -58,7 +58,7 @@ namespace RasterField
             VerticalAlignment = VerticalAlignment.Top,
             IsVisible = false,
         };
-        private readonly TextBlock _clipTitleText = new TextBlock { Text = T("Clip tool —"), FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center };
+        private readonly TextBlock _clipTitleText = new TextBlock { Text = T("Clip tool —"), FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center };
         private readonly TextBlock _clipInfoText = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
         private readonly Button _clipCropBtn = new Button { Content = T("Crop → new layer"), IsEnabled = false };
 
@@ -72,7 +72,7 @@ namespace RasterField
             VerticalAlignment = VerticalAlignment.Top,
             IsVisible = false,
         };
-        private readonly TextBlock _pathTitleText = new TextBlock { FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center };
+        private readonly TextBlock _pathTitleText = new TextBlock { FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center };
         private readonly TextBlock _pathInfoText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
 
         private readonly ComboBox _bandBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -189,7 +189,8 @@ namespace RasterField
             Background = AppTheme.WindowBackground;
             if (_sidePanelBorder != null) _sidePanelBorder.Background = AppTheme.PanelBackground;
             if (_leftPanelBorder != null) _leftPanelBorder.Background = AppTheme.PanelBackground;
-            if (_statusBarHost != null) _statusBarHost.Background = AppTheme.BarBackground;
+            if (_statusBarHost != null) _statusBarHost.Background = AppTheme.PanelBackground;
+            foreach (var t in new[] { _coordText, _cellText, _valueText, _scaleText, _infoText }) t.Foreground = AppTheme.TextSecondary;
             _clipBar.Background = AppTheme.BarBackground;
             _pathBar.Background = AppTheme.BarBackground;
             _clipTitleText.Foreground = AppTheme.Accent;
@@ -312,18 +313,22 @@ namespace RasterField
             var panel = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Spacing = 16,
-                Margin = new Thickness(8, 4),
+                Spacing = 20,
+                Margin = new Thickness(12, 4),
             };
-            panel.Children.Add(_coordText);
-            panel.Children.Add(_cellText);
-            panel.Children.Add(_valueText);
-            panel.Children.Add(_scaleText);
+            foreach (var t in new[] { _coordText, _cellText, _valueText, _scaleText })
+            {
+                t.FontSize = AppTheme.FontCaption;
+                t.FontFeatures = new FontFeatureCollection { FontFeature.Parse("tnum") }; // tabular digits: the readout does not jitter
+                panel.Children.Add(t);
+            }
+            _coordText.MinWidth = 230; _cellText.MinWidth = 110; _valueText.MinWidth = 130; _scaleText.MinWidth = 170;
 
-            var host = new DockPanel { Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2E)) };
+            var host = new DockPanel();
             DockPanel.SetDock(panel, Dock.Left);
             host.Children.Add(panel);
-            _infoText.Margin = new Thickness(8, 4);
+            _infoText.Margin = new Thickness(12, 4);
+            _infoText.FontSize = AppTheme.FontCaption;
             host.Children.Add(_infoText);
             return host;
         }
@@ -842,7 +847,7 @@ namespace RasterField
         private void UpdateScaleText()
         {
             double? gsd = _view.GroundSampleDistance;
-            if (gsd == null) { _scaleText.Text = T("—"); return; }
+            if (gsd == null) { _scaleText.Text = ""; return; }
 
             string unit = _view.Document?.Header.CoordinateSpace.EffectiveUnits ?? "m";
             double dpi = (TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0) * 96.0;
@@ -1066,7 +1071,7 @@ namespace RasterField
             buttons.Children.Add(okBtn);
             buttons.Children.Add(cancelBtn);
 
-            TextBlock Label(string t) => new TextBlock { Text = t, Opacity = 0.8 };
+            TextBlock Label(string t) => AppTheme.Caption(t);
             dialog.Content = new StackPanel
             {
                 Margin = new Thickness(16),

@@ -23,11 +23,10 @@ namespace RasterField
 
         public override void Render(DrawingContext context)
         {
-            context.FillRectangle(new SolidColorBrush(Color.FromRgb(0x18, 0x18, 0x1C)), new Rect(Bounds.Size));
             if (_colorizer == null) return;
 
-            double pad = 8;
-            double barWidth = 20;
+            double pad = 6;
+            double barWidth = 14;
             var bar = new Rect(pad, pad, barWidth, Math.Max(10, Bounds.Height - 2 * pad));
 
             int steps = Math.Max(2, (int)bar.Height);
@@ -41,9 +40,9 @@ namespace RasterField
                     new Rect(bar.Left, y, bar.Width, bar.Height / steps + 1));
             }
 
-            var ink = new SolidColorBrush(Color.FromRgb(0xDC, 0xDC, 0xDC));
-            var pen = new Pen(ink, 1);
-            context.DrawRectangle(null, pen, bar);
+            var ink = AppTheme.TextSecondary;
+            var pen = new Pen(AppTheme.Border, 1);
+            context.DrawRectangle(null, pen, bar, 2, 2);
 
             const int ticks = 6;
             for (int i = 0; i < ticks; i++)
@@ -54,14 +53,14 @@ namespace RasterField
 
                 context.DrawLine(pen, new Point(bar.Right, y), new Point(bar.Right + 4, y));
                 var label = new FormattedText(value.ToString("g4", CultureInfo.InvariantCulture),
-                    CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Typeface.Default, 11, ink);
+                    CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Typeface.Default, AppTheme.FontCaption - 0.5, ink);
                 context.DrawText(label, new Point(bar.Right + 8, y - label.Height / 2));
             }
 
             if (!string.IsNullOrEmpty(_unit))
             {
                 var u = new FormattedText(_unit!, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                    Typeface.Default, 11, ink);
+                    Typeface.Default, AppTheme.FontCaption - 0.5, ink);
                 context.DrawText(u, new Point(bar.Left, bar.Bottom + 4));
             }
         }

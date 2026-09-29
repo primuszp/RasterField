@@ -32,20 +32,20 @@ namespace RasterField
         private ColumnDefinition? _leftColumn, _rightColumn;
         private GridSplitter? _leftSplitter, _rightSplitter;
         private readonly TabControl _analysisTabs = new TabControl { Padding = new Thickness(0) };
-        private readonly SelectableTextBlock _identifyText = new SelectableTextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
+        private readonly SelectableTextBlock _identifyText = new SelectableTextBlock { TextWrapping = TextWrapping.Wrap, FontSize = AppTheme.FontCaption + 0.5, LineHeight = 17 };
         private readonly ProfileChartControl _profileChart = new ProfileChartControl { MinHeight = 190 };
         private readonly CheckBox _profileBezierBox = new CheckBox { IsChecked = true };
         private readonly CheckBox _profileAllLayersBox = new CheckBox { IsChecked = true };
-        private readonly SelectableTextBlock _measureText = new SelectableTextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
-        private readonly HistogramStretchControl _histogram = new HistogramStretchControl { Height = 92 };
+        private readonly SelectableTextBlock _measureText = new SelectableTextBlock { TextWrapping = TextWrapping.Wrap, FontSize = AppTheme.FontCaption + 0.5, LineHeight = 17 };
+        private readonly HistogramStretchControl _histogram = new HistogramStretchControl { Height = 70, Margin = new Thickness(0, 4, 0, 2) };
         private readonly Slider _opacitySlider = new Slider { Minimum = 0, Maximum = 100, Value = 100 };
-        private readonly TextBlock _opacityText = new TextBlock { Width = 44, VerticalAlignment = VerticalAlignment.Center };
+        private readonly TextBlock _opacityText = new TextBlock { Width = 40, VerticalAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Right, FontSize = AppTheme.FontCaption };
         private readonly ComboBox _blendBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         private readonly Border _derivationGroup = new Border { IsVisible = false };
-        private readonly TextBlock _lineageText = new TextBlock { TextWrapping = TextWrapping.Wrap, Opacity = 0.85, FontSize = 12 };
+        private readonly TextBlock _lineageText = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = AppTheme.FontCaption, LineHeight = 16 };
         private readonly Button _paramsBtn = new Button();
         private readonly Button _saveLayerBtn = new Button();
-        private readonly SelectableTextBlock _metaText = new SelectableTextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.9 };
+        private readonly SelectableTextBlock _metaText = new SelectableTextBlock { TextWrapping = TextWrapping.Wrap, FontSize = AppTheme.FontCaption, LineHeight = 16 };
         private readonly StackPanel _rasterProps = new StackPanel { Spacing = 4 };
         private IReadOnlyList<ProfileSeries> _lastProfile = Array.Empty<ProfileSeries>();
 
@@ -80,7 +80,7 @@ namespace RasterField
             _leftPanelBorder = left;
             Grid.SetColumn(left, 0);
 
-            _leftSplitter = new GridSplitter { Width = 4, Background = AppTheme.Border, ResizeDirection = GridResizeDirection.Columns };
+            _leftSplitter = new GridSplitter { Width = 3, ResizeDirection = GridResizeDirection.Columns };
             Grid.SetColumn(_leftSplitter, 1);
 
             var viewHost = new Grid();
@@ -90,7 +90,7 @@ namespace RasterField
             viewHost.Children.Add(BuildBusyOverlay());
             Grid.SetColumn(viewHost, 2);
 
-            _rightSplitter = new GridSplitter { Width = 4, Background = AppTheme.Border, ResizeDirection = GridResizeDirection.Columns };
+            _rightSplitter = new GridSplitter { Width = 3, ResizeDirection = GridResizeDirection.Columns };
             Grid.SetColumn(_rightSplitter, 3);
 
             var right = BuildRightDock();
@@ -110,14 +110,14 @@ namespace RasterField
 
         private Control? _menuHost;
 
-        private static TextBlock Header(string text) => new TextBlock { Text = text, FontWeight = FontWeight.Bold, Margin = new Thickness(0, 8, 0, 2) };
+        private static TextBlock Header(string text) => AppTheme.SectionLabel(text);
 
         private Border BuildLeftDock()
         {
             var addLayerBtn = new Button { Content = T("+ Add layer…"), HorizontalAlignment = HorizontalAlignment.Stretch };
             addLayerBtn.Click += async (_, _) => await AddLayerDialogAsync();
 
-            var layersStack = new StackPanel { Spacing = 2, Margin = new Thickness(8, 4, 8, 8) };
+            var layersStack = new StackPanel { Spacing = 2, Margin = new Thickness(10, 0, 10, 8) };
             layersStack.Children.Add(Header(T("Layers (top = drawn in front)")));
             layersStack.Children.Add(_layersPanel);
             layersStack.Children.Add(addLayerBtn);
@@ -127,7 +127,7 @@ namespace RasterField
             var identifyTab = new TabItem
             {
                 Header = T("Identify"),
-                Content = new ScrollViewer { Content = new Border { Padding = new Thickness(8), Child = _identifyText } },
+                Content = new ScrollViewer { Content = new Border { Padding = new Thickness(10, 8), Child = _identifyText } },
             };
             _identifyText.Text = T("Tools ▸ Identify (I), then click the map.");
 
@@ -141,7 +141,7 @@ namespace RasterField
             profileCsvBtn.Click += async (_, _) => await ProfileWindow.ExportCsvAsync(this, _lastProfile, DistanceUnit());
             var profileStart = new Button { Content = T("Draw profile (P)") };
             profileStart.Click += (_, _) => SetPathTool(PathTool.Profile);
-            var profilePanel = new DockPanel { Margin = new Thickness(6) };
+            var profilePanel = new DockPanel { Margin = new Thickness(10, 6, 10, 10) };
             var profileOptions = new WrapPanel { Orientation = Orientation.Horizontal };
             foreach (var c in new Control[] { profileStart, _profileBezierBox, _profileAllLayersBox, profileWindowBtn, profileCsvBtn })
             {
@@ -166,7 +166,7 @@ namespace RasterField
                 measureTools.Children.Add(c);
             }
             _measureText.Text = T("Measure: click points on the map; double-click to close the polygon for its area.\nZone: draw a polygon to get the statistics of every visible raster inside it.");
-            var measurePanel = new StackPanel { Margin = new Thickness(8), Spacing = 6, Children = { measureTools, _measureText } };
+            var measurePanel = new StackPanel { Margin = new Thickness(10, 8), Spacing = 8, Children = { measureTools, _measureText } };
             var measureTab = new TabItem { Header = T("Measure / zone"), Content = new ScrollViewer { Content = measurePanel } };
 
             _analysisTabs.ItemsSource = new[] { identifyTab, profileTab, measureTab };
@@ -174,11 +174,11 @@ namespace RasterField
 
             var split = new Grid { RowDefinitions = new RowDefinitions("*,Auto,*") };
             Grid.SetRow(layersScroll, 0);
-            var hSplitter = new GridSplitter { Height = 4, Background = AppTheme.Border, ResizeDirection = GridResizeDirection.Rows };
+            var hSplitter = new GridSplitter { Height = 5, ResizeDirection = GridResizeDirection.Rows };
             Grid.SetRow(hSplitter, 1);
             var analysisHost = new DockPanel();
             var analysisHeader = Header(T("Analysis"));
-            analysisHeader.Margin = new Thickness(8, 6, 8, 0);
+            analysisHeader.Margin = new Thickness(10, 10, 10, 0);
             DockPanel.SetDock(analysisHeader, Dock.Top);
             analysisHost.Children.Add(analysisHeader);
             analysisHost.Children.Add(_analysisTabs);
@@ -187,12 +187,12 @@ namespace RasterField
             split.Children.Add(hSplitter);
             split.Children.Add(analysisHost);
 
-            return new Border { Background = AppTheme.PanelBackground, Child = split };
+            return new Border { Background = AppTheme.PanelBackground, BorderBrush = AppTheme.Border, BorderThickness = new Thickness(0, 0, 1, 0), Child = split };
         }
 
         private Border BuildRightDock()
         {
-            var stack = new StackPanel { Spacing = 4, Margin = new Thickness(10) };
+            var stack = new StackPanel { Spacing = 2, Margin = new Thickness(14, 2, 14, 10) };
 
             // Band / RGB
             var bandStack = new StackPanel { Spacing = 4 };
@@ -229,10 +229,10 @@ namespace RasterField
 
             var minMax = new Grid { ColumnDefinitions = new ColumnDefinitions("*,8,*") };
             var minWrap = new StackPanel();
-            minWrap.Children.Add(new TextBlock { Text = T("Min"), Opacity = 0.8 });
+            minWrap.Children.Add(AppTheme.Caption(T("Min")));
             minWrap.Children.Add(_minBox);
             var maxWrap = new StackPanel();
-            maxWrap.Children.Add(new TextBlock { Text = T("Max"), Opacity = 0.8 });
+            maxWrap.Children.Add(AppTheme.Caption(T("Max")));
             maxWrap.Children.Add(_maxBox);
             Grid.SetColumn(minWrap, 0);
             Grid.SetColumn(maxWrap, 2);
@@ -249,9 +249,9 @@ namespace RasterField
             DockPanel.SetDock(_opacityText, Dock.Right);
             opacityRow.Children.Add(_opacityText);
             opacityRow.Children.Add(_opacitySlider);
-            _rasterProps.Children.Add(new TextBlock { Text = T("Opacity"), Opacity = 0.8 });
+            _rasterProps.Children.Add(AppTheme.Caption(T("Opacity")));
             _rasterProps.Children.Add(opacityRow);
-            _rasterProps.Children.Add(new TextBlock { Text = T("Blend mode"), Opacity = 0.8 });
+            _rasterProps.Children.Add(AppTheme.Caption(T("Blend mode")));
             _blendBox.ItemsSource = BlendModes.Select(m => T(m switch
             {
                 LayerBlendMode.Multiply => "Multiply (for hillshade)",
@@ -298,23 +298,24 @@ namespace RasterField
             stack.Children.Add(headerBtn);
 
             stack.Children.Add(Header(T("Save / export format")));
-            stack.Children.Add(new TextBlock { Text = T("Output cell type"), Opacity = 0.8 });
+            stack.Children.Add(AppTheme.Caption(T("Output cell type")));
             stack.Children.Add(_outTypeBox);
-            stack.Children.Add(new TextBlock { Text = T("Output byte order"), Opacity = 0.8 });
+            stack.Children.Add(AppTheme.Caption(T("Output byte order")));
             stack.Children.Add(_outOrderBox);
 
             var scroll = new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
 
-            var legendGroup = new DockPanel { Margin = new Thickness(6) };
-            var legendLabel = new TextBlock { Text = T("Legend"), FontWeight = FontWeight.Bold, Margin = new Thickness(4, 6, 0, 2) };
+            var legendGroup = new DockPanel { Margin = new Thickness(8, 0, 8, 8) };
+            var legendLabel = AppTheme.SectionLabel(T("Legend"));
+            legendLabel.Margin = new Thickness(4, 8, 0, 4);
             DockPanel.SetDock(_legend, Dock.Bottom);
             DockPanel.SetDock(legendLabel, Dock.Bottom);
-            _legend.Height = 150;
+            _legend.Height = 136;
             legendGroup.Children.Add(_legend);
             legendGroup.Children.Add(legendLabel);
             legendGroup.Children.Add(scroll);
 
-            return new Border { Background = AppTheme.PanelBackground, Child = legendGroup };
+            return new Border { Background = AppTheme.PanelBackground, BorderBrush = AppTheme.Border, BorderThickness = new Thickness(1, 0, 0, 0), Child = legendGroup };
         }
 
         // ---- docks ------------------------------------------------------------------
@@ -445,7 +446,7 @@ namespace RasterField
                         var o = new BezierPatchOptions();
                         series.Add(new ProfileSeries(layer.Name + " · " + T("Bézier"),
                             RasterProfiler.SamplePolylineWorld(raster, geo, path, spacing, (r, c, row) => BezierPatchInterpolator.Sample(r, c, row, o)),
-                            Colors.White, dashed: true));
+                            AppTheme.IsDark ? Colors.White : Color.FromRgb(0x1F, 0x26, 0x30), dashed: true));
                     }
                 }
             }
@@ -579,7 +580,7 @@ namespace RasterField
                 _legend.SetColorizer(null);
                 _metaText.Text = active?.IsFrame == true ? T("Vector-only view — add a raster layer for values, palettes and analysis.") : T("No layers loaded.");
                 _infoText.Text = active?.IsFrame == true ? T("Vector-only view") : T("No layers loaded.");
-                _coordText.Text = _cellText.Text = _valueText.Text = "—";
+                _coordText.Text = _cellText.Text = _valueText.Text = "";
                 UpdateScaleText();
                 return;
             }
@@ -644,7 +645,7 @@ namespace RasterField
         {
             if (_view.Document == null)
             {
-                _coordText.Text = _cellText.Text = _valueText.Text = "—";
+                _coordText.Text = _cellText.Text = _valueText.Text = "";
                 return;
             }
             _coordText.Text = string.Format(CultureInfo.InvariantCulture, "E {0:0.###}   N {1:0.###}", r.WorldX, r.WorldY);
@@ -762,7 +763,7 @@ namespace RasterField
                 },
                 HorizontalContentAlignment = HorizontalAlignment.Left,
                 VerticalContentAlignment = VerticalAlignment.Center,
-                FontWeight = isActive ? FontWeight.Bold : FontWeight.Normal,
+                FontWeight = isActive ? FontWeight.SemiBold : FontWeight.Normal,
                 Background = Brushes.Transparent,
                 BorderThickness = new Thickness(0),
                 Padding = new Thickness(2, 0),
@@ -788,8 +789,8 @@ namespace RasterField
         /// <summary>A raster card's second row: opacity, blend-mode hint, streaming badge, recompute and save buttons.</summary>
         private StackPanel BuildRasterLayerRow(RasterLayer layer)
         {
-            var opacity = new Slider { Minimum = 0, Maximum = 100, Value = layer.Opacity * 100, Width = 110, VerticalAlignment = VerticalAlignment.Center };
-            var percent = new TextBlock { Text = $"{layer.Opacity * 100:0} %", VerticalAlignment = VerticalAlignment.Center, Width = 40, Opacity = 0.8 };
+            var opacity = new Slider { Minimum = 0, Maximum = 100, Value = layer.Opacity * 100, Width = 120, VerticalAlignment = VerticalAlignment.Center };
+            var percent = new TextBlock { Text = $"{layer.Opacity * 100:0} %", VerticalAlignment = VerticalAlignment.Center, Width = 36, FontSize = AppTheme.FontCaption, Foreground = AppTheme.TextSecondary };
             ToolTip.SetTip(opacity, T("Layer opacity"));
             opacity.PropertyChanged += (_, e) =>
             {
@@ -799,12 +800,12 @@ namespace RasterField
                 if (ReferenceEquals(layer, _view.ActiveLayer)) { _syncing = true; _opacitySlider.Value = opacity.Value; _syncing = false; }
             };
 
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(26, 0, 0, 0) };
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(28, 0, 0, 0) };
             row.Children.Add(opacity);
             row.Children.Add(percent);
             if (layer.BlendMode != LayerBlendMode.Normal)
-                row.Children.Add(new TextBlock { Text = "◐ " + T(layer.BlendMode.ToString()), Opacity = 0.75, FontSize = 11, VerticalAlignment = VerticalAlignment.Center });
-            if (layer.IsStreaming) row.Children.Add(new TextBlock { Text = "⇶ " + T("streaming"), Opacity = 0.7, VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+                row.Children.Add(new TextBlock { Text = "◐ " + T(layer.BlendMode.ToString()), Foreground = AppTheme.TextSecondary, FontSize = AppTheme.FontCaption, VerticalAlignment = VerticalAlignment.Center });
+            if (layer.IsStreaming) row.Children.Add(new TextBlock { Text = "⇶ " + T("streaming"), Foreground = AppTheme.TextSecondary, VerticalAlignment = VerticalAlignment.Center, FontSize = AppTheme.FontCaption });
             if (layer.Recipe != null)
             {
                 var gear = CircleIconButton("↻");
@@ -921,22 +922,24 @@ namespace RasterField
 
         private static string FormatHex(Color c) => string.Create(CultureInfo.InvariantCulture, $"#{c.R:X2}{c.G:X2}{c.B:X2}");
 
-        /// <summary>A small, circular icon button.</summary>
+        /// <summary>A small, flat icon button (styled by the "icon" class in <see cref="AppStyles"/>).</summary>
         private static Button CircleIconButton(string glyph, IBrush? foreground = null)
         {
-            return new Button
+            var b = new Button
             {
-                Content = glyph, Width = 26, Height = 26, CornerRadius = new CornerRadius(13), Padding = new Thickness(0), FontSize = 11,
-                HorizontalContentAlignment = HorizontalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center,
-                Background = AppTheme.BarBackground, BorderBrush = AppTheme.Border, BorderThickness = new Thickness(1),
-                Foreground = foreground ?? AppTheme.TextPrimary,
+                Content = glyph,
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                Foreground = foreground ?? AppTheme.TextSecondary,
             };
+            b.Classes.Add("icon");
+            return b;
         }
 
         /// <summary>Wraps one layer's row controls in a rounded card; the active raster layer gets an accent border and tint.</summary>
         private static Border BuildLayerCard(Control visBox, Control name, Control upBtn, Control downBtn, Control menuBtn, bool isActive, Control? styleRow = null)
         {
-            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto,Auto"), ColumnSpacing = 4 };
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto,Auto"), ColumnSpacing = 2 };
             Grid.SetColumn(visBox, 0);
             Grid.SetColumn(name, 1);
             Grid.SetColumn(upBtn, 2);
@@ -960,12 +963,12 @@ namespace RasterField
             return new Border
             {
                 Child = content,
-                CornerRadius = new CornerRadius(10),
+                CornerRadius = new CornerRadius(8),
                 Background = isActive ? AppTheme.ActiveHighlight : AppTheme.BarBackground,
-                BorderBrush = isActive ? AppTheme.Accent : AppTheme.Border,
-                BorderThickness = new Thickness(isActive ? 2 : 1),
-                Padding = new Thickness(6, 4),
-                Margin = new Thickness(0, 3),
+                BorderBrush = isActive ? AppTheme.Accent : Brushes.Transparent,
+                BorderThickness = new Thickness(1),
+                Padding = new Thickness(6, 5, 4, 5),
+                Margin = new Thickness(0, 2),
             };
         }
 

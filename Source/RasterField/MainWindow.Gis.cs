@@ -595,7 +595,7 @@ namespace RasterField
             };
             cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
 
-            TextBlock H(string t) => new TextBlock { Text = t, FontWeight = FontWeight.Bold, Margin = new Thickness(0, 6, 0, 0) };
+            TextBlock H(string t) => AppTheme.SectionLabel(t);
             StackPanel Row(params Control[] c) { var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; foreach (var x in c) p.Children.Add(x); return p; }
             StackPanel Captioned(string caption, Control c) { var p = new StackPanel { Spacing = 2 }; p.Children.Add(new TextBlock { Text = caption, Opacity = 0.8, FontSize = 11 }); p.Children.Add(c); return p; }
 
