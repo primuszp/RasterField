@@ -30,7 +30,7 @@ namespace RasterField
     {
         // ---- menu model -------------------------------------------------------------
         //
-        // One declarative tree drives both the in-window menu (Windows/Linux) and the macOS system
+        // One declarative tree drives both the ☰ dropdown menu (Windows/Linux) and the macOS system
         // menu bar, so the two can never drift apart. Toggle/radio items read their state from a
         // delegate and are refreshed together by RefreshMenuChecks().
 
@@ -57,25 +57,37 @@ namespace RasterField
         private static KeyGesture Ctrl(Key key, bool shift = false) =>
             new KeyGesture(key, KeyModifiers.Control | (shift ? KeyModifiers.Shift : KeyModifiers.None));
 
+        /// <summary>
+        /// The top-level menus, grouped by what the user is working on rather than by algorithm:
+        /// <c>File · Edit · View · Layer · Raster · Analysis · Tools · (Window) · Help</c>.
+        /// On macOS the app menu (About, Hide, Quit) comes from <see cref="App"/> instead
+        /// of File ▸ Exit / Help ▸ About, and a Window menu is added, as the platform expects.
+        /// </summary>
         private List<Cmd> BuildMenuModel()
         {
+            bool mac = OperatingSystem.IsMacOS();
+
+            var export = new Cmd("_Export").Add(
+                new Cmd("_View as PNG…", () => _ = ExportPngAsync()),
+                new Cmd("Inspection report as _PDF…", () => _ = ExportInspectionReportAsync()),
+                new Cmd("_Swiss-style relief…", () => _ = ExportSwissReliefAsync()));
+
             var file = new Cmd("_File").Add(
                 new Cmd("_New project", () => _ = NewProjectAsync()),
                 new Cmd("Open _project…", () => _ = OpenProjectDialogAsync()),
+                new Cmd("_Open raster…", () => _ = OpenDialogAsync(), Ctrl(Key.O)),
+                new Cmd("_Add layer(s)…", () => _ = AddLayerDialogAsync(), Ctrl(Key.O, shift: true)),
+                new Cmd("Open _recent"), // filled by RebuildRecentMenu
+                null,
                 new Cmd("_Save project", () => _ = SaveProjectAsync(false), Ctrl(Key.S)),
                 new Cmd("Save project _as…", () => _ = SaveProjectAsync(true)),
-                null,
-                new Cmd("_Open raster…", () => _ = OpenDialogAsync(), Ctrl(Key.O)),
-                new Cmd("_Add layer(s)… (.ers, .tif, .tiff, .erv, .geojson, .csv)", () => _ = AddLayerDialogAsync(), Ctrl(Key.O, shift: true)),
-                new Cmd("Open _recent"), // filled by RebuildRecentMenu
                 null,
                 new Cmd("Save active _layer…", () => _ = SaveActiveLayerAsync()),
                 new Cmd("Save _dataset as…", () => _ = SaveDatasetAsAsync(), Ctrl(Key.S, shift: true)),
                 new Cmd("Save _header as .ers…", () => _ = SaveHeaderAsAsync()),
-                new Cmd("_Export view as PNG…", () => _ = ExportPngAsync()),
-                new Cmd("Export inspection report as _PDF…", () => _ = ExportInspectionReportAsync()),
                 null,
-                new Cmd("E_xit", Close));
+                export);
+            if (!mac) file.Add(null, new Cmd("E_xit", Close));
 
             var edit = new Cmd("_Edit").Add(
                 new Cmd("_Undo", Undo, Ctrl(Key.Z)),
@@ -86,7 +98,9 @@ namespace RasterField
             var magnification = new Cmd("_Magnification").Add(
                 new Cmd("_Nearest (crisp cells)", () => SetDisplayResampling(DisplayResampling.Nearest), isChecked: () => _view.DisplayResampling == DisplayResampling.Nearest, radio: true),
                 new Cmd("_Bilinear", () => SetDisplayResampling(DisplayResampling.Bilinear), isChecked: () => _view.DisplayResampling == DisplayResampling.Bilinear, radio: true),
-                new Cmd("Bé_zier patch (smooth surface)", () => SetDisplayResampling(DisplayResampling.Bezier), isChecked: () => _view.DisplayResampling == DisplayResampling.Bezier, radio: true));
+                new Cmd("Bé_zier patch (smooth surface)", () => SetDisplayResampling(DisplayResampling.Bezier), isChecked: () => _view.DisplayResampling == DisplayResampling.Bezier, radio: true),
+                null,
+                new Cmd("Bézier _display settings…", () => _ = ShowBezierDisplaySettingsAsync()));
 
             var bookmarks = new Cmd("_Bookmarks").Add(new Cmd("_Add bookmark…", () => _ = AddBookmarkAsync(), Ctrl(Key.D, shift: true)));
             for (int b = 0; b < _bookmarks.Count && b < 9; b++)
@@ -95,6 +109,14 @@ namespace RasterField
                 bookmarks.Add(new Cmd(string.Format(CultureInfo.InvariantCulture, "{0}  {1}", b + 1, bm.Name), () => GoToBookmark(bm), Ctrl(Key.D1 + b)));
             }
             if (_bookmarks.Count > 0) bookmarks.Add(null, new Cmd("_Clear bookmarks", () => { _bookmarks.Clear(); RebuildMenus(); }));
+
+            var comparison = new Cmd("_Comparison").Add(
+                new Cmd("_Swipe…", () => _ = ConfigureVisualComparisonAsync(RasterComparisonMode.Swipe),
+                    isChecked: () => _view.ComparisonMode == RasterComparisonMode.Swipe),
+                new Cmd("_Blink…", () => _ = ConfigureVisualComparisonAsync(RasterComparisonMode.Blink),
+                    isChecked: () => _view.ComparisonMode == RasterComparisonMode.Blink),
+                null,
+                new Cmd("_Stop comparison", () => { _view.StopComparison(); RefreshMenuChecks(); }));
 
             var view = new Cmd("_View").Add(
                 new Cmd("Zoom to _fit", () => _view.ZoomToFit(), Ctrl(Key.D0)),
@@ -105,69 +127,63 @@ namespace RasterField
                 null,
                 magnification,
                 new Cmd("Show cell _grid", () => { _view.ShowGrid = !_view.ShowGrid; _view.InvalidateVisual(); RefreshMenuChecks(); }, isChecked: () => _view.ShowGrid),
+                comparison,
                 null,
                 new Cmd("_Layers && analysis panel", ToggleLeftDock, new KeyGesture(Key.F9), isChecked: () => _leftDockVisible),
                 new Cmd("_Properties panel", ToggleRightDock, new KeyGesture(Key.F10), isChecked: () => _rightDockVisible),
                 new Cmd("_Map only", ToggleMapOnly, new KeyGesture(Key.F11), isChecked: () => !_leftDockVisible && !_rightDockVisible),
                 null,
                 new Cmd("_Theme").Add(
-                    new Cmd("_System", () => SetThemeMode(ThemeMode.System)),
-                    new Cmd("_Light", () => SetThemeMode(ThemeMode.Light)),
-                    new Cmd("_Dark", () => SetThemeMode(ThemeMode.Dark))),
+                    new Cmd("_System", () => SetThemeMode(ThemeMode.System), isChecked: () => _settings.Theme == ThemeMode.System, radio: true),
+                    new Cmd("_Light", () => SetThemeMode(ThemeMode.Light), isChecked: () => _settings.Theme == ThemeMode.Light, radio: true),
+                    new Cmd("_Dark", () => SetThemeMode(ThemeMode.Dark), isChecked: () => _settings.Theme == ThemeMode.Dark, radio: true)),
                 new Cmd("_Language").Add(
                     new Cmd("_Automatic (system)", () => SetLanguage("auto"), isChecked: () => _settings.Language == "auto", radio: true),
                     new Cmd("_English", () => SetLanguage("en"), isChecked: () => _settings.Language == "en", radio: true),
                     new Cmd("_Magyar", () => SetLanguage("hu"), isChecked: () => _settings.Language == "hu", radio: true)));
 
             var layer = new Cmd("_Layer").Add(
+                new Cmd("_Add layer(s)…", () => _ = AddLayerDialogAsync()),
+                null,
                 new Cmd("_Zoom to active layer", () => _view.ZoomToFit()),
                 new Cmd("_Next raster layer", CycleActiveLayer),
+                null,
                 new Cmd("Parameters / _recompute…", () => { if (_view.ActiveLayer != null) _ = EditRecipeAsync(_view.ActiveLayer); }),
                 new Cmd("_Save active layer…", () => _ = SaveActiveLayerAsync()),
-                new Cmd("Re_move active layer", () => { if (_view.ActiveLayer is { IsFrame: false } a) _view.RemoveLayer(a); }));
+                new Cmd("Re_move active layer", () => { if (_view.ActiveLayer is { IsFrame: false } a) _view.RemoveLayer(a); }),
+                null,
+                new Cmd("_Palette").Add(
+                    new Cmd("_Edit current palette…", () => OpenPaletteEditor(CurrentPalette())),
+                    new Cmd("_New palette…", () => OpenPaletteEditor(null))));
 
+            // Raster = operations that produce a modified copy of the data (processing).
             var raster = new Cmd("_Raster").Add(
-                new Cmd("_Statistics && histogram…", () => _ = ShowStatisticsAsync()),
-                new Cmd("_Compare / ΔZ && volume…", () => _ = CompareRastersAsync()),
-                new Cmd("_Zonal statistics by polygon layer…", () => _ = ZonalByLayerAsync(null)),
                 new Cmd("_Band math…", () => _ = BandMathAsync()),
                 new Cmd("Fill _no-data gaps…", () => _ = FillNoDataAsync()),
+                new Cmd("_Bézier-patch subdivision…", () => _ = BezierSubdivisionAsync(), Ctrl(Key.B)),
                 null,
                 new Cmd("Clip by _extent (E/N)…", () => _ = ClipByExtentAsync()),
                 new Cmd("_Mosaic rasters…", () => _ = MosaicAsync()));
 
-            var interpolation = new Cmd("_Interpolation").Add(
-                new Cmd("_Bézier-patch subdivision…", () => _ = BezierSubdivisionAsync(), Ctrl(Key.B)),
-                new Cmd("Bézier _display settings…", () => _ = ShowBezierDisplaySettingsAsync()),
+            // Analysis = operations that measure or derive new information from the data.
+            var analysis = new Cmd("_Analysis").Add(
+                new Cmd("_Statistics && histogram…", () => _ = ShowStatisticsAsync()),
+                new Cmd("_Zonal statistics by polygon layer…", () => _ = ZonalByLayerAsync(null)),
+                new Cmd("_Compare / ΔZ && volume…", () => _ = CompareRastersAsync()),
                 null,
-                magnification);
-
-            var comparison = new Cmd("_Comparison").Add(
-                new Cmd("_Swipe…", () => _ = ConfigureVisualComparisonAsync(RasterComparisonMode.Swipe),
-                    isChecked: () => _view.ComparisonMode == RasterComparisonMode.Swipe),
-                new Cmd("_Blink…", () => _ = ConfigureVisualComparisonAsync(RasterComparisonMode.Blink),
-                    isChecked: () => _view.ComparisonMode == RasterComparisonMode.Blink),
-                null,
-                new Cmd("_Stop comparison", () => { _view.StopComparison(); RefreshMenuChecks(); }));
-
-            var vector = new Cmd("Vec_tor").Add(
-                new Cmd("Generate _contours…", () => _ = GenerateContoursAsync()),
-                new Cmd("_Stream network…", () => _ = GenerateStreamNetworkAsync()),
-                null,
-                new Cmd("_Import GeoJSON / CSV points…", () => _ = AddLayerDialogAsync()));
-
-            var terrain = new Cmd("Te_rrain").Add(
-                new Cmd("_Slope", () => _ = ComputeTerrainAsync(TerrainProduct.Slope)),
-                new Cmd("_Aspect", () => _ = ComputeTerrainAsync(TerrainProduct.Aspect)),
-                new Cmd("_Hillshade", () => _ = ComputeTerrainAsync(TerrainProduct.Hillshade)),
-                new Cmd("_Curvature…", () => _ = ComputeCurvatureAsync()),
-                null,
-                new Cmd("_Flow direction (D8)", () => _ = ComputeFlowDirectionAsync()),
-                new Cmd("Flow acc_umulation", () => _ = ComputeFlowAccumulationAsync()),
-                null,
-                new Cmd("_Viewshed…", () => _ = ComputeViewshedAsync()),
-                null,
-                new Cmd("S_wiss-style relief (export)…", () => _ = ExportSwissReliefAsync()));
+                new Cmd("_Terrain").Add(
+                    new Cmd("_Slope", () => _ = ComputeTerrainAsync(TerrainProduct.Slope)),
+                    new Cmd("_Aspect", () => _ = ComputeTerrainAsync(TerrainProduct.Aspect)),
+                    new Cmd("_Hillshade", () => _ = ComputeTerrainAsync(TerrainProduct.Hillshade)),
+                    new Cmd("_Curvature…", () => _ = ComputeCurvatureAsync()),
+                    null,
+                    new Cmd("_Viewshed…", () => _ = ComputeViewshedAsync())),
+                new Cmd("_Hydrology").Add(
+                    new Cmd("_Flow direction (D8)", () => _ = ComputeFlowDirectionAsync()),
+                    new Cmd("Flow acc_umulation", () => _ = ComputeFlowAccumulationAsync()),
+                    null,
+                    new Cmd("_Stream network…", () => _ = GenerateStreamNetworkAsync())),
+                new Cmd("Generate _contours…", () => _ = GenerateContoursAsync()));
 
             var tools = new Cmd("T_ools").Add(
                 new Cmd("_Identify (click the map)", () => SetIdentifyToolActive(!_view.IdentifyMode), isChecked: () => _view.IdentifyMode),
@@ -176,16 +192,22 @@ namespace RasterField
                 new Cmd("_Zone (zonal statistics)", () => SetPathTool(_view.PathToolMode == PathTool.Zone ? PathTool.None : PathTool.Zone), isChecked: () => _view.PathToolMode == PathTool.Zone),
                 new Cmd("_Clip tool (drag a rectangle)", () => SetClipToolActive(!_view.SelectionMode), isChecked: () => _view.SelectionMode));
 
-            var palette = new Cmd("_Palette").Add(
-                new Cmd("_Edit current palette…", () => OpenPaletteEditor(CurrentPalette())),
-                new Cmd("_New palette…", () => OpenPaletteEditor(null)));
+            var help = new Cmd("_Help").Add(new Cmd("_Keyboard shortcuts…", () => _ = ShowShortcutsAsync()));
+            if (!mac) help.Add(null, new Cmd("_About…", () => _ = ShowAboutAsync()));
 
-            var help = new Cmd("_Help").Add(
-                new Cmd("_Keyboard shortcuts…", () => _ = ShowShortcutsAsync()),
-                new Cmd("_About…", () => _ = ShowAboutAsync()));
-
-            return new List<Cmd> { file, edit, view, layer, raster, comparison, interpolation, vector, terrain, tools, palette, help };
+            var menus = new List<Cmd> { file, edit, view, layer, raster, analysis, tools };
+            if (mac)
+            {
+                menus.Add(new Cmd("_Window").Add(
+                    new Cmd("_Minimize", () => WindowState = WindowState.Minimized, Ctrl(Key.M)),
+                    new Cmd("Zoom _window", ToggleMaximized)));
+            }
+            menus.Add(help);
+            return menus;
         }
+
+        private void ToggleMaximized() =>
+            WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
 
         /// <summary>Rebuilds both menus (after a language change or a bookmark edit).</summary>
         private void RebuildMenus()
@@ -196,13 +218,9 @@ namespace RasterField
             {
                 NativeMenu.SetMenu(this, BuildNativeMenu());
             }
-            else if (Content is DockPanel root && _menuHost != null)
+            else
             {
-                int index = root.Children.IndexOf(_menuHost);
-                var menu = BuildMenu();
-                DockPanel.SetDock(menu, Dock.Top);
-                root.Children[index] = menu;
-                _menuHost = menu;
+                PopulateMenuFlyout();
             }
             RebuildRecentMenu();
         }
@@ -230,13 +248,6 @@ namespace RasterField
             L.SetLanguage(code);
             RebuildMenus();
             await MessageAsync(T("Language"), T("The menus switch immediately; restart RasterField to switch every panel and dialog."));
-        }
-
-        private Menu BuildMenu()
-        {
-            var menu = new Menu();
-            foreach (var top in BuildMenuModel()) menu.Items.Add(ToMenuItem(top));
-            return menu;
         }
 
         private MenuItem ToMenuItem(Cmd cmd)
@@ -268,17 +279,6 @@ namespace RasterField
         private NativeMenu BuildNativeMenu()
         {
             var root = new NativeMenu();
-
-            var app = new NativeMenuItem("RasterField") { Menu = new NativeMenu() };
-            var about = new NativeMenuItem(T("About RasterField…"));
-            about.Click += (_, _) => _ = ShowAboutAsync();
-            var quit = new NativeMenuItem(T("Quit RasterField")) { Gesture = new KeyGesture(Key.Q, KeyModifiers.Meta) };
-            quit.Click += (_, _) => Close();
-            app.Menu.Items.Add(about);
-            app.Menu.Items.Add(new NativeMenuItemSeparator());
-            app.Menu.Items.Add(quit);
-            root.Items.Add(app);
-
             foreach (var top in BuildMenuModel()) root.Items.Add(ToNativeMenuItem(top));
             return root;
         }

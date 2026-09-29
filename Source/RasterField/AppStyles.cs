@@ -136,6 +136,23 @@ namespace RasterField
                 },
             });
 
+            // ---- macOS title-bar buttons (sidebar toggles): borderless, hover-only background ----
+            styles.Add(new Style(x => x.OfType<Button>().Class("titlebar"))
+            {
+                Setters =
+                {
+                    new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent),
+                    new Setter(TemplatedControl.BorderThicknessProperty, new Thickness(0)),
+                    new Setter(TemplatedControl.PaddingProperty, new Thickness(0)),
+                    new Setter(Layoutable.WidthProperty, 30.0),
+                    new Setter(Layoutable.HeightProperty, 28.0),
+                    new Setter(Layoutable.VerticalAlignmentProperty, VerticalAlignment.Center),
+                    new Setter(ContentControl.HorizontalContentAlignmentProperty, HorizontalAlignment.Center),
+                    new Setter(ContentControl.VerticalContentAlignmentProperty, VerticalAlignment.Center),
+                    new Setter(TemplatedControl.CornerRadiusProperty, new CornerRadius(6)),
+                },
+            });
+
             // ---- quieter GridSplitters ----
             styles.Add(new Style(x => x.OfType<GridSplitter>())
             {

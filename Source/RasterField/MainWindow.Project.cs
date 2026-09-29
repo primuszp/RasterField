@@ -338,6 +338,7 @@ namespace RasterField
         {
             string name = _projectPath != null ? Path.GetFileNameWithoutExtension(_projectPath) : T("(untitled project)");
             Title = $"RasterField — {name}";
+            UpdateTitleBarText();
         }
 
         private List<string> UnsavedLayerNames() =>

@@ -153,11 +153,11 @@ namespace RasterField
 
             if (OperatingSystem.IsMacOS())
             {
-                // The in-window Menu below is skipped on macOS in favour of the system menu bar
-                // (see BuildMenu) — extending into the title bar gives the traffic lights a
-                // unified, native-looking toolbar area instead of a separate bare title strip.
+                // The menus live in the system menu bar on macOS (see BuildNativeMenu). The client
+                // area extends under the title bar, and BuildTitleBar draws a unified bar there —
+                // traffic lights, title, search — like native Mac apps.
                 ExtendClientAreaToDecorationsHint = true;
-                ExtendClientAreaTitleBarHeightHint = -1;
+                ExtendClientAreaTitleBarHeightHint = MacTitleBarHeight;
                 ExtendClientAreaChromeHints = Avalonia.Platform.ExtendClientAreaChromeHints.PreferSystemChrome;
             }
 
@@ -196,6 +196,7 @@ namespace RasterField
         private void ApplyTheme()
         {
             Background = AppTheme.WindowBackground;
+            ApplyTitleBarTheme();
             if (_sidePanelBorder != null) _sidePanelBorder.Background = AppTheme.PanelBackground;
             if (_leftPanelBorder != null) _leftPanelBorder.Background = AppTheme.PanelBackground;
             if (_statusBarHost != null) _statusBarHost.Background = AppTheme.PanelBackground;
@@ -463,6 +464,8 @@ namespace RasterField
             // used to abort before LayersChanged could fire, leaving the layer panel's active
             // highlight visibly stuck on the old layer even though the switch had happened.
             _view.RasterLoaded += (_, _) => RunLayerActionSafely(OnRasterLoaded);
+            _view.RasterLoaded += (_, _) => UpdateTitleBarText();
+            _view.LayersChanged += (_, _) => UpdateTitleBarText();
             // Deferred: rebuilding the panel synchronously, from inside the very button Click
             // that triggered it, tears down and replaces that button mid-click. Posting it lets
             // the click finish first.
@@ -1755,7 +1758,7 @@ namespace RasterField
 
         private void Flash(string message) => _infoText.Text = message;
 
-        private async Task ShowAboutAsync() => await MessageAsync(T("About RasterField"), T(
+        internal async Task ShowAboutAsync() => await MessageAsync(T("About RasterField"), T(
             "RasterField — a cross-platform raster viewer and terrain-analysis workspace.\n" +
             "Open and save ER Mapper (.ers + BIL) and GeoTIFF datasets.\n\n" +
             "Built with Avalonia, RasterField.Core and GDAL: windowed I/O, georeferencing,\n" +

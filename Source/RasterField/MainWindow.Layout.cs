@@ -59,11 +59,11 @@ namespace RasterField
         {
             var root = new DockPanel();
 
-            var menu = OperatingSystem.IsMacOS() ? null : BuildMenu();
-            _menuHost = menu;
             var statusBar = BuildStatusBar();
             _statusBarHost = statusBar;
-            if (menu != null) { DockPanel.SetDock(menu, Dock.Top); root.Children.Add(menu); }
+            var titleBar = BuildTitleBar(); // holds the ☰ menu on Windows/Linux; macOS uses the system menu bar
+            DockPanel.SetDock(titleBar, Dock.Top);
+            root.Children.Add(titleBar);
             DockPanel.SetDock(statusBar, Dock.Bottom);
             root.Children.Add(statusBar);
 
@@ -107,8 +107,6 @@ namespace RasterField
             root.Children.Add(grid);
             return root;
         }
-
-        private Control? _menuHost;
 
         private static TextBlock Header(string text) => AppTheme.SectionLabel(text);
 

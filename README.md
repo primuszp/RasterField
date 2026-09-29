@@ -208,22 +208,22 @@ made.Save("new.ers");
   (every visible raster layer plus the Bézier-interpolated curve), a larger window and CSV export;
   or along a vector line (card menu). **Measure** (`M`): length, terrain-following surface length,
   perimeter and area. **Zone** (`Z`): zonal statistics of every visible raster inside a drawn
-  polygon; *Raster ▸ Zonal statistics by polygon layer…* does it per polygon of a vector layer,
+  polygon; *Analysis ▸ Zonal statistics by polygon layer…* does it per polygon of a vector layer,
   with CSV export. Click adds a point, drag moves it, double-click / Enter finishes, Backspace
   removes the last point.
-* **Bézier-patch subdivision** (*Interpolation ▸ Bézier-patch subdivision…*, `Ctrl+B`) —
+* **Bézier-patch subdivision** (*Raster ▸ Bézier-patch subdivision…*, `Ctrl+B`) —
   ×2/×3/×4/×8 or custom, whole layer or current view, tension, monotone (no overshoot) and
   no-data behaviour; resulting size and memory estimate and a side-by-side preview (original vs.
   Bézier). The result keeps the source layer's palette and stretch.
 * **Bézier display smoothing** (*View ▸ Magnification ▸ Bézier patch*, or `B`) — magnified cells of
   the active layer drawn as a smooth Bézier surface computed for the visible window only.
-* **Contours as a layer** (*Vector ▸ Generate contours…*) — index contours drawn thicker and
+* **Contours as a layer** (*Analysis ▸ Generate contours…*) — index contours drawn thicker and
   **labelled along the line**; source surface (original grid or a Bézier ×2/×4 surface),
   Chaikin smoothing and a minimum line length under *Advanced*.
-* **Stream network** (*Vector ▸ Stream network…*) — line widths grow with Strahler order.
+* **Stream network** (*Analysis ▸ Hydrology ▸ Stream network…*) — line widths grow with Strahler order.
 * **Identify** (`I`) — click the map: every visible layer's value (all bands, bilinear and
   Bézier-interpolated), and the nearest vector object, in the Analysis panel.
-* **Statistics & histogram** (*Raster ▸ Statistics & histogram…*).
+* **Statistics & histogram** (*Analysis ▸ Statistics & histogram…*).
 * **Per-layer display settings** — select a raster layer in the Layers panel,
   then use the right-side panel to change that selected file's palette, stretch,
   gamma, band and RGB-composite settings. Every raster retains its own settings
@@ -253,12 +253,22 @@ made.Save("new.ers");
   backdrop where the OS offers one (`Window.TransparencyLevelHint`, falling back
   cleanly where it doesn't). On macOS specifically, the app's menu lives in the
   real system menu bar (via Avalonia's `NativeMenu`, mirroring the in-window one
-  used on Windows/Linux) rather than an in-window strip, and the title bar is
-  extended for a unified, traffic-light-integrated toolbar area — the two
-  biggest signals of a native-feeling Mac app Avalonia can offer without a
-  platform-specific UI toolkit. (Built and verified on Windows this session; the
-  macOS-specific code paths compile against Avalonia's documented APIs but
-  haven't been hand-tested on real macOS hardware.)
+  used on Windows/Linux) rather than an in-window strip, with a proper
+  *RasterField* application menu (About, Hide, Quit) and a Window menu. The
+  client area extends under the title bar, where a unified 44 px bar
+  (`MainWindow.TitleBar.cs`) holds the traffic lights, a sidebar toggle, the
+  project title with the active layer, a ⌘K command-search pill and an
+  inspector toggle; drag it to move the window, double-click to zoom.
+* **Menus** — `File · Edit · View · Layer · Raster · Analysis · Tools · Help`:
+  *Raster* holds processing that produces modified data (band math, gap fill,
+  Bézier subdivision, clip, mosaic); *Analysis* holds measurements and
+  derivations (statistics, zonal, ΔZ, *Terrain ▸*, *Hydrology ▸*, contours);
+  comparison, magnification and theme live under *View*, palettes under *Layer*,
+  exports under *File ▸ Export*.
+  On macOS they live in the system menu bar; on Windows and Linux the same menus
+  open as one dropdown from the ☰ button at the left of the app bar (with the
+  sidebar toggles, title and `Ctrl+K` command search), instead of an in-window
+  menu strip.
 * **Multi‑band datasets** — a **Band** selector appears in the side panel whenever
   the dataset has more than one band; switching re‑stretches and re‑colourises
   for the newly selected band (works in streaming mode too).
@@ -280,7 +290,7 @@ made.Save("new.ers");
   recommended way to pull a smaller, fully‑editable region out of a huge scene).
 * **Palettes** — built‑ins + every `.pal` and PNG/BMP strip in `palette/`; reverse
   toggle; continuous / discrete / nearest modes; live legend.
-* **Palette editor** (*Palette ▸ Edit current palette… / New palette…*) — drag
+* **Palette editor** (*Layer ▸ Palette ▸ Edit current palette… / New palette…*) — drag
   gradient stops on a colour bar, add one by clicking it, fine-tune the selected
   stop's position and colour (R/G/B or hex), reverse, preview live in the viewer,
   then *Save to palette list* (also written to a per‑user palette folder so it
@@ -304,7 +314,7 @@ made.Save("new.ers");
   `Escape` to clear it). *Raster ▸ Clip by extent (E/N)…* offers the same result
   from typed numeric bounds instead of dragging. Either way it writes a
   brand-new, correctly re‑anchored dataset as a derived layer (save it with its card's `⤓`).
-* **Terrain** menu — **Slope**, **Aspect**, **Hillshade**, **Curvature** (General/Profile/Plan)
+* **Analysis ▸ Terrain / Hydrology** — **Slope**, **Aspect**, **Hillshade**, **Curvature** (General/Profile/Plan)
   from the loaded band, each added as a new derived layer (in memory until saved); **Flow
   direction** and **Flow accumulation** (D8 hydrology); **Viewshed** (pick an observer cell,
   eye/target height and an optional distance cap in a dialog); and **Swiss-style relief** — a
@@ -328,16 +338,16 @@ made.Save("new.ers");
 * **Mosaic rasters** (*Raster ▸ Mosaic rasters…*) — pick two or more `.ers` files,
   an output cell size and an overlap rule (first/last/average); the merged result
   becomes a new derived layer.
-* **Change analysis** (*Raster ▸ Compare / ΔZ & volume…*) — validates exact grid/CRS
+* **Change analysis** (*Analysis ▸ Compare / ΔZ & volume…*) — validates exact grid/CRS
   compatibility, creates a blue-white-red `second − first` layer, and reports min/max/mean/σ,
   threshold-exceedance area and cut/fill/net volumes for the full raster or the finished map zone.
-* **Swipe / Blink comparison** (*Comparison* menu) — isolates any two raster layers for visual
+* **Swipe / Blink comparison** (*View ▸ Comparison*) — isolates any two raster layers for visual
   inspection. Swipe places them on opposite sides of a draggable vertical divider; Blink alternates
   them at a configurable interval. Vector overlays remain visible in both modes, and `Esc` restores
   the normal layer stack.
 * **Write** — *Save header as .ers*, *Save dataset as…* (`.ers` + BIL or GeoTIFF, with an
   optional output **cell type** and **byte order** for on‑the‑fly conversion),
-  *Export view as PNG*, and *Export inspection report as PDF*. The A4 report embeds the current
+  *File ▸ Export ▸ View as PNG*, and *Inspection report as PDF*. The A4 report embeds the current
   map view, palette and numeric range, source/CRS/raster metadata, statistics, derivation details
   (including ΔZ threshold and cut/fill volumes), plus a second profile-chart page when a profile
   has been drawn. It uses the app's bundled Inter font and PDFsharp Core, so output is portable

@@ -1,4 +1,5 @@
 using Avalonia;
+using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Themes.Fluent;
 
@@ -9,10 +10,27 @@ namespace RasterField
     {
         public override void Initialize()
         {
+            // Shown as the bold application menu in the macOS menu bar (and in the Dock tooltip
+            // when run outside an .app bundle) instead of Avalonia's "Avalonia Application".
+            Name = "RasterField";
             Styles.Add(AppStyles.CreateFluentTheme());
             Styles.Add(AppStyles.Create());
             AppStyles.AddResources(Resources);
             L.SetLanguage(AppSettings.Load().Language);
+
+            // macOS application menu: must be set here, before the platform builds the menu bar,
+            // to replace Avalonia's default "About Avalonia" item (too late once startup has
+            // completed). The system appends its standard Services / Hide / Quit items.
+            if (System.OperatingSystem.IsMacOS())
+            {
+                var about = new NativeMenuItem(L.T("About RasterField…"));
+                about.Click += (_, _) =>
+                {
+                    if ((ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow is MainWindow main)
+                        _ = main.ShowAboutAsync();
+                };
+                NativeMenu.SetMenu(this, new NativeMenu { about });
+            }
 
             // Follow the OS light/dark setting by default (live — FluentTheme reacts to it
             // automatically), unless the user has explicitly forced one from View ▸ Theme.
