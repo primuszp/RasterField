@@ -1,3 +1,5 @@
+using System;
+using System.Threading;
 using RasterField.Rasters;
 using Xunit;
 
@@ -107,6 +109,17 @@ namespace RasterField.Tests
             var elevation = FlatPlane(8, 6, 0f);
             var v = ViewshedAnalysis.Compute(elevation, 4, 3);
             Assert.Equal((8, 6), (v.Width, v.Height));
+        }
+
+        [Fact]
+        public void Computation_can_be_cancelled_before_work_starts()
+        {
+            var elevation = FlatPlane(100, 100, 0f);
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            Assert.Throws<OperationCanceledException>(() => ViewshedAnalysis.Compute(
+                elevation, 50, 50, cancellationToken: cancellation.Token));
         }
     }
 }

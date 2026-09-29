@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using RasterField.Rasters;
 using Xunit;
 
@@ -126,6 +127,17 @@ namespace RasterField.Tests
             var src = Build(3, 3, (x, y) => x);
             Assert.Throws<ArgumentOutOfRangeException>(() => BezierPatchInterpolator.Subdivide(src, new BezierPatchOptions { Factor = 0 }));
             Assert.Throws<ArgumentOutOfRangeException>(() => BezierPatchInterpolator.Subdivide(src, new BezierPatchOptions { Tension = 1.5 }));
+        }
+
+        [Fact]
+        public void Subdivision_can_be_cancelled_before_work_starts()
+        {
+            var src = Build(100, 100, (x, y) => x + y);
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            Assert.Throws<OperationCanceledException>(() => BezierPatchInterpolator.Subdivide(
+                src, new BezierPatchOptions { Factor = 4 }, cancellationToken: cancellation.Token));
         }
 
         [Fact]

@@ -1469,17 +1469,20 @@ namespace RasterField
             var options = await ShowViewshedDialogAsync(raster.Width, raster.Height);
             if (options == null) return;
 
-            SetBusy(true, T("Computing viewshed…"));
+            using var cancellation = new CancellationTokenSource();
+            SetBusy(true, T("Computing viewshed…"), cancellation);
             try
             {
                 Raster result = await Task.Run(() => ViewshedAnalysis.Compute(
                     raster, options.Value.ObserverCol, options.Value.ObserverRow,
-                    options.Value.ObserverHeight, options.Value.TargetHeight, options.Value.MaxDistanceCells));
+                    options.Value.ObserverHeight, options.Value.TargetHeight, options.Value.MaxDistanceCells,
+                    cancellation.Token), cancellation.Token);
                 SetBusy(false);
 
                 var doc = BuildDerivedDocument(result);
                 await PerformDerivedSaveAsync(doc, "_viewshed", "Viewshed");
             }
+            catch (OperationCanceledException) { SetBusy(false); Flash(T("Viewshed cancelled.")); }
             catch (Exception ex) { SetBusy(false); await MessageAsync(T("Viewshed failed"), ex.Message); }
         }
 
@@ -1704,10 +1707,36 @@ namespace RasterField
             }
 
             List<ErsDocument> docs;
-            SetBusy(true, T("Loading rasters…"));
-            try { docs = await Task.Run(() => paths.Select(ErsDocument.Load).ToList()); }
-            catch (Exception ex) { SetBusy(false); await MessageAsync(T("Mosaic rasters"), $"Could not load one of the selected files: {ex.Message}"); return; }
-            SetBusy(false);
+            using (var loadingCancellation = new CancellationTokenSource())
+            {
+                SetBusy(true, T("Loading rasters…"), loadingCancellation);
+                try
+                {
+                    docs = await Task.Run(() =>
+                    {
+                        var loaded = new List<ErsDocument>(paths.Count);
+                        foreach (string path in paths)
+                        {
+                            loadingCancellation.Token.ThrowIfCancellationRequested();
+                            loaded.Add(ErsDocument.Load(path));
+                        }
+                        return loaded;
+                    }, loadingCancellation.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    SetBusy(false);
+                    Flash(T("Mosaic loading cancelled."));
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    SetBusy(false);
+                    await MessageAsync(T("Mosaic rasters"), $"Could not load one of the selected files: {ex.Message}");
+                    return;
+                }
+                SetBusy(false);
+            }
 
             var (_, b, c, _, e, f) = docs[0].GeoReference.GeoTransform;
             double defaultCellX = Math.Sqrt(b * b + e * e), defaultCellY = Math.Sqrt(c * c + f * f);
@@ -1715,13 +1744,17 @@ namespace RasterField
             var options = await ShowMosaicOptionsDialogAsync(docs.Count, defaultCellX, defaultCellY);
             if (options == null) return;
 
-            SetBusy(true, T("Merging rasters…"));
+            using var mergeCancellation = new CancellationTokenSource();
+            SetBusy(true, T("Merging rasters…"), mergeCancellation);
             try
             {
-                var mosaic = await Task.Run(() => ErsDocument.Mosaic(docs, options.Value.CellSizeX, options.Value.CellSizeY, options.Value.OverlapMode));
+                var mosaic = await Task.Run(() => ErsDocument.Mosaic(docs,
+                    options.Value.CellSizeX, options.Value.CellSizeY, options.Value.OverlapMode,
+                    mergeCancellation.Token), mergeCancellation.Token);
                 SetBusy(false);
                 await PerformDerivedSaveAsync(mosaic, "_mosaic", "Mosaic");
             }
+            catch (OperationCanceledException) { SetBusy(false); Flash(T("Mosaic cancelled.")); }
             catch (Exception ex) { SetBusy(false); await MessageAsync(T("Mosaic failed"), ex.Message); }
         }
 

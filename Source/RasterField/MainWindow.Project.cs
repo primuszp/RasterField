@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -39,7 +40,8 @@ namespace RasterField
             IReadOnlyList<string?>? Labels, string Name, string Lineage, Color VectorColor);
 
         /// <summary>Runs a recipe on its source layer (off the UI thread).</summary>
-        private async Task<RecipeResult> ComputeRecipeAsync(LayerRecipe recipe)
+        private async Task<RecipeResult> ComputeRecipeAsync(
+            LayerRecipe recipe, CancellationToken cancellationToken = default)
         {
             if (recipe.Source is not RasterLayer src) throw new InvalidOperationException(T("The recipe's source is not a raster layer."));
             if (!_view.Layers.Contains(src)) throw new InvalidOperationException(L.F("The source layer “{0}” is no longer loaded.", src.Name));
@@ -67,7 +69,9 @@ namespace RasterField
                     };
                     bool window = recipe.Parameters.ContainsKey("w");
                     int wx = recipe.Get("x", 0), wy = recipe.Get("y", 0), ww = recipe.Get("w", 0), wh = recipe.Get("h", 0);
-                    var result = await Task.Run(() => window ? doc.Subdivide(wx, wy, ww, wh, o) : doc.Subdivide(o));
+                    var result = await Task.Run(() => window
+                        ? doc.Subdivide(wx, wy, ww, wh, o, cancellationToken: cancellationToken)
+                        : doc.Subdivide(o, cancellationToken: cancellationToken), cancellationToken);
                     string lineage = L.F("Bézier ×{0} of {1}{2} · τ {3:0.00}{4}{5}", o.Factor, src.Name,
                         window ? L.F(" (window {0}×{1} at {2},{3})", ww, wh, wx, wy) : "", o.Tension,
                         o.Monotone ? " · " + T("monotone") : "", o.NoData == BezierNoDataMode.NoData ? " · " + T("strict no-data") : "");
@@ -87,10 +91,11 @@ namespace RasterField
                     var lines = await Task.Run(() =>
                     {
                         if (k <= 1) return ContourGenerator.Trace(raster, geo, o);
-                        var fine = BezierPatchInterpolator.Subdivide(raster, new BezierPatchOptions { Factor = k });
+                        var fine = BezierPatchInterpolator.Subdivide(raster,
+                            new BezierPatchOptions { Factor = k }, cancellationToken: cancellationToken);
                         var (a, b, c, d, e2, f) = geo.GeoTransform;
                         return ContourGenerator.Trace(fine, new RasterGeoReference(fine.Width, fine.Height, a, b / k, c / k, d, e2 / k, f / k), o);
-                    });
+                    }, cancellationToken);
                     var erv = ErvDocument.Create(doc.Header.CoordinateSpace.Projection, doc.Header.CoordinateSpace.Datum);
                     var widths = new List<double>(lines.Count);
                     var labels = new List<string?>(lines.Count);
@@ -120,7 +125,7 @@ namespace RasterField
                         var dir = HydrologyAnalysis.FlowDirection(raster, cellX, cellY);
                         var acc = HydrologyAnalysis.FlowAccumulation(dir);
                         return StreamNetwork.Extract(dir, acc, geo, threshold);
-                    });
+                    }, cancellationToken);
                     var erv = ErvDocument.Create(doc.Header.CoordinateSpace.Projection, doc.Header.CoordinateSpace.Datum);
                     var widths = new List<double>(segments.Count);
                     foreach (var seg in segments)
@@ -147,7 +152,7 @@ namespace RasterField
                         "curvature" => TerrainAnalysis.Curvature(raster, cellX, cellY, type),
                         "flowdir" => HydrologyAnalysis.FlowDirection(raster, cellX, cellY),
                         _ => HydrologyAnalysis.FlowAccumulation(HydrologyAnalysis.FlowDirection(raster, cellX, cellY)),
-                    });
+                    }, cancellationToken);
                     string label = op switch
                     {
                         "slope" => T("Slope"), "aspect" => T("Aspect"), "hillshade" => T("Hillshade"),
@@ -168,7 +173,7 @@ namespace RasterField
                 case "swissrelief":
                 {
                     var raster = Band();
-                    var image = await Task.Run(() => ReliefShader.RenderSwissStyle(raster, cellX, cellY));
+                    var image = await Task.Run(() => ReliefShader.RenderSwissStyle(raster, cellX, cellY), cancellationToken);
                     string label = T("Swiss-style relief");
                     return new RecipeResult(BuildRgbDocument(image, doc), null, null, null, $"{src.Name} · {label}", L.F("{0} of {1}", label, src.Name), default);
                 }
@@ -179,7 +184,7 @@ namespace RasterField
                     if (doc.Bands.Count == 0) throw new InvalidOperationException(L.F("“{0}” is a streaming (large) dataset — clip a smaller region first.", src.Name));
                     var bands = new Dictionary<string, Raster>();
                     for (int i = 0; i < doc.Bands.Count; i++) bands[$"b{i + 1}"] = doc.Bands[i];
-                    Raster result = await Task.Run(() => RasterAlgebra.Evaluate(expr, bands));
+                    Raster result = await Task.Run(() => RasterAlgebra.Evaluate(expr, bands), cancellationToken);
                     return new RecipeResult(BuildDerivedDocument(result, doc), null, null, null, $"{src.Name} · {expr}", L.F("Band math “{0}” on {1}", expr, src.Name), default);
                 }
             }
@@ -189,12 +194,19 @@ namespace RasterField
         /// <summary>Computes a recipe and adds the result as a new derived layer.</summary>
         private async Task<object?> CreateDerivedAsync(LayerRecipe recipe, string busyText)
         {
-            SetBusy(true, busyText);
+            using var cancellation = recipe.Operation == "bezier" ? new CancellationTokenSource() : null;
+            SetBusy(true, busyText, cancellation);
             try
             {
-                var r = await ComputeRecipeAsync(recipe);
+                var r = await ComputeRecipeAsync(recipe, cancellation?.Token ?? CancellationToken.None);
                 SetBusy(false);
                 return AddRecipeResult(recipe, r);
+            }
+            catch (OperationCanceledException)
+            {
+                SetBusy(false);
+                Flash(T("Operation cancelled."));
+                return null;
             }
             catch (Exception ex)
             {
@@ -280,15 +292,17 @@ namespace RasterField
             };
             if (updated == null) return;
 
-            SetBusy(true, T("Recomputing…"));
+            using var cancellation = updated.Operation == "bezier" ? new CancellationTokenSource() : null;
+            SetBusy(true, T("Recomputing…"), cancellation);
             try
             {
-                var r = await ComputeRecipeAsync(updated);
+                var r = await ComputeRecipeAsync(updated, cancellation?.Token ?? CancellationToken.None);
                 SetBusy(false);
                 if (layer is RasterLayer rl && r.Raster != null) _view.ReplaceLayerDocument(rl, r.Raster, r.Lineage, updated);
                 else if (layer is VectorLayer vl && r.Vector != null) _view.ReplaceVectorDocument(vl, r.Vector, r.Widths, r.Labels, r.Lineage, updated);
                 Flash(L.F("Recomputed: {0}", r.Lineage));
             }
+            catch (OperationCanceledException) { SetBusy(false); Flash(T("Operation cancelled.")); }
             catch (Exception ex) { SetBusy(false); await MessageAsync(T("Operation failed"), ex.Message); }
         }
 

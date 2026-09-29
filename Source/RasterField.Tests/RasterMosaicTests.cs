@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Threading;
 using RasterField.ErMapper;
 using RasterField.Rasters;
 using Xunit;
@@ -111,6 +112,17 @@ namespace RasterField.Tests
         public void Empty_source_list_throws()
         {
             Assert.Throws<System.ArgumentException>(() => RasterMosaic.Merge(new System.Collections.Generic.List<MosaicSource>(), 1, 1));
+        }
+
+        [Fact]
+        public void Merge_can_be_cancelled_before_work_starts()
+        {
+            var (a, b) = OverlappingTiles(1, 2);
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            Assert.Throws<System.OperationCanceledException>(() => RasterMosaic.Merge(
+                new[] { a, b }, 1, 1, cancellationToken: cancellation.Token));
         }
     }
 }

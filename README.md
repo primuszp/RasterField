@@ -222,7 +222,8 @@ made.Save("new.ers");
 * **Bézier-patch subdivision** (*Raster ▸ Bézier-patch subdivision…*, `Ctrl+B`) —
   ×2/×3/×4/×8 or custom, whole layer or current view, tension, monotone (no overshoot) and
   no-data behaviour; resulting size and memory estimate and a side-by-side preview (original vs.
-  Bézier). The result keeps the source layer's palette and stretch.
+  Bézier). The result keeps the source layer's palette and stretch; long subdivisions can be
+  cancelled from the progress overlay or with `Esc`.
 * **Bézier display smoothing** (*View ▸ Magnification ▸ Bézier patch*, or `B`) — magnified cells of
   the active layer drawn as a smooth Bézier surface computed for the visible window only.
 * **Contours as a layer** (*Analysis ▸ Generate contours…*) — index contours drawn thicker and
@@ -330,7 +331,8 @@ made.Save("new.ers");
 * **Analysis ▸ Terrain / Hydrology** — **Slope**, **Aspect**, **Hillshade**, **Curvature** (General/Profile/Plan)
   from the loaded band, each added as a new derived layer (in memory until saved); **Flow
   direction** and **Flow accumulation** (D8 hydrology); **Viewshed** (pick an observer cell,
-  eye/target height and an optional distance cap in a dialog); and **Swiss-style relief** — a
+  eye/target height and an optional distance cap in a dialog, parallelised across CPU cores and
+  cancellable while it runs); and **Swiss-style relief** — a
   multi-directional-hillshade-plus-aerial-perspective colour image, added (like the others) as a
   derived 3-band true-colour layer with a recipe (`RasterImage.ToRgbBands()`), saved with the
   layer card's ⤓. Each product gets a display that fits what it measures, not the selected
@@ -354,7 +356,7 @@ made.Save("new.ers");
   and get the result as a new derived layer.
 * **Mosaic rasters** (*Raster ▸ Mosaic rasters…*) — pick two or more `.ers` files,
   an output cell size and an overlap rule (first/last/average); the merged result
-  becomes a new derived layer.
+  becomes a new derived layer. Loading and row-parallel merging can both be cancelled.
 * **Change analysis** (*Analysis ▸ Compare / ΔZ & volume…*) — validates exact grid/CRS
   compatibility, creates a blue-white-red `second − first` layer, and reports min/max/mean/σ,
   threshold-exceedance area and cut/fill/net volumes for the full raster or the finished map zone.

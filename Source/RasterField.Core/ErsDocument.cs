@@ -509,9 +509,11 @@ namespace RasterField
             IReadOnlyList<ErsDocument> documents,
             double cellSizeX,
             double cellSizeY,
-            MosaicOverlapMode overlapMode = MosaicOverlapMode.LastWins)
+            MosaicOverlapMode overlapMode = MosaicOverlapMode.LastWins,
+            CancellationToken cancellationToken = default)
         {
             if (documents == null || documents.Count == 0) throw new ArgumentException("At least one document is required.", nameof(documents));
+            cancellationToken.ThrowIfCancellationRequested();
 
             var sources = new MosaicSource[documents.Count];
             for (int i = 0; i < documents.Count; i++)
@@ -522,7 +524,8 @@ namespace RasterField
                 sources[i] = new MosaicSource(doc.Band, doc.GeoReference);
             }
 
-            var (merged, geo) = RasterMosaic.Merge(sources, cellSizeX, cellSizeY, overlapMode);
+            var (merged, geo) = RasterMosaic.Merge(sources, cellSizeX, cellSizeY, overlapMode,
+                cancellationToken: cancellationToken);
 
             var first = documents[0];
             var header = new ErsHeader

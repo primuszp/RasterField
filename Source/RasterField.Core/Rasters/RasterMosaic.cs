@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace RasterField.Rasters
 {
@@ -55,10 +57,12 @@ namespace RasterField.Rasters
             double cellSizeX,
             double cellSizeY,
             MosaicOverlapMode overlapMode = MosaicOverlapMode.LastWins,
-            float? noDataValue = null)
+            float? noDataValue = null,
+            CancellationToken cancellationToken = default)
         {
             if (sources == null || sources.Count == 0) throw new ArgumentException("At least one source is required.", nameof(sources));
             if (cellSizeX <= 0 || cellSizeY <= 0) throw new ArgumentOutOfRangeException(nameof(cellSizeX), "Cell sizes must be positive.");
+            cancellationToken.ThrowIfCancellationRequested();
 
             double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
             double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
@@ -86,10 +90,14 @@ namespace RasterField.Rasters
                 var count = new int[width * height];
 
                 foreach (var src in sources)
-                    AccumulateAverage(src, outGeo, sum, count);
+                    AccumulateAverage(src, outGeo, sum, count, cancellationToken);
 
-                for (int i = 0; i < sum.Length; i++)
-                    output.Samples[i] = count[i] > 0 ? (float)(sum[i] / count[i]) : noData;
+                Parallel.For(0, height, new ParallelOptions { CancellationToken = cancellationToken }, row =>
+                {
+                    int start = row * width, end = start + width;
+                    for (int i = start; i < end; i++)
+                        output.Samples[i] = count[i] > 0 ? (float)(sum[i] / count[i]) : noData;
+                });
             }
             else
             {
@@ -97,17 +105,26 @@ namespace RasterField.Rasters
                 // Raster constructor only records noData as metadata, it doesn't pre-fill the
                 // buffer with it, and a stray 0 must not be mistaken for "already written".
                 var buffer = output.Samples;
-                for (int i = 0; i < buffer.Length; i++) buffer[i] = float.NaN;
+                Parallel.For(0, height, new ParallelOptions { CancellationToken = cancellationToken }, row =>
+                {
+                    int start = row * width, end = start + width;
+                    for (int i = start; i < end; i++) buffer[i] = float.NaN;
+                });
 
                 // FirstWins: iterate sources in order, only filling still-empty cells.
                 // LastWins: iterate sources in order, letting later ones overwrite.
                 foreach (var src in sources)
-                    Blit(src, outGeo, output, overwrite: overlapMode == MosaicOverlapMode.LastWins);
+                    Blit(src, outGeo, output, overwrite: overlapMode == MosaicOverlapMode.LastWins,
+                        cancellationToken);
 
                 // Cells no source ever covered: settle them on the declared no-data value.
                 if (!float.IsNaN(noData))
-                    for (int i = 0; i < buffer.Length; i++)
-                        if (float.IsNaN(buffer[i])) buffer[i] = noData;
+                    Parallel.For(0, height, new ParallelOptions { CancellationToken = cancellationToken }, row =>
+                    {
+                        int start = row * width, end = start + width;
+                        for (int i = start; i < end; i++)
+                            if (float.IsNaN(buffer[i])) buffer[i] = noData;
+                    });
             }
 
             output.InvalidateStatistics();
@@ -121,12 +138,14 @@ namespace RasterField.Rasters
             return float.NaN;
         }
 
-        private static void Blit(MosaicSource src, RasterGeoReference outGeo, Raster output, bool overwrite)
+        private static void Blit(MosaicSource src, RasterGeoReference outGeo, Raster output,
+            bool overwrite, CancellationToken cancellationToken)
         {
             var raster = src.Raster;
             var geo = src.GeoReference;
 
-            for (int row = 0; row < output.Height; row++)
+            Parallel.For(0, output.Height,
+                new ParallelOptions { CancellationToken = cancellationToken }, row =>
             {
                 for (int col = 0; col < output.Width; col++)
                 {
@@ -141,16 +160,18 @@ namespace RasterField.Rasters
                     if (overwrite || output.IsNoData(existing))
                         output.SetValueFast(row, col, v);
                 }
-            }
+            });
         }
 
-        private static void AccumulateAverage(MosaicSource src, RasterGeoReference outGeo, double[] sum, int[] count)
+        private static void AccumulateAverage(MosaicSource src, RasterGeoReference outGeo,
+            double[] sum, int[] count, CancellationToken cancellationToken)
         {
             var raster = src.Raster;
             var geo = src.GeoReference;
             int width = outGeo.Width, height = outGeo.Height;
 
-            for (int row = 0; row < height; row++)
+            Parallel.For(0, height,
+                new ParallelOptions { CancellationToken = cancellationToken }, row =>
             {
                 for (int col = 0; col < width; col++)
                 {
@@ -165,7 +186,7 @@ namespace RasterField.Rasters
                     sum[i] += v;
                     count[i]++;
                 }
-            }
+            });
         }
     }
 }

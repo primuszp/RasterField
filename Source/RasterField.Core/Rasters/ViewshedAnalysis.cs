@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace RasterField.Rasters
 {
@@ -30,7 +32,8 @@ namespace RasterField.Rasters
         /// </returns>
         public static Raster Compute(
             Raster elevation, int observerCol, int observerRow,
-            double observerHeight = 1.8, double targetHeight = 0.0, int? maxDistanceCells = null)
+            double observerHeight = 1.8, double targetHeight = 0.0, int? maxDistanceCells = null,
+            CancellationToken cancellationToken = default)
         {
             if (elevation == null) throw new ArgumentNullException(nameof(elevation));
             int w = elevation.Width, h = elevation.Height;
@@ -38,6 +41,7 @@ namespace RasterField.Rasters
                 throw new ArgumentOutOfRangeException(nameof(observerCol), "The observer point must be inside the raster.");
             if (elevation.IsNoData(elevation[observerRow, observerCol]))
                 throw new ArgumentException("The observer's own cell is no-data.", nameof(observerCol));
+            cancellationToken.ThrowIfCancellationRequested();
 
             int maxDist = maxDistanceCells ?? (int)Math.Ceiling(Math.Sqrt((double)w * w + (double)h * h));
             if (maxDist < 1) throw new ArgumentOutOfRangeException(nameof(maxDistanceCells));
@@ -52,7 +56,8 @@ namespace RasterField.Rasters
             int minRow = Math.Max(0, observerRow - maxDist), maxRow = Math.Min(h - 1, observerRow + maxDist);
             double maxDistSq = (double)maxDist * maxDist;
 
-            for (int r = minRow; r <= maxRow; r++)
+            var parallelOptions = new ParallelOptions { CancellationToken = cancellationToken };
+            Parallel.For(minRow, maxRow + 1, parallelOptions, r =>
             {
                 for (int c = minCol; c <= maxCol; c++)
                 {
@@ -64,15 +69,17 @@ namespace RasterField.Rasters
                     float tz = elevation[r, c];
                     if (elevation.IsNoData(tz)) continue; // stays no-data: target itself unknown
 
-                    output.SetValueFast(r, c, IsVisible(elevation, observerCol, observerRow, observerZ, c, r, tz + targetHeight) ? Visible : NotVisible);
+                    output.SetValueFast(r, c, IsVisible(elevation, observerCol, observerRow,
+                        observerZ, c, r, tz + targetHeight, cancellationToken) ? Visible : NotVisible);
                 }
-            }
+            });
 
             output.InvalidateStatistics();
             return output;
         }
 
-        private static bool IsVisible(Raster elevation, int oc, int or_, double observerZ, int tc, int tr, double targetZ)
+        private static bool IsVisible(Raster elevation, int oc, int or_, double observerZ,
+            int tc, int tr, double targetZ, CancellationToken cancellationToken)
         {
             int steps = Math.Max(Math.Abs(tc - oc), Math.Abs(tr - or_));
             if (steps <= 1) return true; // adjacent cell: nothing can intervene
@@ -80,6 +87,7 @@ namespace RasterField.Rasters
             const double epsilon = 1e-6;
             for (int i = 1; i < steps; i++)
             {
+                if ((i & 63) == 0) cancellationToken.ThrowIfCancellationRequested();
                 double t = (double)i / steps;
                 double col = oc + (tc - oc) * t;
                 double row = or_ + (tr - or_) * t;
