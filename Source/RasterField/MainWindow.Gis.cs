@@ -73,6 +73,7 @@ namespace RasterField
                 new Cmd("Save _dataset as…", () => _ = SaveDatasetAsAsync(), Ctrl(Key.S, shift: true)),
                 new Cmd("Save _header as .ers…", () => _ = SaveHeaderAsAsync()),
                 new Cmd("_Export view as PNG…", () => _ = ExportPngAsync()),
+                new Cmd("Export inspection report as _PDF…", () => _ = ExportInspectionReportAsync()),
                 null,
                 new Cmd("E_xit", Close));
 
@@ -683,15 +684,18 @@ namespace RasterField
                 SetBusy(false);
 
                 string layerName = $"{second.Name} − {first.Name} (ΔZ)";
-                AddDerivedRasterLayer(BuildDerivedDocument(result.Difference, first.Document), layerName,
-                    $"ΔZ: {second.Name} − {first.Name}");
+                string unit = first.Document.Header.CoordinateSpace.EffectiveUnits;
+                if (string.IsNullOrWhiteSpace(unit)) unit = T("map unit");
+                string scope = polygon == null ? T("Entire aligned grid") : T("Finished map zone");
+                string lineage = string.Format(CultureInfo.CurrentCulture,
+                    "ΔZ: {0} − {1} · {2} · |ΔZ| > {3:g6}: {4:N2} {9}² ({5:N0} cells) · cut {6:N2} {9}³ · fill {7:N2} {9}³ · net {8:N2} {9}³",
+                    second.Name, first.Name, scope, choice.Value.Threshold, result.ThresholdArea,
+                    result.ThresholdCellCount, result.CutVolume, result.FillVolume, result.NetVolume, unit);
+                AddDerivedRasterLayer(BuildDerivedDocument(result.Difference, first.Document), layerName, lineage);
                 _view.SetPalette(BuiltInPalettes.BlueWhiteRed);
                 double extent = Math.Max(Math.Abs(result.Minimum), Math.Abs(result.Maximum));
                 if (extent > 0 && !double.IsNaN(extent)) _view.SetValueRange(-extent, extent);
 
-                string unit = first.Document.Header.CoordinateSpace.EffectiveUnits;
-                if (string.IsNullOrWhiteSpace(unit)) unit = T("map unit");
-                string scope = polygon == null ? T("Entire aligned grid") : T("Finished map zone");
                 await MessageAsync(T("Raster comparison complete"), string.Format(CultureInfo.CurrentCulture,
                     "{0}\n\nΔZ min / max: {1:N3} / {2:N3} {9}\nMean: {3:N3} {9}   σ: {4:N3} {9}\n|ΔZ| > {5:N3}: {6:N2} {9}² ({7:N0} cells)\n\nCut: {8:N2} {9}³\nFill: {10:N2} {9}³\nNet (fill − cut): {11:N2} {9}³",
                     scope, result.Minimum, result.Maximum, result.Mean, result.StandardDeviation,

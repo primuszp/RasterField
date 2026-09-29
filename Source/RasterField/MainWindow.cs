@@ -111,6 +111,8 @@ namespace RasterField
         private static readonly FilePickerFileType[] RasterSaveFileTypeChoices = { ErsHeaderFileType, GeoTiffFileType };
         private static readonly FilePickerFileType[] PngFileTypeChoices =
             { new("PNG image (*.png)") { Patterns = new[] { "*.png" } } };
+        private static readonly FilePickerFileType[] PdfFileTypeChoices =
+            { new("PDF document (*.pdf)") { Patterns = new[] { "*.pdf" } } };
         private static readonly FilePickerFileType[] ErvFileTypeChoices =
             { new("ER Mapper vector header (*.erv)") { Patterns = new[] { "*.erv" } } };
         private static readonly FilePickerFileType _ersOrErvFileType =
@@ -755,6 +757,118 @@ namespace RasterField
                 Flash(L.F("PNG written: {0}", Path.GetFileName(path)));
             }
             catch (Exception ex) { await MessageAsync(T("Export failed"), ex.Message); }
+        }
+
+        private async Task ExportInspectionReportAsync()
+        {
+            RasterLayer? layer = _view.ActiveLayer;
+            Raster? raster = layer?.ActiveRaster;
+            if (layer == null || layer.IsFrame || raster == null)
+            {
+                await MessageAsync(T("Inspection report"), T("Open a raster dataset first."));
+                return;
+            }
+
+            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+            {
+                Title = T("Export inspection report as PDF"),
+                DefaultExtension = "pdf",
+                SuggestedFileName = SuggestName() + "_report.pdf",
+                FileTypeChoices = PdfFileTypeChoices,
+            });
+            string? path = file?.TryGetLocalPath();
+            if (string.IsNullOrEmpty(path)) return;
+
+            try
+            {
+                byte[] mapPng = CaptureControlPng(_view);
+                RasterStatistics stats = raster.Statistics;
+                var info = layer.Document.Header.RasterInfo;
+                var coordinateSpace = layer.Document.Header.CoordinateSpace;
+                string crs = string.Join(" · ", new[]
+                {
+                    coordinateSpace.Projection,
+                    coordinateSpace.Datum,
+                    coordinateSpace.EpsgCode.HasValue ? "EPSG:" + coordinateSpace.EpsgCode.Value.ToString(CultureInfo.InvariantCulture) : null,
+                }.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct(StringComparer.OrdinalIgnoreCase));
+                if (string.IsNullOrWhiteSpace(crs)) crs = T("Not specified");
+
+                string valueUnit = info.Bands.Count > layer.ActiveBand
+                    ? info.Bands[layer.ActiveBand].Units ?? ""
+                    : "";
+                string band = layer.ShowRgbComposite
+                    ? T("True colour (RGB composite)")
+                    : info.Bands.Count > layer.ActiveBand && !string.IsNullOrWhiteSpace(info.Bands[layer.ActiveBand].Value)
+                        ? L.F("Band {0}: {1}", layer.ActiveBand + 1, info.Bands[layer.ActiveBand].Value!)
+                        : L.F("Band {0}", layer.ActiveBand + 1);
+                string noData = double.IsNaN(raster.NoDataValue)
+                    ? T("Not declared")
+                    : raster.NoDataValue.ToString("g9", CultureInfo.CurrentCulture);
+
+                IReadOnlyList<ReportColor> palette = layer.ShowRgbComposite || layer.Colorizer == null
+                    ? Array.Empty<ReportColor>()
+                    : Enumerable.Range(0, 32)
+                        .Select(i => layer.Colorizer.Palette.Sample(i / 31.0))
+                        .Select(c => new ReportColor(c.R, c.G, c.B))
+                        .ToArray();
+                IReadOnlyList<ReportProfileSeries> profile = _lastProfile
+                    .Select(s => new ReportProfileSeries(s.Name, s.Samples,
+                        new ReportColor(s.Color.R, s.Color.G, s.Color.B), s.Dashed))
+                    .ToArray();
+
+                var report = new InspectionReportData
+                {
+                    Title = layer.Name + " - " + T("Raster inspection report"),
+                    CreatedAt = DateTimeOffset.Now,
+                    LayerName = layer.Name,
+                    SourcePath = layer.Document.HeaderPath ?? T("(in memory — not saved)"),
+                    Dimensions = string.Format(CultureInfo.CurrentCulture, "{0:N0} × {1:N0} · {2} {3}",
+                        layer.DatasetWidth, layer.DatasetHeight, layer.BandCount, T("band(s)")),
+                    Band = band,
+                    CellType = info.CellType + " · " + layer.Document.Header.ByteOrder,
+                    CellSize = string.Format(CultureInfo.CurrentCulture, "{0:g7} × {1:g7} {2}",
+                        info.CellSizeX, info.CellSizeY, coordinateSpace.EffectiveUnits),
+                    CoordinateReferenceSystem = crs,
+                    NoDataValue = noData,
+                    Lineage = layer.Lineage,
+                    StatisticsAreApproximate = layer.IsStreaming,
+                    ValidCount = stats.ValidCount,
+                    NoDataCount = (long)raster.Width * raster.Height - stats.ValidCount,
+                    Minimum = stats.Minimum,
+                    Maximum = stats.Maximum,
+                    Mean = stats.Mean,
+                    StandardDeviation = stats.StandardDeviation,
+                    DisplayMinimum = layer.Colorizer?.Minimum ?? stats.Minimum,
+                    DisplayMaximum = layer.Colorizer?.Maximum ?? stats.Maximum,
+                    ValueUnit = valueUnit,
+                    DistanceUnit = DistanceUnit(),
+                    MapPng = mapPng,
+                    Palette = palette,
+                    ProfileSeries = profile,
+                };
+
+                InspectionReportWriter.EnsureFontResolver();
+                SetBusy(true, T("Creating PDF report…"));
+                await Task.Run(() => InspectionReportWriter.Write(path!, report));
+                SetBusy(false);
+                Flash(L.F("PDF report written: {0}", Path.GetFileName(path)));
+            }
+            catch (Exception ex)
+            {
+                SetBusy(false);
+                await MessageAsync(T("Report export failed"), ex.Message);
+            }
+        }
+
+        private static byte[] CaptureControlPng(Control control)
+        {
+            int width = Math.Max(1, (int)Math.Ceiling(control.Bounds.Width));
+            int height = Math.Max(1, (int)Math.Ceiling(control.Bounds.Height));
+            using var bitmap = new RenderTargetBitmap(new PixelSize(width, height), new Vector(96, 96));
+            bitmap.Render(control);
+            using var stream = new MemoryStream();
+            bitmap.Save(stream);
+            return stream.ToArray();
         }
 
         private ErsCellType? SelectedOutputCellType() => (_outTypeBox.SelectedItem as string) switch

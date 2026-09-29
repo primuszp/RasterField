@@ -29,7 +29,7 @@ Source/
   RasterField.Core/     class library   (netstandard2.0 ; net10.0)   assembly RasterField.Core, namespace RasterField.*
   RasterField.Gdal/     GDAL adapter     (net10.0)                    GeoTIFF and windowed I/O
   RasterField/          Avalonia app     (net10.0, win/linux/osx)
-  RasterField.Tests/    xUnit suite      (233 tests)
+  RasterField.Tests/    xUnit suite      (234 tests)
 RasterField.slnx        solution
 P_00_01.ers / P_00_01.dat   sample dataset (640×450 IEEE4, EOV)
 ```
@@ -337,7 +337,11 @@ made.Save("new.ers");
   the normal layer stack.
 * **Write** — *Save header as .ers*, *Save dataset as…* (`.ers` + BIL or GeoTIFF, with an
   optional output **cell type** and **byte order** for on‑the‑fly conversion),
-  *Export view as PNG*.
+  *Export view as PNG*, and *Export inspection report as PDF*. The A4 report embeds the current
+  map view, palette and numeric range, source/CRS/raster metadata, statistics, derivation details
+  (including ΔZ threshold and cut/fill volumes), plus a second profile-chart page when a profile
+  has been drawn. It uses the app's bundled Inter font and PDFsharp Core, so output is portable
+  across Windows, Linux and macOS.
 * **Status bar** — world easting/northing, cell index, sampled value and scale
   under the pointer; dataset summary (size, cell type, projection + resolved EPSG,
   byte order, data range).

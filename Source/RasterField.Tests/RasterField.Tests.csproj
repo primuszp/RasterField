@@ -27,6 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="..\RasterField.Core\RasterField.Core.csproj" />
     <ProjectReference Include="..\RasterField.Gdal\RasterField.Gdal.csproj" />
+    <ProjectReference Include="..\RasterField\RasterField.csproj" />
   </ItemGroup>
 
 </Project>

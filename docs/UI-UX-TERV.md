@@ -574,3 +574,4 @@ A terv minden pontja megvalósult; az alábbi táblázat azt is jelzi, ahol a me
 | **Könyvjelzők, ugrás koordinátára** | ✅ | `Ctrl+Shift+D`, `Ctrl+1…9`; Nézet ▸ Ugrás koordinátára. |
 | **Mentetlen munka védelme** | ✅ | Bezáráskor, új projektnél és projekt megnyitásakor figyelmeztet a csak memóriában létező rétegekre. |
 | **Magyar / angol felület** | ✅ | Nézet ▸ Nyelv (automatikus / English / Magyar). A menük azonnal váltanak, a panelek és ablakok újraindítás után. |
+| **Vizsgálati PDF-jelentés** | ✅ | Fájl ▸ Vizsgálati jelentés exportálása PDF-be: térképi nézet, jelmagyarázat, forrás- és CRS-metaadat, statisztika, levezetési adatok (ΔZ-nél küszöb és térfogatok), valamint meglévő profil esetén külön diagramoldal. A beágyazott Inter betűtípus miatt többplatformos. |
