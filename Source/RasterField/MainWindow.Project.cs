@@ -154,7 +154,23 @@ namespace RasterField
                         "curvature" => L.F("{0} curvature", T(type.ToString())),
                         "flowdir" => T("Flow direction"), _ => T("Flow accumulation"),
                     };
-                    return new RecipeResult(BuildDerivedDocument(result, doc), null, null, null, $"{src.Name} · {label}", L.F("{0} of {1}", label, src.Name), default);
+                    // The unit ends up in the legend: slope/aspect in degrees, hillshade as 0–255 illumination.
+                    string? units = op switch
+                    {
+                        "slope" or "aspect" => "°",
+                        "hillshade" => "0–255",
+                        "flowacc" => T("cells"),
+                        _ => null,
+                    };
+                    return new RecipeResult(BuildDerivedDocument(result, doc, label, units), null, null, null, $"{src.Name} · {label}", L.F("{0} of {1}", label, src.Name), default);
+                }
+
+                case "swissrelief":
+                {
+                    var raster = Band();
+                    var image = await Task.Run(() => ReliefShader.RenderSwissStyle(raster, cellX, cellY));
+                    string label = T("Swiss-style relief");
+                    return new RecipeResult(BuildRgbDocument(image, doc), null, null, null, $"{src.Name} · {label}", L.F("{0} of {1}", label, src.Name), default);
                 }
 
                 case "bandmath":
@@ -194,12 +210,50 @@ namespace RasterField
             {
                 var layer = AddDerivedRasterLayer(r.Raster, r.Name, r.Lineage, recipe.Operation == "bezier" ? recipe.Source as RasterLayer : null);
                 layer.Recipe = recipe;
+                ApplyDerivedStyle(layer, recipe.Operation);
                 return layer;
             }
             var v = AddDerivedVectorLayer(r.Vector!, r.Name, r.Lineage, r.VectorColor, r.Widths, r.Labels, lineWidth: 1.0);
             v.Recipe = recipe;
             Flash(L.F("{0}: {1} object(s) — new vector layer (not saved yet).", r.Name, r.Vector!.Objects.Count));
             return v;
+        }
+
+        /// <summary>
+        /// Gives a terrain / hydrology product a palette and value range that suit what it measures,
+        /// instead of the elevation palette that happens to be selected: grey illumination for a
+        /// hillshade, a sequential ramp from 0 for slope, a cyclic wheel over 0–360° for aspect, a
+        /// diverging ramp symmetric around 0 for curvature and an emphasised blue ramp for flow
+        /// accumulation. The user can still change all of it in the properties panel.
+        /// </summary>
+        private void ApplyDerivedStyle(RasterLayer layer, string operation)
+        {
+            var raster = layer.Raster;
+            if (raster == null || layer.ShowRgbComposite || raster.Statistics.ValidCount == 0) return;
+            var stats = raster.Statistics;
+            switch (operation)
+            {
+                case "hillshade":
+                    _view.ApplyDisplaySettings(layer, BuiltInPalettes.Grayscale, 0, 255);
+                    break;
+                case "slope":
+                    // The 99th percentile, so a few near-vertical edge cells don't wash out the rest.
+                    double steep = RasterHistogram.Build(raster).Percentile(99);
+                    _view.ApplyDisplaySettings(layer, BuiltInPalettes.Viridis, 0, Math.Max(steep, 0.1));
+                    break;
+                case "aspect":
+                    _view.ApplyDisplaySettings(layer, _palettes.Get("Hue wheel (cyclic)") ?? BuiltInPalettes.Spectrum, 0, 360);
+                    break;
+                case "curvature":
+                    var (low, high) = RasterHistogram.Build(raster).PercentileRange(2, 98);
+                    double m = Math.Max(Math.Abs(low), Math.Abs(high));
+                    _view.ApplyDisplaySettings(layer, BuiltInPalettes.BlueWhiteRed, -(m > 0 ? m : 1), m > 0 ? m : 1);
+                    break;
+                case "flowacc":
+                    // Most cells drain only themselves; a low gamma lifts the few large values (the channels).
+                    _view.ApplyDisplaySettings(layer, BuiltInPalettes.Precipitation, stats.Minimum, stats.Maximum, gamma: 0.35);
+                    break;
+            }
         }
 
         /// <summary>Opens the operation's dialog pre-filled with the layer's recipe and recomputes the layer in place.</summary>

@@ -1250,7 +1250,7 @@ namespace RasterField
         /// Wraps a computed single-band result (terrain derivative, band-math output, …) into a
         /// new document sharing the current dataset's exact affine georeference and coordinate system.
         /// </summary>
-        private ErsDocument BuildDerivedDocument(Raster result, ErsDocument? source = null)
+        private ErsDocument BuildDerivedDocument(Raster result, ErsDocument? source = null, string description = "Derived result", string? units = null)
         {
             var doc = source ?? _view.Document ?? throw new InvalidOperationException("No dataset is open.");
             ErsHeader header = ErsHeader.Parse(doc.Header.ToErsText());
@@ -1260,7 +1260,7 @@ namespace RasterField
             header.RasterInfo.CellType = ErsCellType.IEEE4ByteReal;
             header.RasterInfo.NullCellValue = double.IsNaN(result.NoDataValue) ? null : result.NoDataValue;
             header.RasterInfo.Bands.Clear();
-            header.RasterInfo.Bands.Add(new BandInfo { Value = "Derived result" });
+            header.RasterInfo.Bands.Add(new BandInfo { Value = description, Units = units });
             return ErsDocument.Create(header, new[] { result }, doc.GeoReference, doc.CoordinateReferenceWkt);
         }
 
@@ -1292,10 +1292,37 @@ namespace RasterField
 
         // ---- terrain analysis ---------------------------------------------------
 
+        /// <summary>Recipe operations whose result is a terrain product, not an elevation surface.</summary>
+        private static readonly HashSet<string> TerrainProductOperations = new(StringComparer.Ordinal)
+        {
+            "slope", "aspect", "hillshade", "curvature", "flowdir", "flowacc", "swissrelief",
+        };
+
+        /// <summary>
+        /// Terrain tools need an elevation model. A new result layer becomes the active one, so
+        /// running e.g. Slope right after Hillshade would otherwise measure the slope of the
+        /// hillshade's 0–255 brightness. When the active layer is such a product, switch back to
+        /// the (still loaded) elevation layer it was derived from.
+        /// </summary>
+        private void UseElevationSourceForTerrain()
+        {
+            var layer = _view.ActiveLayer;
+            var source = layer;
+            while (source?.Recipe is { } recipe && TerrainProductOperations.Contains(recipe.Operation)
+                   && recipe.Source is RasterLayer parent && _view.Layers.Contains(parent))
+                source = parent;
+            if (source != null && !ReferenceEquals(source, layer))
+            {
+                _view.SetActiveLayer(source);
+                Flash(L.F("Computed from the elevation layer “{0}” (the active layer is a terrain product).", source.Name));
+            }
+        }
+
         private enum TerrainProduct { Slope, Aspect, Hillshade }
 
         private async Task ComputeTerrainAsync(TerrainProduct product)
         {
+            UseElevationSourceForTerrain();
             var loaded = await TryGetLoadedRasterAsync(T(product.ToString()));
             if (loaded == null) return;
             string op = product.ToString().ToLowerInvariant();
@@ -1306,6 +1333,7 @@ namespace RasterField
 
         private async Task ComputeCurvatureAsync()
         {
+            UseElevationSourceForTerrain();
             var loaded = await TryGetLoadedRasterAsync(T("Curvature"));
             if (loaded == null) return;
             var type = await ShowCurvatureDialogAsync();
@@ -1373,6 +1401,7 @@ namespace RasterField
 
         private async Task ComputeFlowDirectionAsync()
         {
+            UseElevationSourceForTerrain();
             var loaded = await TryGetLoadedRasterAsync(T("Flow direction"));
             if (loaded == null) return;
             await CreateDerivedAsync(new LayerRecipe("flowdir", _view.ActiveLayer!), T("Computing flow direction…"));
@@ -1380,6 +1409,7 @@ namespace RasterField
 
         private async Task ComputeFlowAccumulationAsync()
         {
+            UseElevationSourceForTerrain();
             var loaded = await TryGetLoadedRasterAsync(T("Flow accumulation"));
             if (loaded == null) return;
             await CreateDerivedAsync(new LayerRecipe("flowacc", _view.ActiveLayer!), T("Computing flow accumulation…"));
@@ -1389,6 +1419,7 @@ namespace RasterField
 
         private async Task ComputeViewshedAsync()
         {
+            UseElevationSourceForTerrain();
             var loaded = await TryGetLoadedRasterAsync(T("Viewshed"));
             if (loaded == null) return;
             var (raster, _, _) = loaded.Value;
@@ -1469,57 +1500,15 @@ namespace RasterField
         // ---- Swiss-style relief shading -----------------------------------------------
 
         /// <summary>
-        /// Filters for the relief export dialog — an ERS choice first (a real 3-band true-colour
-        /// dataset, consistent with every other Terrain product, and reopenable in the app), a
-        /// plain PNG as the lightweight alternative for sharing/printing.
+        /// Swiss-style relief as a new derived 3-band (true-colour) layer — recomputable from its
+        /// recipe like the other terrain products, saved with the layer card's ⤓ or Layer ▸ Save.
         /// </summary>
-        private static readonly FilePickerFileType[] ReliefFileTypeChoices =
+        private async Task ComputeSwissReliefAsync()
         {
-            new("ER Mapper true-colour raster (*.ers)") { Patterns = new[] { "*.ers" } },
-            new("PNG image (*.png)") { Patterns = new[] { "*.png" } },
-        };
-
-        private async Task ExportSwissReliefAsync()
-        {
+            UseElevationSourceForTerrain();
             var loaded = await TryGetLoadedRasterAsync(T("Swiss-style relief"));
             if (loaded == null) return;
-            var (raster, cellSizeX, cellSizeY) = loaded.Value;
-
-            SetBusy(true, T("Rendering Swiss-style relief…"));
-            RasterImage image;
-            try
-            {
-                image = await Task.Run(() => ReliefShader.RenderSwissStyle(raster, cellSizeX, cellSizeY));
-            }
-            catch (Exception ex) { SetBusy(false); await MessageAsync(T("Swiss-style relief failed"), ex.Message); return; }
-            SetBusy(false);
-
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = T("Export Swiss-style relief"),
-                DefaultExtension = "ers",
-                SuggestedFileName = SuggestName() + "_relief.ers",
-                FileTypeChoices = ReliefFileTypeChoices,
-            });
-            var path = file?.TryGetLocalPath();
-            if (string.IsNullOrEmpty(path)) return;
-
-            try
-            {
-                if (path!.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
-                {
-                    SaveImageAsPng(image, path);
-                    Flash(L.F("Relief image written: {0}", Path.GetFileName(path)));
-                }
-                else
-                {
-                    var doc = BuildRgbDocument(image);
-                    doc.Save(path);
-                    Flash(L.F("Relief dataset written: {0} (3-band true colour)", Path.GetFileName(path)));
-                    OpenDataset(path);
-                }
-            }
-            catch (Exception ex) { await MessageAsync(T("Export failed"), ex.Message); }
+            await CreateDerivedAsync(new LayerRecipe("swissrelief", _view.ActiveLayer!), T("Rendering Swiss-style relief…"));
         }
 
         /// <summary>
@@ -1529,9 +1518,9 @@ namespace RasterField
         /// true colour on open (see the Band selector in the side panel) — it shows one band at a
         /// time through the current palette, same as any other multi-band dataset.
         /// </summary>
-        private ErsDocument BuildRgbDocument(RasterImage image)
+        private ErsDocument BuildRgbDocument(RasterImage image, ErsDocument? source = null)
         {
-            var doc = _view.Document ?? throw new InvalidOperationException("No dataset is open.");
+            var doc = source ?? _view.Document ?? throw new InvalidOperationException("No dataset is open.");
             var (originX, originY) = doc.GeoReference.PixelToWorld(0, 0);
             var (_, b, c, _, e, f) = doc.GeoReference.GeoTransform;
             double cellSizeX = Math.Sqrt(b * b + e * e);

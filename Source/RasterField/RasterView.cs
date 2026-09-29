@@ -1086,6 +1086,22 @@ namespace RasterField
             if (ReferenceEquals(to, ActiveLayer)) RasterLoaded?.Invoke(this, EventArgs.Empty);
         }
 
+        /// <summary>Sets a layer's palette, value range, gamma and render mode in one go (e.g. a derived layer's own style).</summary>
+        public void ApplyDisplaySettings(RasterLayer layer, Palette palette, double minimum, double maximum,
+            double gamma = 1.0, PaletteRenderMode mode = PaletteRenderMode.Continuous)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            ArgumentNullException.ThrowIfNull(palette);
+            if (layer.Colorizer == null || !(maximum > minimum)) return;
+            layer.Colorizer.Palette = palette;
+            layer.Colorizer.Minimum = minimum;
+            layer.Colorizer.Maximum = maximum;
+            layer.Colorizer.Gamma = gamma;
+            layer.Colorizer.Mode = mode;
+            RebuildLayerBitmap(layer);
+            if (ReferenceEquals(layer, ActiveLayer)) RasterLoaded?.Invoke(this, EventArgs.Empty);
+        }
+
         /// <summary>The cell window of the active layer currently on screen (clamped to the dataset), or <see langword="null"/>.</summary>
         public PixelRect? VisibleCellWindow()
         {

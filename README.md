@@ -322,10 +322,14 @@ made.Save("new.ers");
   from the loaded band, each added as a new derived layer (in memory until saved); **Flow
   direction** and **Flow accumulation** (D8 hydrology); **Viewshed** (pick an observer cell,
   eye/target height and an optional distance cap in a dialog); and **Swiss-style relief** — a
-  multi-directional-hillshade-plus-aerial-perspective colour image (not a palette-mapped
-  analysis layer), exportable either as a real 3-band true-colour `.ers` dataset
-  (`RasterImage.ToRgbBands()`, consistent with every other Terrain product) or as a plain PNG,
-  picked in the same save dialog.
+  multi-directional-hillshade-plus-aerial-perspective colour image, added (like the others) as a
+  derived 3-band true-colour layer with a recipe (`RasterImage.ToRgbBands()`), saved with the
+  layer card's ⤓. Each product gets a display that fits what it measures, not the selected
+  elevation palette: hillshade grey 0–255, slope Viridis from 0° to the 99th percentile, aspect
+  the cyclic hue wheel over 0–360°, curvature blue-white-red symmetric around 0, flow
+  accumulation a blue ramp with low gamma; the unit (°, 0–255, cells) shows on the legend. If
+  the active layer is itself a terrain product (e.g. the hillshade just made), the tools run on
+  the elevation layer it was derived from instead of on its brightness values.
 * **True-colour RGB composite** — a dataset with 3+ bands (e.g. that Swiss-style relief export,
   or any RGB imagery) shows a **True colour (RGB composite)** checkbox next to the Band
   selector, on by default for exactly-3-band data. It renders bands 1–3 directly as colour

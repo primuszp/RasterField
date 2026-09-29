@@ -69,8 +69,7 @@ namespace RasterField
 
             var export = new Cmd("_Export").Add(
                 new Cmd("_View as PNG…", () => _ = ExportPngAsync()),
-                new Cmd("Inspection report as _PDF…", () => _ = ExportInspectionReportAsync()),
-                new Cmd("_Swiss-style relief…", () => _ = ExportSwissReliefAsync()));
+                new Cmd("Inspection report as _PDF…", () => _ = ExportInspectionReportAsync()));
 
             var file = new Cmd("_File").Add(
                 new Cmd("_New project", () => _ = NewProjectAsync()),
@@ -175,6 +174,7 @@ namespace RasterField
                     new Cmd("_Slope", () => _ = ComputeTerrainAsync(TerrainProduct.Slope)),
                     new Cmd("_Aspect", () => _ = ComputeTerrainAsync(TerrainProduct.Aspect)),
                     new Cmd("_Hillshade", () => _ = ComputeTerrainAsync(TerrainProduct.Hillshade)),
+                    new Cmd("S_wiss-style relief", () => _ = ComputeSwissReliefAsync()),
                     new Cmd("_Curvature…", () => _ = ComputeCurvatureAsync()),
                     null,
                     new Cmd("_Viewshed…", () => _ = ComputeViewshedAsync())),
