@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 
 namespace RasterField.Rendering
 {
@@ -15,6 +16,7 @@ namespace RasterField.Rendering
     {
         private readonly Dictionary<string, Palette> _byName = new Dictionary<string, Palette>(StringComparer.OrdinalIgnoreCase);
         private readonly List<Palette> _order = new List<Palette>();
+        private readonly Dictionary<string, string> _aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>Palettes in insertion order.</summary>
         public IReadOnlyList<Palette> Palettes => _order;
@@ -41,18 +43,47 @@ namespace RasterField.Rendering
             _byName[palette.Name] = palette;
         }
 
-        /// <summary>Gets a palette by name, or <see langword="null"/>.</summary>
-        public Palette? Get(string? name) => name != null && _byName.TryGetValue(name, out var p) ? p : null;
+        /// <summary>
+        /// Registers a former or alternative name for a palette, so settings and projects saved
+        /// before a palette was renamed still find it. Aliases never shadow a real palette name.
+        /// </summary>
+        public void AddAlias(string alias, string name)
+        {
+            if (alias == null) throw new ArgumentNullException(nameof(alias));
+            if (name == null) throw new ArgumentNullException(nameof(name));
+            _aliases[Normalize(alias)] = name;
+        }
 
-        /// <summary>Gets a palette by name, falling back to the first entry (or the built-in default).</summary>
+        /// <summary>
+        /// The current name of the palette called <paramref name="name"/> — directly, or through an
+        /// alias — or <see langword="null"/> when there is none. Case-insensitive and tolerant of
+        /// Unicode normalisation differences (macOS file names are often decomposed, NFD).
+        /// </summary>
+        public string? Resolve(string? name) => Find(name)?.Name;
+
+        /// <summary>Gets a palette by name or alias, or <see langword="null"/>.</summary>
+        public Palette? Get(string? name) => Find(name);
+
+        /// <summary>Gets a palette by name or alias, falling back to the first entry (or the built-in default).</summary>
         public Palette GetOrDefault(string? name) =>
-            (name != null && _byName.TryGetValue(name, out var p)) ? p :
-            _order.Count > 0 ? _order[0] : BuiltInPalettes.Default;
+            Find(name) ?? (_order.Count > 0 ? _order[0] : BuiltInPalettes.Default);
 
-        /// <summary>Adds every <see cref="BuiltInPalettes"/> entry.</summary>
+        private Palette? Find(string? name)
+        {
+            if (name == null) return null;
+            if (_byName.TryGetValue(name, out var p)) return p;
+            string normalized = Normalize(name);
+            if (_byName.TryGetValue(normalized, out p)) return p;
+            return _aliases.TryGetValue(normalized, out var target) && _byName.TryGetValue(target, out p) ? p : null;
+        }
+
+        private static string Normalize(string name) => name.Normalize(NormalizationForm.FormC);
+
+        /// <summary>Adds every <see cref="BuiltInPalettes"/> entry (and its former names as aliases).</summary>
         public PaletteLibrary AddBuiltIns()
         {
             foreach (var p in BuiltInPalettes.All.Values) Add(p);
+            foreach (var legacy in BuiltInPalettes.LegacyNames) AddAlias(legacy.Key, legacy.Value);
             return this;
         }
 

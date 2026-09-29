@@ -36,7 +36,7 @@ namespace RasterField.Rendering
             (0.78, C("#A9772F")), (0.92, C("#7A5230")), (1.00, C("#FFFFFF")));
 
         /// <summary>Bathymetry + land: deep blue sea through coastline to green/brown land.</summary>
-        public static Palette LandSea { get; } = Palette.FromStops("Land &amp; Sea",
+        public static Palette LandSea { get; } = Palette.FromStops("Land & Sea",
             (0.00, C("#08306B")), (0.35, C("#4292C6")), (0.49, C("#C6DBEF")),
             (0.50, C("#1A6837")), (0.72, C("#E8D9A0")), (0.90, C("#8C6D31")), (1.00, C("#FFFFFF")));
 
@@ -57,6 +57,14 @@ namespace RasterField.Rendering
         /// <summary>Green to brown ramp (vegetation / soil).</summary>
         public static Palette GreenBrown { get; } = Palette.FromStops("Green-Brown",
             (0.0, C("#1A9641")), (0.5, C("#FFFFBF")), (1.0, C("#8C510A")));
+
+        /// <summary>Former built-in names (as saved in older settings/projects) mapped to their current ones.</summary>
+        public static IReadOnlyDictionary<string, string> LegacyNames { get; } =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                // Was XML-escaped by mistake in earlier versions.
+                ["Land &amp; Sea"] = "Land & Sea",
+            };
 
         /// <summary>The palette used when none is specified.</summary>
         public static Palette Default => Spectrum;

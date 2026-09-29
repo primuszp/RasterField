@@ -59,9 +59,13 @@ namespace RasterField
         {
             var root = new DockPanel();
 
+            // Windows/Linux: the horizontal in-window menu strip on top; macOS uses the system menu bar.
+            var menu = OperatingSystem.IsMacOS() ? null : BuildMenu();
+            _menuHost = menu;
+            if (menu != null) { DockPanel.SetDock(menu, Dock.Top); root.Children.Add(menu); }
             var statusBar = BuildStatusBar();
             _statusBarHost = statusBar;
-            var titleBar = BuildTitleBar(); // holds the ☰ menu on Windows/Linux; macOS uses the system menu bar
+            var titleBar = BuildTitleBar();
             DockPanel.SetDock(titleBar, Dock.Top);
             root.Children.Add(titleBar);
             DockPanel.SetDock(statusBar, Dock.Bottom);
@@ -107,6 +111,8 @@ namespace RasterField
             root.Children.Add(grid);
             return root;
         }
+
+        private Menu? _menuHost;
 
         private static TextBlock Header(string text) => AppTheme.SectionLabel(text);
 
@@ -600,7 +606,7 @@ namespace RasterField
             string paletteName = c.Palette.Name;
             bool reversed = paletteName.EndsWith(" (reversed)", StringComparison.Ordinal);
             if (reversed) paletteName = paletteName.Substring(0, paletteName.Length - " (reversed)".Length);
-            if (_palettes.Names.Contains(paletteName)) _paletteBox.SelectedItem = paletteName;
+            if (_palettes.Resolve(paletteName) is { } knownPalette) _paletteBox.SelectedItem = knownPalette;
             _reverseBox.IsChecked = reversed;
             _opacitySlider.Value = active.Opacity * 100;
             _opacityText.Text = $"{active.Opacity * 100:0} %";
@@ -726,8 +732,12 @@ namespace RasterField
             downBtn.IsEnabled = _view.CanMoveLayerDown(layer);
             downBtn.Click += (_, _) => RunLayerActionSafely(() => _view.MoveVectorLayerDown(layer));
             var menuBtn = CircleIconButton("⋮");
+            // Avalonia only opens a ContextMenu on the control it is attached to, so the ⋮ button
+            // and the card's right-click each get their own instance of the same menu.
+            var buttonMenu = BuildVectorContextMenu(layer);
+            menuBtn.ContextMenu = buttonMenu;
+            menuBtn.Click += (_, _) => buttonMenu.Open(menuBtn);
             var menu = BuildVectorContextMenu(layer);
-            menuBtn.Click += (_, _) => menu.Open(menuBtn);
 
             // Recompute lives in the ⋮ menu here: the style row has no room for another button.
             var styleRow = BuildVectorStyleRow(layer);
@@ -776,8 +786,12 @@ namespace RasterField
             downBtn.IsEnabled = _view.CanMoveLayerDown(layer);
             downBtn.Click += (_, _) => RunLayerActionSafely(() => _view.MoveLayerDown(layer));
             var menuBtn = CircleIconButton("⋮");
+            // Avalonia only opens a ContextMenu on the control it is attached to, so the ⋮ button
+            // and the card's right-click each get their own instance of the same menu.
+            var buttonMenu = BuildRasterContextMenu(layer);
+            menuBtn.ContextMenu = buttonMenu;
+            menuBtn.Click += (_, _) => buttonMenu.Open(menuBtn);
             var menu = BuildRasterContextMenu(layer);
-            menuBtn.Click += (_, _) => menu.Open(menuBtn);
 
             var card = BuildLayerCard(visBox, nameBtn, upBtn, downBtn, menuBtn, isActive, BuildRasterLayerRow(layer));
             card.ContextMenu = menu;

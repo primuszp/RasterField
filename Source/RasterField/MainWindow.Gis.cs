@@ -30,7 +30,7 @@ namespace RasterField
     {
         // ---- menu model -------------------------------------------------------------
         //
-        // One declarative tree drives both the ☰ dropdown menu (Windows/Linux) and the macOS system
+        // One declarative tree drives both the in-window menu (Windows/Linux) and the macOS system
         // menu bar, so the two can never drift apart. Toggle/radio items read their state from a
         // delegate and are refreshed together by RefreshMenuChecks().
 
@@ -218,9 +218,13 @@ namespace RasterField
             {
                 NativeMenu.SetMenu(this, BuildNativeMenu());
             }
-            else
+            else if (Content is DockPanel root && _menuHost != null)
             {
-                PopulateMenuFlyout();
+                int index = root.Children.IndexOf(_menuHost);
+                var menu = BuildMenu();
+                DockPanel.SetDock(menu, Dock.Top);
+                root.Children[index] = menu;
+                _menuHost = menu;
             }
             RebuildRecentMenu();
         }
@@ -248,6 +252,14 @@ namespace RasterField
             L.SetLanguage(code);
             RebuildMenus();
             await MessageAsync(T("Language"), T("The menus switch immediately; restart RasterField to switch every panel and dialog."));
+        }
+
+        /// <summary>The horizontal in-window menu strip (Windows/Linux).</summary>
+        private Menu BuildMenu()
+        {
+            var menu = new Menu();
+            foreach (var top in BuildMenuModel()) menu.Items.Add(ToMenuItem(top));
+            return menu;
         }
 
         private MenuItem ToMenuItem(Cmd cmd)

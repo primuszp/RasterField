@@ -110,5 +110,42 @@ namespace RasterField.Tests
             }
             finally { dir.Delete(recursive: true); }
         }
+
+        [Fact]
+        public void Alias_resolves_to_the_renamed_palette_but_never_shadows_a_real_name()
+        {
+            var lib = new PaletteLibrary();
+            var renamed = Palette.FromStops("Terrain (yellow-green)", new[] { (0.0, new ColorRgba(0, 0, 0)), (1.0, new ColorRgba(9, 9, 9)) });
+            var real = Palette.FromStops("old", new[] { (0.0, new ColorRgba(1, 1, 1)), (1.0, new ColorRgba(2, 2, 2)) });
+            lib.Add(renamed);
+            lib.Add(real);
+            lib.AddAlias("felszin1", "Terrain (yellow-green)");
+            lib.AddAlias("old", "Terrain (yellow-green)");
+
+            Assert.Same(renamed, lib.Get("FELSZIN1"));
+            Assert.Equal("Terrain (yellow-green)", lib.Resolve("felszin1"));
+            Assert.Same(real, lib.Get("old"));
+            Assert.Null(lib.Resolve("nosuch"));
+            Assert.Null(lib.Resolve(null));
+        }
+
+        [Fact]
+        public void Lookup_ignores_unicode_normalisation_differences()
+        {
+            var lib = new PaletteLibrary();
+            lib.Add(Palette.FromStops("Grayscale", new[] { (0.0, new ColorRgba(0, 0, 0)), (1.0, new ColorRgba(255, 255, 255)) }));
+            lib.AddAlias("szürkeskála", "Grayscale");
+
+            // A decomposed (NFD) spelling, as macOS file systems often store it.
+            string decomposed = "szürkeskála".Normalize(System.Text.NormalizationForm.FormD);
+            Assert.Equal("Grayscale", lib.Resolve(decomposed));
+        }
+
+        [Fact]
+        public void Former_built_in_name_still_resolves()
+        {
+            var lib = new PaletteLibrary().AddBuiltIns();
+            Assert.Equal("Land & Sea", lib.Resolve("Land &amp; Sea"));
+        }
     }
 }

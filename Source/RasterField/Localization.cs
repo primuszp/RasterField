@@ -36,6 +36,9 @@ namespace RasterField
         public static string F(string englishFormat, params object?[] args) =>
             string.Format(CultureInfo.InvariantCulture, T(englishFormat), args);
 
+        /// <summary>Whether a Hungarian translation exists for <paramref name="english"/> (for tests).</summary>
+        internal static bool HasHungarian(string english) => Hungarian.ContainsKey(english);
+
         private static readonly Dictionary<string, string> Hungarian = BuildHungarian();
     }
 }

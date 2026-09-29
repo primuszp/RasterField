@@ -33,7 +33,12 @@ namespace RasterField
         private readonly LegendControl _legend = new LegendControl { Width = 150 };
         private readonly PaletteLibrary _palettes;
 
-        private readonly ComboBox _paletteBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
+        // Items are the stable English palette names (saved in settings/projects); shown translated.
+        private readonly ComboBox _paletteBox = new ComboBox
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ItemTemplate = new Avalonia.Controls.Templates.FuncDataTemplate<string>((name, _) => new TextBlock { Text = T(name ?? string.Empty) }),
+        };
         private readonly CheckBox _reverseBox = new CheckBox { Content = T("Reverse palette") };
         private readonly ComboBox _stretchBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         private readonly ComboBox _modeBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -164,6 +169,7 @@ namespace RasterField
             _palettes = PaletteLibrary.CreateDefault(PaletteStorage.BundledPaletteDirectory());
             _palettes.AddPalFiles(PaletteStorage.UserPaletteDirectory());
             LoadImageStripPalettes();
+            foreach (var legacy in PaletteStorage.BundledLegacyNames) _palettes.AddAlias(legacy.Key, legacy.Value);
 
             Content = BuildLayout();
             if (OperatingSystem.IsMacOS())
@@ -245,8 +251,8 @@ namespace RasterField
             if (_settings.WindowMaximized) WindowState = WindowState.Maximized;
 
             _syncing = true;
-            if (_settings.LastPaletteName != null && _palettes.Names.Contains(_settings.LastPaletteName))
-                _paletteBox.SelectedItem = _settings.LastPaletteName;
+            if (_palettes.Resolve(_settings.LastPaletteName) is { } lastPalette)
+                _paletteBox.SelectedItem = lastPalette;
             _reverseBox.IsChecked = _settings.LastPaletteReversed;
             if (_settings.LastStretchIndex >= 0 && _settings.LastStretchIndex < 4)
                 _stretchBox.SelectedIndex = _settings.LastStretchIndex;

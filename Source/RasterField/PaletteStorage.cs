@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace RasterField
@@ -18,6 +19,32 @@ namespace RasterField
                 Environment.SpecialFolderOption.Create);
             return Path.Combine(baseDir, "RasterField", "palettes");
         }
+
+        /// <summary>
+        /// Former names of the bundled palettes (their old, Hungarian file names), mapped to the
+        /// current English, content-based ones — so settings and projects saved earlier still find
+        /// them. The duplicate grayscale file was dropped in favour of the identical built-in one, and
+        /// geo2 (geo1 with only its last colour changed) in favour of geo1.
+        /// Display names in the UI are translated through <see cref="L.T"/>.
+        /// </summary>
+        public static IReadOnlyDictionary<string, string> BundledLegacyNames { get; } =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["csapadék"] = "Precipitation (brown-blue)",
+                ["felszin1"] = "Terrain (yellow-green)",
+                ["felszin2"] = "Terrain (brown-green)",
+                ["föld-tenger"] = "Land & Sea (hypsometric)",
+                ["föld"] = "Hypsometric (green-brown-white)",
+                ["geo1"] = "Relief (white-green)",
+                ["geo2"] = "Relief (white-green)", // differed from geo1 only in its last colour
+                ["magasság"] = "Elevation (cyan-brown-white)",
+                ["mars1"] = "Mars (sand-brown)",
+                ["spectrum1"] = "Hue wheel (cyclic)",
+                ["spektrum"] = "Rainbow (purple-red)",
+                ["szürkeskála"] = "Grayscale",
+                ["temp1"] = "Heat (yellow-red-blue)",
+                ["zöld-barna"] = "Green-Brown (direct)",
+            };
 
         /// <summary>The palette folder bundled next to the running application, if found.</summary>
         public static string? BundledPaletteDirectory()

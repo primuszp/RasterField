@@ -1,7 +1,6 @@
 using System;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Shapes;
 using Avalonia.Input;
 using Avalonia.Layout;
@@ -16,8 +15,8 @@ namespace RasterField
     /// right, on one quiet hairline-bordered bar.
     /// <para>On macOS it is the unified title bar: the client area extends under the system title
     /// bar (see the constructor), the traffic lights sit in its left inset, and the menus live in
-    /// the system menu bar. On Windows/Linux it sits under the system title bar and starts with a
-    /// ☰ button that opens the same menus as one dropdown instead of an in-window menu strip.</para>
+    /// the system menu bar. On Windows/Linux it sits under the system title bar and the in-window
+    /// menu strip (see <see cref="BuildMenu"/>).</para>
     /// </summary>
     public sealed partial class MainWindow
     {
@@ -26,9 +25,6 @@ namespace RasterField
 
         /// <summary>Height of the app bar on Windows/Linux, below the system title bar.</summary>
         private const double AppBarHeight = 40;
-
-        /// <summary>The ☰ dropdown holding the menus on Windows/Linux (null on macOS).</summary>
-        private MenuFlyout? _menuFlyout;
 
         /// <summary>Room left of the first title-bar control for the three traffic-light buttons.</summary>
         private const double TrafficLightInset = 80;
@@ -57,7 +53,7 @@ namespace RasterField
         private readonly TextBlock _searchLabel = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
         private readonly TextBlock _searchShortcut = new TextBlock { Text = "⌘K", VerticalAlignment = VerticalAlignment.Center };
         private Border? _searchPill;
-        private readonly Shape[] _titleIconStrokes = new Shape[7];
+        private readonly Shape[] _titleIconStrokes = new Shape[6];
 
         private Border BuildTitleBar()
         {
@@ -73,7 +69,6 @@ namespace RasterField
                 Spacing = 6,
                 VerticalAlignment = VerticalAlignment.Center,
             };
-            if (!mac) left.Children.Add(BuildMenuButton());
             left.Children.Add(leftToggle);
             left.Children.Add(_titleText);
             left.Children.Add(_titleDocChip);
@@ -151,33 +146,6 @@ namespace RasterField
             UpdateTitleBarText();
             ApplyTitleBarTheme();
             return bar;
-        }
-
-        /// <summary>The ☰ button: every top-level menu of <see cref="BuildMenuModel"/> as one dropdown.</summary>
-        private Button BuildMenuButton()
-        {
-            var icon = new Path
-            {
-                Data = Geometry.Parse("M2,4 H16 M2,9 H16 M2,14 H16"),
-                StrokeThickness = 1.4,
-                StrokeLineCap = PenLineCap.Round,
-                Width = 18, Height = 18,
-            };
-            _titleIconStrokes[6] = icon;
-            _menuFlyout = new MenuFlyout { Placement = PlacementMode.BottomEdgeAlignedLeft };
-            PopulateMenuFlyout();
-            var button = new Button { Content = icon, Flyout = _menuFlyout };
-            button.Classes.Add("titlebar");
-            ToolTip.SetTip(button, T("Menu"));
-            return button;
-        }
-
-        /// <summary>(Re)fills the ☰ dropdown from the menu model — at startup and after a language / bookmark change.</summary>
-        private void PopulateMenuFlyout()
-        {
-            if (_menuFlyout == null) return;
-            _menuFlyout.Items.Clear();
-            foreach (var top in BuildMenuModel()) _menuFlyout.Items.Add(ToMenuItem(top));
         }
 
         private static Button TitleBarButton(Control icon, string tip, Action run)

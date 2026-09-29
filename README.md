@@ -266,9 +266,8 @@ made.Save("new.ers");
   comparison, magnification and theme live under *View*, palettes under *Layer*,
   exports under *File ▸ Export*.
   On macOS they live in the system menu bar; on Windows and Linux the same menus
-  open as one dropdown from the ☰ button at the left of the app bar (with the
-  sidebar toggles, title and `Ctrl+K` command search), instead of an in-window
-  menu strip.
+  form the horizontal in-window menu bar, above the app bar (sidebar toggles,
+  title and `Ctrl+K` command search).
 * **Multi‑band datasets** — a **Band** selector appears in the side panel whenever
   the dataset has more than one band; switching re‑stretches and re‑colourises
   for the newly selected band (works in streaming mode too).
@@ -289,7 +288,11 @@ made.Save("new.ers");
   hint show *(streaming)* in this mode; the Clip tool still works (and is the
   recommended way to pull a smaller, fully‑editable region out of a huge scene).
 * **Palettes** — built‑ins + every `.pal` and PNG/BMP strip in `palette/`; reverse
-  toggle; continuous / discrete / nearest modes; live legend.
+  toggle; continuous / discrete / nearest modes; live legend. The bundled files are
+  named in English by their content, low → high (e.g. *Precipitation (brown-blue)*,
+  *Hue wheel (cyclic)*), and every palette name is shown translated in the Hungarian
+  UI. Former names (the old Hungarian file names, `Land &amp; Sea`) resolve through
+  `PaletteLibrary.AddAlias`, so older settings and projects keep their palette.
 * **Palette editor** (*Layer ▸ Palette ▸ Edit current palette… / New palette…*) — drag
   gradient stops on a colour bar, add one by clicking it, fine-tune the selected
   stop's position and colour (R/G/B or hex), reverse, preview live in the viewer,
