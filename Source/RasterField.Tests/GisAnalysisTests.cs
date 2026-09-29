@@ -168,6 +168,19 @@ namespace RasterField.Tests
         }
 
         [Fact]
+        public void Materialised_zonal_statistics_can_be_cancelled_before_work_starts()
+        {
+            var raster = new Raster(100, 100);
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            Assert.Throws<OperationCanceledException>(() => ZonalStatistics.Compute(
+                raster, Identity,
+                new[] { (1.0, 1.0), (30.0, 1.0), (30.0, 30.0), (1.0, 30.0) },
+                cancellation.Token));
+        }
+
+        [Fact]
         public void Measurement_length_perimeter_area_and_surface_length()
         {
             var square = new[] { (0.0, 0.0), (3.0, 0.0), (3.0, 4.0), (0.0, 4.0) };

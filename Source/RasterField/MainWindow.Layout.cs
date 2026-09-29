@@ -55,6 +55,7 @@ namespace RasterField
         private int _profileGeneration;
         private CancellationTokenSource? _zoneCts;
         private int _zoneGeneration;
+        private DockPanel? _mainShell;
 
         private static readonly FilePickerFileType[] CsvTypes = { new("CSV (*.csv)") { Patterns = new[] { "*.csv" } } };
         private static readonly FilePickerFileType[] GeoJsonTypes = { new("GeoJSON (*.geojson)") { Patterns = new[] { "*.geojson", "*.json" } } };
@@ -62,9 +63,10 @@ namespace RasterField
 
         // ---- layout -----------------------------------------------------------------
 
-        private DockPanel BuildLayout()
+        private Grid BuildLayout()
         {
             var root = new DockPanel();
+            _mainShell = root;
 
             // Windows/Linux: the horizontal in-window menu strip on top; macOS uses the system menu bar.
             var menu = OperatingSystem.IsMacOS() ? null : BuildMenu();
@@ -98,7 +100,6 @@ namespace RasterField
             viewHost.Children.Add(_view);
             viewHost.Children.Add(BuildClipBar());
             viewHost.Children.Add(BuildPathBar());
-            viewHost.Children.Add(BuildBusyOverlay());
             Grid.SetColumn(viewHost, 2);
 
             _rightSplitter = new GridSplitter { Width = 3, ResizeDirection = GridResizeDirection.Columns };
@@ -116,7 +117,10 @@ namespace RasterField
             ApplyDockVisibility();
 
             root.Children.Add(grid);
-            return root;
+            var host = new Grid();
+            host.Children.Add(root);
+            host.Children.Add(BuildBusyOverlay());
+            return host;
         }
 
         private Menu? _menuHost;
@@ -682,7 +686,7 @@ namespace RasterField
                 ZonalResult result;
                 if (request.Raster != null)
                 {
-                    result = ZonalStatistics.Compute(request.Raster, request.GeoReference, path);
+                    result = ZonalStatistics.Compute(request.Raster, request.GeoReference, path, token);
                 }
                 else
                 {
@@ -728,7 +732,8 @@ namespace RasterField
             Func<IRasterSource>? SourceFactory, int Band, RasterGeoReference GeoReference);
 
         private static List<PolygonZoneResult> CalculatePolygonZones(
-            RasterLayerRequest raster, IReadOnlyList<PolygonZone> zones)
+            RasterLayerRequest raster, IReadOnlyList<PolygonZone> zones,
+            CancellationToken cancellationToken)
         {
             var results = new List<PolygonZoneResult>(zones.Count);
             IRasterSource? ownedSource = null;
@@ -739,9 +744,11 @@ namespace RasterField
                     source = raster.SourceFactory != null ? ownedSource = raster.SourceFactory() : raster.Source;
                 foreach (PolygonZone zone in zones)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     ZonalResult result = raster.Raster != null
-                        ? ZonalStatistics.Compute(raster.Raster, raster.GeoReference, zone.Ring)
-                        : ZonalStatistics.Compute(source!, raster.GeoReference, zone.Ring, raster.Band);
+                        ? ZonalStatistics.Compute(raster.Raster, raster.GeoReference, zone.Ring, cancellationToken)
+                        : ZonalStatistics.Compute(source!, raster.GeoReference, zone.Ring, raster.Band,
+                            cancellationToken: cancellationToken);
                     results.Add(new PolygonZoneResult(zone.Attribute, result));
                 }
             }
@@ -779,12 +786,20 @@ namespace RasterField
             if (zones.Count == 0) { await MessageAsync(T("Zonal statistics"), T("The layer has no polygons.")); return; }
 
             List<PolygonZoneResult> computed;
-            SetBusy(true, T("Computing zonal statistics…"));
+            using var cancellation = new CancellationTokenSource();
+            SetBusy(true, T("Computing zonal statistics…"), cancellation);
             try
             {
                 var request = new RasterLayerRequest(raster.Raster, raster.Source,
                     raster.SourceFactory, raster.ActiveBand, geo);
-                computed = await Task.Run(() => CalculatePolygonZones(request, zones));
+                computed = await Task.Run(
+                    () => CalculatePolygonZones(request, zones, cancellation.Token), cancellation.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                SetBusy(false);
+                Flash(T("Zonal statistics cancelled."));
+                return;
             }
             catch (Exception ex)
             {

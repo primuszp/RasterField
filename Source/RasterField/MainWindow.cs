@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -99,6 +100,15 @@ namespace RasterField
             IsVisible = false,
             IsHitTestVisible = true,
         };
+        private readonly Button _busyCancelButton = new Button
+        {
+            Content = T("Cancel"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            MinWidth = 92,
+            IsVisible = false,
+        };
+        private CancellationTokenSource? _busyCancellation;
+        private bool _isBusy;
 
         private readonly AppSettings _settings = AppSettings.Load();
         private MenuItem? _recentMenu;
@@ -234,6 +244,8 @@ namespace RasterField
         /// <summary>Releases background analysis work, rendered bitmaps and streaming readers.</summary>
         public void Dispose()
         {
+            _busyCancellation?.Cancel();
+            _busyCancellation = null;
             _profileGeneration++;
             _profileCts?.Cancel();
             _profileCts?.Dispose();
@@ -385,23 +397,42 @@ namespace RasterField
             RefreshMenuChecks();
         }
 
-        /// <summary>The dimming overlay + centred message shown over the view while a heavy computation runs.</summary>
+        /// <summary>The dimming overlay + centred message shown while a heavy computation runs.</summary>
         private Border BuildBusyOverlay()
         {
-            _busyOverlay.Child = _busyText;
+            _busyCancelButton.Click += (_, _) => CancelBusyOperation();
+            _busyOverlay.Child = new StackPanel
+            {
+                Spacing = 14,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children = { _busyText, _busyCancelButton },
+            };
             return _busyOverlay;
         }
 
         /// <summary>
-        /// Toggles the busy overlay and disables the whole window (so no second heavy operation
-        /// can be started, and no control's state can drift out from under an in-flight one)
-        /// while <paramref name="busy"/> is <see langword="true"/>.
+        /// Toggles the busy overlay and disables the application shell so no second operation can
+        /// start while an in-flight one is reading its state. The overlay remains enabled and can
+        /// therefore offer cancellation for operations that accept a token.
         /// </summary>
-        private void SetBusy(bool busy, string? message = null)
+        private void SetBusy(bool busy, string? message = null, CancellationTokenSource? cancellation = null)
         {
+            _isBusy = busy;
+            _busyCancellation = busy ? cancellation : null;
             _busyText.Text = message ?? T("Working…");
+            _busyCancelButton.IsVisible = busy && cancellation != null;
+            _busyCancelButton.IsEnabled = busy && cancellation is { IsCancellationRequested: false };
             _busyOverlay.IsVisible = busy;
-            IsEnabled = !busy;
+            if (_mainShell != null) _mainShell.IsEnabled = !busy;
+        }
+
+        private void CancelBusyOperation()
+        {
+            if (_busyCancellation is not { IsCancellationRequested: false } cancellation) return;
+            cancellation.Cancel();
+            _busyText.Text = T("Cancelling…");
+            _busyCancelButton.IsEnabled = false;
         }
 
         private void UpdateClipPanel()
@@ -1759,6 +1790,12 @@ namespace RasterField
         private void OnWindowKeyDown(object? sender, KeyEventArgs e)
         {
             if (e.Handled) return;
+            if (_isBusy)
+            {
+                if (e.Key == Key.Escape) CancelBusyOperation();
+                e.Handled = true;
+                return;
+            }
             if (HandleToolKey(e) || HandleMenuGesture(e)) e.Handled = true;
         }
 

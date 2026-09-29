@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -698,22 +699,23 @@ namespace RasterField
             IReadOnlyList<(double X, double Y)>? polygon = choice.Value.Zone
                 ? _view.CurrentPath.ToList()
                 : null;
+            using var cancellation = new CancellationTokenSource();
             try
             {
-                SetBusy(true, T("Computing ΔZ and volumes…"));
+                SetBusy(true, T("Computing ΔZ and volumes…"), cancellation);
                 RasterChangeResult? materialized = null;
                 RasterChangeSummary result;
                 if (first.Raster != null && second.Raster != null)
                 {
                     materialized = await Task.Run(() => RasterChangeAnalysis.Compute(
                         first.Raster, second.Raster, first.Document.GeoReference,
-                        choice.Value.Threshold, polygon));
+                        choice.Value.Threshold, polygon, cancellation.Token), cancellation.Token);
                     result = materialized;
                 }
                 else
                 {
                     result = await Task.Run(() => ComputeStreamingChangeSummary(
-                        first, second, choice.Value.Threshold, polygon));
+                        first, second, choice.Value.Threshold, polygon, cancellation.Token), cancellation.Token);
                 }
                 SetBusy(false);
 
@@ -742,6 +744,11 @@ namespace RasterField
                     choice.Value.Threshold, result.ThresholdArea, result.ThresholdCellCount,
                     result.CutVolume, unit, result.FillVolume, result.NetVolume));
             }
+            catch (OperationCanceledException)
+            {
+                SetBusy(false);
+                Flash(T("Raster comparison cancelled."));
+            }
             catch (Exception ex)
             {
                 SetBusy(false);
@@ -751,7 +758,8 @@ namespace RasterField
 
         private static RasterChangeSummary ComputeStreamingChangeSummary(
             RasterLayer first, RasterLayer second, double threshold,
-            IReadOnlyList<(double X, double Y)>? polygon)
+            IReadOnlyList<(double X, double Y)>? polygon,
+            CancellationToken cancellationToken)
         {
             IRasterSource? ownedFirst = null, ownedSecond = null;
             try
@@ -773,7 +781,8 @@ namespace RasterField
                     secondSource = second.Source!;
 
                 return RasterChangeAnalysis.ComputeSummary(firstSource, secondSource,
-                    first.Document.GeoReference, threshold, polygon, first.ActiveBand, second.ActiveBand);
+                    first.Document.GeoReference, threshold, polygon, first.ActiveBand, second.ActiveBand,
+                    cancellationToken: cancellationToken);
             }
             finally
             {

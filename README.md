@@ -214,7 +214,8 @@ made.Save("new.ers");
   perimeter and area. **Zone** (`Z`): zonal statistics of every visible raster inside a drawn
   polygon; *Analysis ▸ Zonal statistics by polygon layer…* does it per polygon of a vector layer,
   with CSV export. Both zonal modes work directly on huge streamed rasters in the background;
-  redrawing the interactive zone cancels its superseded calculation. Click adds a point, drag
+  redrawing the interactive zone cancels its superseded calculation, while polygon-layer analysis
+  has an explicit **Cancel** button and also accepts `Esc`. Click adds a point, drag
   moves it, dragging the small handle at a segment's
   midpoint inserts a new point there (also on a polygon's closing edge), double-click / Enter
   finishes, Backspace removes the last point.
@@ -358,7 +359,8 @@ made.Save("new.ers");
   compatibility, creates a blue-white-red `second − first` layer, and reports min/max/mean/σ,
   threshold-exceedance area and cut/fill/net volumes for the full raster or the finished map zone.
   If either input is a huge streamed layer, statistics and volumes are computed tile by tile with
-  bounded memory; in that mode no multi-gigabyte in-memory ΔZ layer is created.
+  bounded memory; in that mode no multi-gigabyte in-memory ΔZ layer is created. Long comparisons
+  can be cancelled from the progress overlay or with `Esc`.
 * **Swipe / Blink comparison** (*View ▸ Comparison*) — isolates any two raster layers for visual
   inspection. Swipe places them on opposite sides of a draggable vertical divider; Blink alternates
   them at a configurable interval. Vector overlays remain visible in both modes, and `Esc` restores

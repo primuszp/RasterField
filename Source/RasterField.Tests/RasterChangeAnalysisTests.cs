@@ -108,6 +108,19 @@ namespace RasterField.Tests
         }
 
         [Fact]
+        public void Materialised_comparison_can_be_cancelled_before_work_starts()
+        {
+            var first = new Raster(100, 100);
+            var second = new Raster(100, 100);
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            Assert.Throws<OperationCanceledException>(() => RasterChangeAnalysis.Compute(
+                first, second, new RasterGeoReference(100, 100, 0, 1, 0, 0, 0, 1),
+                cancellationToken: cancellation.Token));
+        }
+
+        [Fact]
         public void Grid_check_rejects_shifted_origin()
         {
             ErsDocument first = Document(new Raster(2, 2), 100);

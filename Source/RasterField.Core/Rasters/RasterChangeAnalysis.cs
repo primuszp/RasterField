@@ -162,7 +162,8 @@ namespace RasterField.Rasters
         /// Cut and fill are returned as positive magnitudes; net volume is fill minus cut.
         /// </summary>
         public static RasterChangeResult Compute(Raster first, Raster second, RasterGeoReference geoReference,
-            double absoluteThreshold = 0, IReadOnlyList<(double X, double Y)>? polygon = null)
+            double absoluteThreshold = 0, IReadOnlyList<(double X, double Y)>? polygon = null,
+            CancellationToken cancellationToken = default)
         {
             if (first == null) throw new ArgumentNullException(nameof(first));
             if (second == null) throw new ArgumentNullException(nameof(second));
@@ -173,6 +174,7 @@ namespace RasterField.Rasters
                 throw new ArgumentOutOfRangeException(nameof(absoluteThreshold));
             if (polygon != null && polygon.Count < 3)
                 throw new ArgumentException("A comparison zone needs at least three vertices.", nameof(polygon));
+            cancellationToken.ThrowIfCancellationRequested();
 
             int width = first.Width;
             int height = first.Height;
@@ -195,7 +197,7 @@ namespace RasterField.Rasters
             var total = new Accumulator();
             object gate = new object();
 
-            Parallel.For(0, height,
+            Parallel.For(0, height, new ParallelOptions { CancellationToken = cancellationToken },
                 () => new Accumulator(),
                 (row, _, local) =>
                 {

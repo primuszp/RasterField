@@ -52,13 +52,16 @@ namespace RasterField.Rasters
     public static class ZonalStatistics
     {
         /// <summary>Computes the statistics of <paramref name="raster"/> inside <paramref name="polygon"/>.</summary>
-        public static ZonalResult Compute(Raster raster, RasterGeoReference geoReference, IReadOnlyList<(double X, double Y)> polygon)
+        public static ZonalResult Compute(Raster raster, RasterGeoReference geoReference,
+            IReadOnlyList<(double X, double Y)> polygon,
+            CancellationToken cancellationToken = default)
         {
             if (raster == null) throw new ArgumentNullException(nameof(raster));
             if (geoReference == null) throw new ArgumentNullException(nameof(geoReference));
             if (polygon == null) throw new ArgumentNullException(nameof(polygon));
             if (polygon.Count < 3) throw new ArgumentException("A zone needs at least three vertices.", nameof(polygon));
             if (!geoReference.IsInvertible) throw new InvalidOperationException("The georeference is not invertible.");
+            cancellationToken.ThrowIfCancellationRequested();
 
             var px = new double[polygon.Count];
             var py = new double[polygon.Count];
@@ -82,6 +85,7 @@ namespace RasterField.Rasters
             var crossings = new List<double>();
             for (int row = r0; row <= r1; row++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 // Scanline through the row's cell centres: the x positions where polygon edges cross it.
                 double y = row + 0.5;
                 crossings.Clear();
