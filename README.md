@@ -209,8 +209,9 @@ made.Save("new.ers");
   or along a vector line (card menu). **Measure** (`M`): length, terrain-following surface length,
   perimeter and area. **Zone** (`Z`): zonal statistics of every visible raster inside a drawn
   polygon; *Analysis ▸ Zonal statistics by polygon layer…* does it per polygon of a vector layer,
-  with CSV export. Click adds a point, drag moves it, double-click / Enter finishes, Backspace
-  removes the last point.
+  with CSV export. Click adds a point, drag moves it, dragging the small handle at a segment's
+  midpoint inserts a new point there (also on a polygon's closing edge), double-click / Enter
+  finishes, Backspace removes the last point.
 * **Bézier-patch subdivision** (*Raster ▸ Bézier-patch subdivision…*, `Ctrl+B`) —
   ×2/×3/×4/×8 or custom, whole layer or current view, tension, monotone (no overshoot) and
   no-data behaviour; resulting size and memory estimate and a side-by-side preview (original vs.

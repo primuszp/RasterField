@@ -86,6 +86,8 @@ namespace RasterField
         private readonly List<(double X, double Y)> _path = new List<(double X, double Y)>();
         private bool _pathFinished;
         private int _pathDragIndex = -1;
+        // Pressed on a segment's midpoint handle: the vertex is inserted only once the drag starts.
+        private int _pathInsertSegment = -1;
         private bool _pathClickPending;
         private Point _pathPressScreen;
 
@@ -856,6 +858,7 @@ namespace RasterField
                 _path.Clear();
                 _pathFinished = false;
                 _pathDragIndex = -1;
+                _pathInsertSegment = -1;
                 Cursor = value != PathTool.None ? new Cursor(StandardCursorType.Cross) : Cursor.Default;
                 RaisePathChanged();
             }
@@ -915,6 +918,42 @@ namespace RasterField
             if (layer == null) return null;
             Point c = ScreenToCell(screen);
             return layer.Document.GeoReference.PixelToWorld(c.X, c.Y);
+        }
+
+        /// <summary>
+        /// Whether the path is drawn closed (zone, or a finished measurement): its last → first
+        /// edge is then a real segment with its own midpoint handle.
+        /// </summary>
+        private bool IsPathPolygon => (_pathTool == PathTool.Zone || (_pathTool == PathTool.Measure && _pathFinished)) && _path.Count >= 3;
+
+        /// <summary>
+        /// Screen midpoints of the path's segments, as (segment index, point); segment i runs from
+        /// vertex i to vertex i+1 (the closing edge of a polygon wraps to 0). Segments too short on
+        /// screen for a separate handle are skipped, so it never crowds the vertex handles.
+        /// </summary>
+        private List<(int Segment, Point Midpoint)> PathMidpoints(RasterLayer active)
+        {
+            var result = new List<(int, Point)>();
+            int n = _path.Count;
+            if (n < 2 || !active.Document.GeoReference.IsInvertible) return result;
+            int segments = IsPathPolygon ? n : n - 1;
+            for (int i = 0; i < segments; i++)
+            {
+                Point a = WorldToScreen(active, _path[i].X, _path[i].Y);
+                Point b = WorldToScreen(active, _path[(i + 1) % n].X, _path[(i + 1) % n].Y);
+                if (Distance(a, b) < 24) continue;
+                result.Add((i, new Point((a.X + b.X) / 2, (a.Y + b.Y) / 2)));
+            }
+            return result;
+        }
+
+        private int HitTestPathMidpoint(Point screen)
+        {
+            var active = ActiveLayer;
+            if (active == null) return -1;
+            foreach (var (segment, midpoint) in PathMidpoints(active))
+                if (Distance(midpoint, screen) <= 7) return segment;
+            return -1;
         }
 
         private int HitTestPathVertex(Point screen)
@@ -2466,6 +2505,11 @@ namespace RasterField
                     context.DrawLine(new Pen(brush, 1, new DashStyle(new double[] { 4, 3 }, 0)), pts[pts.Count - 1], pts[0]);
             }
 
+            // Midpoint handles (hollow, smaller): drag one to insert a new vertex on that segment.
+            var midFill = new SolidColorBrush(Colors.White, 0.85);
+            var midPen = new Pen(brush, 1.5);
+            foreach (var (_, midpoint) in PathMidpoints(active)) context.DrawEllipse(midFill, midPen, midpoint, 3.5, 3.5);
+
             var outline = new Pen(Brushes.Black, 1);
             foreach (var pt in pts) context.DrawEllipse(brush, outline, pt, 4.5, 4.5);
 
@@ -2606,6 +2650,14 @@ namespace RasterField
                         e.Pointer.Capture(this);
                         return;
                     }
+                    int segment = HitTestPathMidpoint(p.Position);
+                    if (segment >= 0)
+                    {
+                        _pathInsertSegment = segment;
+                        _pathPressScreen = p.Position;
+                        e.Pointer.Capture(this);
+                        return;
+                    }
                     // Might be a click (adds a vertex on release) or the start of a pan.
                     _pathClickPending = true;
                     _pathPressScreen = p.Position;
@@ -2669,6 +2721,14 @@ namespace RasterField
                 return;
             }
 
+            if (_pathInsertSegment >= 0)
+            {
+                // Released without dragging: a plain click on a midpoint handle changes nothing.
+                _pathInsertSegment = -1;
+                e.Pointer.Capture(null);
+                return;
+            }
+
             if (_pathClickPending)
             {
                 _pathClickPending = false;
@@ -2709,6 +2769,19 @@ namespace RasterField
                 RaiseSelectionChanged();
                 InvalidateVisual();
             }
+            else if (_pathInsertSegment >= 0)
+            {
+                // The drag has started: insert the vertex after the segment's start and keep dragging it.
+                var world = ScreenToWorld(pos);
+                if (world != null && Distance(pos, _pathPressScreen) > 3 && _pathInsertSegment < _path.Count)
+                {
+                    int index = _pathInsertSegment + 1;
+                    _path.Insert(index, world.Value);
+                    _pathInsertSegment = -1;
+                    _pathDragIndex = index;
+                    RaisePathChanged();
+                }
+            }
             else if (_pathDragIndex >= 0)
             {
                 var world = ScreenToWorld(pos);
@@ -2729,7 +2802,9 @@ namespace RasterField
             }
             else if (_pathTool != PathTool.None)
             {
-                Cursor = HitTestPathVertex(pos) >= 0 ? new Cursor(StandardCursorType.SizeAll) : new Cursor(StandardCursorType.Cross);
+                Cursor = HitTestPathVertex(pos) >= 0 || HitTestPathMidpoint(pos) >= 0
+                    ? new Cursor(StandardCursorType.SizeAll)
+                    : new Cursor(StandardCursorType.Cross);
             }
             else if (_comparisonMode == RasterComparisonMode.Swipe &&
                      Math.Abs(pos.X - Bounds.Width * _swipePosition) <= 12)

@@ -33,9 +33,11 @@ namespace RasterField
         private GridSplitter? _leftSplitter, _rightSplitter;
         private readonly TabControl _analysisTabs = new TabControl { Padding = new Thickness(0) };
         private readonly SelectableTextBlock _identifyText = new SelectableTextBlock { TextWrapping = TextWrapping.Wrap, FontSize = AppTheme.FontCaption + 0.5, LineHeight = 17 };
-        private readonly ProfileChartControl _profileChart = new ProfileChartControl { MinHeight = 190 };
+        private readonly ProfileChartControl _profileChart = new ProfileChartControl { MinHeight = 120 };
         private readonly CheckBox _profileBezierBox = new CheckBox { IsChecked = true };
         private readonly CheckBox _profileAllLayersBox = new CheckBox { IsChecked = true };
+        private readonly CheckBox _profileDeltaBox = new CheckBox { IsChecked = false };
+        private readonly TextBlock _profileDeltaText = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = AppTheme.FontCaption, VerticalAlignment = VerticalAlignment.Center };
         private readonly SelectableTextBlock _measureText = new SelectableTextBlock { TextWrapping = TextWrapping.Wrap, FontSize = AppTheme.FontCaption + 0.5, LineHeight = 17 };
         private readonly HistogramStretchControl _histogram = new HistogramStretchControl { Height = 70, Margin = new Thickness(0, 4, 0, 2) };
         private readonly Slider _opacitySlider = new Slider { Minimum = 0, Maximum = 100, Value = 100 };
@@ -139,6 +141,9 @@ namespace RasterField
             _profileAllLayersBox.Content = T("All visible layers");
             _profileBezierBox.IsCheckedChanged += (_, _) => UpdateProfile();
             _profileAllLayersBox.IsCheckedChanged += (_, _) => UpdateProfile();
+            _profileDeltaBox.Content = T("Δ Bézier − bilinear");
+            ToolTip.SetTip(_profileDeltaBox, T("Plot the difference between the Bézier and the bilinear profile of the active layer, scaled to fit — on a smooth surface the two curves otherwise overlap."));
+            _profileDeltaBox.IsCheckedChanged += (_, _) => UpdateProfile();
             var profileWindowBtn = new Button { Content = T("Window…") };
             profileWindowBtn.Click += (_, _) => { if (_lastProfile.Count > 0) new ProfileWindow(_lastProfile, DistanceUnit(), UnitLabel()).Show(this); };
             var profileCsvBtn = new Button { Content = "CSV…" };
@@ -154,6 +159,14 @@ namespace RasterField
             }
             DockPanel.SetDock(profileOptions, Dock.Top);
             profilePanel.Children.Add(profileOptions);
+            // Under the chart: the Δ toggle and the measured Bézier − bilinear difference.
+            var deltaRow = new DockPanel { Margin = new Thickness(0, 4, 0, 0) };
+            _profileDeltaBox.Margin = new Thickness(0, 0, 8, 0);
+            DockPanel.SetDock(_profileDeltaBox, Dock.Left);
+            deltaRow.Children.Add(_profileDeltaBox);
+            deltaRow.Children.Add(_profileDeltaText);
+            DockPanel.SetDock(deltaRow, Dock.Bottom);
+            profilePanel.Children.Add(deltaRow);
             profilePanel.Children.Add(_profileChart);
             var profileTab = new TabItem { Header = T("Profile"), Content = profilePanel };
 
@@ -404,7 +417,7 @@ namespace RasterField
             var tool = _view.PathToolMode;
             int n = _view.CurrentPath.Count;
             _pathInfoText.Text = n == 0
-                ? T("click to add points · drag a point to move it · double-click / right-click / Enter to finish · Backspace removes the last point")
+                ? T("click to add points · drag a point to move it · drag a segment midpoint to insert a point · double-click / right-click / Enter to finish · Backspace removes the last point")
                 : L.F("{0} point(s) — double-click / Enter to finish, Backspace to undo a point, Esc to clear", n);
             switch (tool)
             {
@@ -427,9 +440,15 @@ namespace RasterField
             var path = _view.CurrentPath.ToList();
             var active = _view.ActiveLayer;
             var series = new List<ProfileSeries>();
+            IReadOnlyList<ProfileSample>? bilinear = null, bezier = null;
             if (path.Count >= 2 && active != null && !active.IsFrame)
             {
-                double spacing = Math.Max(Measurement.Length(path) / 600.0, 1e-9);
+                // Bézier and bilinear agree at the cell centres and differ only between them, so
+                // sample at least 4 points per cell of the active layer (capped for responsiveness).
+                double length = Measurement.Length(path);
+                var (_, gb, gc, _, ge, gf) = active.Document.GeoReference.GeoTransform;
+                double cell = Math.Min(Math.Sqrt(gb * gb + ge * ge), Math.Sqrt(gc * gc + gf * gf));
+                double spacing = Math.Max(Math.Min(length / 600.0, cell / 4.0), Math.Max(length / 8000.0, 1e-9));
                 var layers = _profileAllLayersBox.IsChecked == true
                     ? _view.DrawOrder.OfType<RasterLayer>().Where(l => l.IsVisible && !l.IsFrame).Reverse().ToList()
                     : new List<RasterLayer> { active };
@@ -444,19 +463,45 @@ namespace RasterField
                     if (raster == null || layer.ShowRgbComposite) continue; // streaming / RGB layers aren't profiled
                     var geo = layer.Document.GeoReference;
                     if (!geo.IsInvertible) continue;
-                    series.Add(new ProfileSeries(layer.Name, RasterProfiler.SamplePolylineWorld(raster, geo, path, spacing), SeriesColors[ci++ % SeriesColors.Length]));
+                    var samples = RasterProfiler.SamplePolylineWorld(raster, geo, path, spacing);
+                    series.Add(new ProfileSeries(layer.Name, samples, SeriesColors[ci++ % SeriesColors.Length]));
                     if (ReferenceEquals(layer, active) && _profileBezierBox.IsChecked == true)
                     {
                         var o = new BezierPatchOptions();
-                        series.Add(new ProfileSeries(layer.Name + " · " + T("Bézier"),
-                            RasterProfiler.SamplePolylineWorld(raster, geo, path, spacing, (r, c, row) => BezierPatchInterpolator.Sample(r, c, row, o)),
+                        bilinear = samples;
+                        bezier = RasterProfiler.SamplePolylineWorld(raster, geo, path, spacing, (r, c, row) => BezierPatchInterpolator.Sample(r, c, row, o));
+                        series.Add(new ProfileSeries(layer.Name + " · " + T("Bézier"), bezier,
                             AppTheme.IsDark ? Colors.White : Color.FromRgb(0x1F, 0x26, 0x30), dashed: true));
                     }
                 }
             }
-            _lastProfile = series;
-            _profileChart.SetSeries(series, DistanceUnit(), UnitLabel());
+            _lastProfile = series; // CSV, the profile window and the PDF report always get the real profile
+
+            _profileDeltaBox.IsEnabled = _profileBezierBox.IsChecked == true;
+            var delta = bilinear != null && bezier != null ? ProfileDifference(bilinear, bezier) : null;
+            string unit = UnitLabel() ?? "";
+            if (delta == null || !delta.Any(s => s.Value.HasValue))
+            {
+                _profileDeltaText.IsVisible = false;
+                _profileChart.SetSeries(series, DistanceUnit(), UnitLabel());
+                return;
+            }
+
+            var values = delta.Where(s => s.Value.HasValue).Select(s => Math.Abs(s.Value!.Value)).ToList();
+            _profileDeltaText.IsVisible = true;
+            _profileDeltaText.Foreground = AppTheme.TextSecondary;
+            _profileDeltaText.Text = L.F("max |Δ| {0:g3} {1} · mean {2:g3} {1}", values.Max(), unit, values.Average()).Replace("  ", " ", StringComparison.Ordinal);
+            _profileChart.SetSeries(
+                _profileDeltaBox.IsChecked == true
+                    ? new[] { new ProfileSeries(T("Δ Bézier − bilinear"), delta, AppTheme.IsDark ? AppTheme.DarkAccentColor : AppTheme.LightAccentColor) }
+                    : series,
+                DistanceUnit(), UnitLabel());
         }
+
+        /// <summary>Sample-by-sample <paramref name="bezier"/> − <paramref name="bilinear"/> (same path, same spacing).</summary>
+        private static List<ProfileSample> ProfileDifference(IReadOnlyList<ProfileSample> bilinear, IReadOnlyList<ProfileSample> bezier) =>
+            bilinear.Zip(bezier, (a, b) => new ProfileSample(a.Distance, a.X, a.Y,
+                a.Value.HasValue && b.Value.HasValue ? b.Value.Value - a.Value.Value : null)).ToList();
 
         private void UpdateMeasure()
         {

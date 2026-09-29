@@ -420,7 +420,7 @@ namespace RasterField
             "Ctrl+Shift+D  add bookmark · Ctrl+1…9  go to bookmark · F9 / F10 / F11  panels / map only\n" +
             "Ctrl+0 / F  zoom to fit · Ctrl+± / wheel  zoom · arrows  pan\n" +
             "I  identify · P  profile · M  measure · Z  zone · C  clip · G  cell grid · B  Bézier display smoothing\n" +
-            "Path tools: click adds a point, drag moves it, double-click / Enter finishes, Backspace removes the last point, Esc clears\n" +
+            "Path tools: click adds a point, drag moves it, dragging a segment midpoint inserts one, double-click / Enter finishes, Backspace removes the last point, Esc clears\n" +
             "Tab (on the map)  next raster layer"));
 
         // ---- derived (in-memory) layers ---------------------------------------------------
