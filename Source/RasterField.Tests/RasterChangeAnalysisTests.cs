@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using RasterField.ErMapper;
 using RasterField.Gdal;
 using RasterField.Rasters;
@@ -92,6 +94,36 @@ namespace RasterField.Tests
                 finally
                 {
                     opened.Source?.Dispose();
+                }
+            }
+            finally
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+        }
+
+        [Fact]
+        public async Task Gdal_source_serialises_concurrent_window_reads()
+        {
+            string path = Path.Combine(Path.GetTempPath(), $"rasterfield-concurrent-{Guid.NewGuid():N}.tif");
+            try
+            {
+                var raster = new Raster(80, 60);
+                for (int row = 0; row < raster.Height; row++)
+                    for (int column = 0; column < raster.Width; column++)
+                        raster[row, column] = row * 1000 + column;
+                GeoTiffDataset.Save(ErsDocument.Create(raster, 0, 60, 1, 1), path);
+
+                using var source = new GdalRasterSource(path);
+                Task<Raster>[] reads = Enumerable.Range(0, 12)
+                    .Select(i => Task.Run(() => source.ReadWindow(i, i + 2, 20, 15)))
+                    .ToArray();
+                Raster[] results = await Task.WhenAll(reads);
+
+                for (int i = 0; i < results.Length; i++)
+                {
+                    Assert.Equal((i + 2) * 1000 + i, results[i][0, 0]);
+                    Assert.Equal((i + 16) * 1000 + i + 19, results[i][14, 19]);
                 }
             }
             finally

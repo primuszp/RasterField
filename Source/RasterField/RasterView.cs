@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -92,6 +94,11 @@ namespace RasterField
 
         /// <summary>Extra pixels fetched beyond the viewport in streaming mode, so a small pan doesn't force an immediate re-read.</summary>
         private const int StreamingMargin = 160;
+        private readonly SemaphoreSlim _streamReadGate = new SemaphoreSlim(1, 1);
+        private Avalonia.Threading.DispatcherTimer? _streamRefreshTimer;
+        private CancellationTokenSource? _streamRefreshCts;
+        private int _streamGeneration;
+        private bool _streamRefreshBusy;
 
         public RasterView()
         {
@@ -120,6 +127,8 @@ namespace RasterField
         {
             base.OnDetachedFromVisualTree(e);
             _blinkTimer?.Stop();
+            CancelStreamingRefresh();
+            _streamRefreshTimer?.Stop();
             foreach (var layer in _layers) layer.DisposeSource();
         }
 
@@ -127,6 +136,8 @@ namespace RasterField
         public void Dispose()
         {
             _blinkTimer?.Stop();
+            CancelStreamingRefresh();
+            _streamRefreshTimer?.Stop();
             foreach (var layer in _layers) layer.Dispose();
             _layers.Clear();
             _drawOrder.Clear();
@@ -1721,12 +1732,96 @@ namespace RasterField
         /// </summary>
         private void RefreshStreamingWindow()
         {
+            CancelStreamingRefresh();
+            if (ActiveLayer == null || !_layers.Any(l => l.Source != null)) return;
+
+            if (_streamRefreshTimer == null)
+            {
+                _streamRefreshTimer = new Avalonia.Threading.DispatcherTimer
+                {
+                    Interval = TimeSpan.FromMilliseconds(40),
+                };
+                _streamRefreshTimer.Tick += (_, _) =>
+                {
+                    _streamRefreshTimer.Stop();
+                    BeginStreamingRefresh();
+                };
+            }
+            _streamRefreshTimer.Stop();
+            _streamRefreshTimer.Start();
+        }
+
+        private void CancelStreamingRefresh()
+        {
+            _streamGeneration++;
+            _streamRefreshCts?.Cancel();
+            _streamRefreshBusy = false;
+        }
+
+        private async void BeginStreamingRefresh()
+        {
+            var requests = BuildStreamingRequests();
+            if (requests.Count == 0)
+            {
+                _streamRefreshBusy = false;
+                return;
+            }
+
+            _streamRefreshCts?.Dispose();
+            _streamRefreshCts = new CancellationTokenSource();
+            CancellationToken token = _streamRefreshCts.Token;
+            int generation = ++_streamGeneration;
+            bool entered = false;
+            _streamRefreshBusy = true;
+            InvalidateVisual();
+            try
+            {
+                await _streamReadGate.WaitAsync(token);
+                entered = true;
+                List<StreamingResult> results = await Task.Run(() => ReadStreamingRequests(requests, token), token);
+                if (token.IsCancellationRequested || generation != _streamGeneration) return;
+
+                foreach (var result in results)
+                {
+                    if (token.IsCancellationRequested || generation != _streamGeneration) return;
+                    StreamingRequest request = result.Request;
+                    RasterLayer layer = request.Layer;
+                    if (!_layers.Contains(layer) || !ReferenceEquals(layer.Source, request.Source)) continue;
+
+                    layer.WindowRaster = result.First;
+                    layer.WindowRasterG = result.Green;
+                    layer.WindowRasterB = result.Blue;
+                    layer.BitmapOriginX = request.OriginX;
+                    layer.BitmapOriginY = request.OriginY;
+                    layer.BitmapStep = request.Step;
+                    RebuildLayerBitmap(layer);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) when (token.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.TraceError($"Streaming refresh failed: {ex}");
+            }
+            finally
+            {
+                if (entered) _streamReadGate.Release();
+                if (generation == _streamGeneration)
+                {
+                    _streamRefreshBusy = false;
+                    InvalidateVisual();
+                }
+            }
+        }
+
+        private List<StreamingRequest> BuildStreamingRequests()
+        {
+            var requests = new List<StreamingRequest>();
             var active = ActiveLayer;
-            if (active == null) return;
+            if (active == null) return requests;
 
             double vw = Bounds.Width, vh = Bounds.Height;
-            if (vw <= 0 || vh <= 0) return;
-
+            if (vw <= 0 || vh <= 0) return requests;
             int bitmapW = (int)Math.Ceiling(vw) + StreamingMargin * 2;
             int bitmapH = (int)Math.Ceiling(vh) + StreamingMargin * 2;
             Point activeCentreCell = ScreenToCell(new Point(vw / 2.0, vh / 2.0));
@@ -1736,11 +1831,14 @@ namespace RasterField
                 bool comparisonLayer = _comparisonMode != RasterComparisonMode.None &&
                     (ReferenceEquals(layer, _comparisonFirst) || ReferenceEquals(layer, _comparisonSecond));
                 if (layer.Source == null || (!layer.IsVisible && !comparisonLayer)) continue;
-                RefreshLayerStreamingWindow(layer, active, activeCentreCell, bitmapW, bitmapH);
+                StreamingRequest? request = CreateStreamingRequest(layer, active, activeCentreCell, bitmapW, bitmapH);
+                if (request != null) requests.Add(request);
             }
+            return requests;
         }
 
-        private void RefreshLayerStreamingWindow(RasterLayer layer, RasterLayer active, Point activeCentreCell, int bitmapW, int bitmapH)
+        private StreamingRequest? CreateStreamingRequest(RasterLayer layer, RasterLayer active,
+            Point activeCentreCell, int bitmapW, int bitmapH)
         {
             int originX, originY, width, height, step;
 
@@ -1758,7 +1856,7 @@ namespace RasterField
             {
                 var activeGeo = active.Document.GeoReference;
                 var layerGeo = layer.Document.GeoReference;
-                if (!layerGeo.IsInvertible) return;
+                if (!layerGeo.IsInvertible) return null;
 
                 int activeStep = _scale >= 1.0 ? 1 : Math.Max(1, (int)Math.Round(1.0 / _scale));
                 double halfW = bitmapW * activeStep / 2.0, halfH = bitmapH * activeStep / 2.0;
@@ -1791,28 +1889,42 @@ namespace RasterField
                 height = Math.Max(1, (int)Math.Ceiling(maxRow) - originY);
             }
 
-            if (IsLayerStreamingCacheGood(layer, originX, originY, step, width, height)) return;
-
-            if (layer.ShowRgbComposite)
-            {
-                Raster r = layer.Source!.ReadWindow(originX, originY, width, height, step, step, band: 0);
-                if (r.Width == 0 || r.Height == 0) return; // panned entirely outside this layer's dataset; keep the last good frame
-                Raster g = layer.Source!.ReadWindow(originX, originY, width, height, step, step, band: 1);
-                Raster b = layer.Source!.ReadWindow(originX, originY, width, height, step, step, band: 2);
-                layer.WindowRaster = r; layer.WindowRasterG = g; layer.WindowRasterB = b;
-            }
-            else
-            {
-                Raster window = layer.Source!.ReadWindow(originX, originY, width, height, step, step, layer.ActiveBand);
-                if (window.Width == 0 || window.Height == 0) return;
-                layer.WindowRaster = window; layer.WindowRasterG = null; layer.WindowRasterB = null;
-            }
-
-            layer.BitmapOriginX = originX;
-            layer.BitmapOriginY = originY;
-            layer.BitmapStep = step;
-            RebuildLayerBitmap(layer);
+            if (IsLayerStreamingCacheGood(layer, originX, originY, step, width, height)) return null;
+            return new StreamingRequest(layer, layer.Source!, originX, originY, width, height, step,
+                layer.ShowRgbComposite, layer.ActiveBand);
         }
+
+        private static List<StreamingResult> ReadStreamingRequests(IReadOnlyList<StreamingRequest> requests,
+            CancellationToken token)
+        {
+            var results = new List<StreamingResult>(requests.Count);
+            foreach (var request in requests)
+            {
+                token.ThrowIfCancellationRequested();
+                Raster first = request.Source.ReadWindow(request.OriginX, request.OriginY,
+                    request.Width, request.Height, request.Step, request.Step,
+                    request.Rgb ? 0 : request.Band);
+                if (first.Width == 0 || first.Height == 0) continue;
+
+                Raster? green = null, blue = null;
+                if (request.Rgb)
+                {
+                    token.ThrowIfCancellationRequested();
+                    green = request.Source.ReadWindow(request.OriginX, request.OriginY,
+                        request.Width, request.Height, request.Step, request.Step, 1);
+                    token.ThrowIfCancellationRequested();
+                    blue = request.Source.ReadWindow(request.OriginX, request.OriginY,
+                        request.Width, request.Height, request.Step, request.Step, 2);
+                }
+                results.Add(new StreamingResult(request, first, green, blue));
+            }
+            return results;
+        }
+
+        private sealed record StreamingRequest(RasterLayer Layer, IRasterSource Source,
+            int OriginX, int OriginY, int Width, int Height, int Step, bool Rgb, int Band);
+
+        private sealed record StreamingResult(StreamingRequest Request, Raster First, Raster? Green, Raster? Blue);
 
         private static bool IsLayerStreamingCacheGood(RasterLayer layer, int requestedX, int requestedY, int step, int width, int height)
         {
@@ -1950,7 +2062,7 @@ namespace RasterField
 
             string hintText = $"zoom {_scale:0.###}×  ·  {_layers.Count} layer{(_layers.Count == 1 ? "" : "s")}";
             if (_vectorLayers.Count > 0) hintText += $" + {_vectorLayers.Count} vector";
-            if (active.IsStreaming) hintText += "  (streaming)";
+            if (active.IsStreaming) hintText += _streamRefreshBusy ? "  (streaming · loading…)" : "  (streaming)";
             double? gsd = GroundSampleDistance;
             if (gsd.HasValue)
             {

@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using RasterField.ErMapper;
 using RasterField.Rasters;
 using Xunit;
@@ -155,6 +157,26 @@ namespace RasterField.Tests
             var window = src.ReadWindow(0, 0, w, h);
             Assert.Null(window.GetValueOrNull(0, 1));
             Assert.Equal(0f, window[0, 0]);
+        }
+
+        [Fact]
+        public async Task Concurrent_window_requests_are_serialised_without_corrupting_results()
+        {
+            const int w = 200, h = 160;
+            using var data = BuildBil(w, h, 1, (r, c, b) => r * 1000 + c);
+            using var src = RasterSource.FromStream(data, Header(w, h, 1));
+
+            Task<Raster>[] reads = Enumerable.Range(0, 24)
+                .Select(i => Task.Run(() => src.ReadWindow(i, i + 3, 25, 20)))
+                .ToArray();
+            Raster[] results = await Task.WhenAll(reads);
+
+            for (int i = 0; i < results.Length; i++)
+            {
+                Raster window = results[i];
+                Assert.Equal((i + 3) * 1000 + i, window[0, 0]);
+                Assert.Equal((i + 22) * 1000 + i + 24, window[19, 24]);
+            }
         }
 
         [Fact]

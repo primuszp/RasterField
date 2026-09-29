@@ -39,33 +39,41 @@ namespace RasterField.Gdal
 
         public DataType GetBandDataType(int band)
         {
-            ThrowIfDisposed();
-            ValidateBand(band);
-            using Band rasterBand = _dataset.GetRasterBand(band + 1);
-            return rasterBand.DataType;
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                ValidateBand(band);
+                using Band rasterBand = _dataset.GetRasterBand(band + 1);
+                return rasterBand.DataType;
+            }
         }
 
         public double GetNoDataValue(int band)
         {
-            ThrowIfDisposed();
-            ValidateBand(band);
-            using Band rasterBand = _dataset.GetRasterBand(band + 1);
-            rasterBand.GetNoDataValue(out double value, out int hasValue);
-            return hasValue != 0 ? value : double.NaN;
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                ValidateBand(band);
+                using Band rasterBand = _dataset.GetRasterBand(band + 1);
+                rasterBand.GetNoDataValue(out double value, out int hasValue);
+                return hasValue != 0 ? value : double.NaN;
+            }
         }
 
         public string? GetBandUnit(int band)
         {
-            ThrowIfDisposed();
-            ValidateBand(band);
-            using Band rasterBand = _dataset.GetRasterBand(band + 1);
-            string unit = rasterBand.GetUnitType();
-            return string.IsNullOrWhiteSpace(unit) ? null : unit;
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                ValidateBand(band);
+                using Band rasterBand = _dataset.GetRasterBand(band + 1);
+                string unit = rasterBand.GetUnitType();
+                return string.IsNullOrWhiteSpace(unit) ? null : unit;
+            }
         }
 
         public Raster ReadWindow(int x, int y, int width, int height, int stepX = 1, int stepY = 1, int band = 0)
         {
-            ThrowIfDisposed();
             if (stepX < 1) throw new ArgumentOutOfRangeException(nameof(stepX));
             if (stepY < 1) throw new ArgumentOutOfRangeException(nameof(stepY));
             ValidateBand(band);
@@ -76,17 +84,20 @@ namespace RasterField.Gdal
             int y1 = Math.Min(Height, y + Math.Max(0, height));
             int sourceWidth = x1 - x0;
             int sourceHeight = y1 - y0;
-            double noData = GetNoDataValue(band);
-            if (sourceWidth <= 0 || sourceHeight <= 0) return new Raster(0, 0, noData);
+            if (sourceWidth <= 0 || sourceHeight <= 0)
+                return new Raster(0, 0, GetNoDataValue(band));
 
             int outputWidth = (sourceWidth + stepX - 1) / stepX;
             int outputHeight = (sourceHeight + stepY - 1) / stepY;
             var samples = new float[checked(outputWidth * outputHeight)];
+            double noData;
 
             lock (_gate)
             {
                 ThrowIfDisposed();
                 using Band rasterBand = _dataset.GetRasterBand(band + 1);
+                rasterBand.GetNoDataValue(out noData, out int hasNoData);
+                if (hasNoData == 0) noData = double.NaN;
                 CPLErr error = rasterBand.ReadRaster(x0, y0, sourceWidth, sourceHeight,
                     samples, outputWidth, outputHeight, 0, 0);
                 if (error != CPLErr.CE_None)
@@ -117,9 +128,12 @@ namespace RasterField.Gdal
 
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
-            _dataset.Dispose();
+            lock (_gate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                _dataset.Dispose();
+            }
         }
     }
 }

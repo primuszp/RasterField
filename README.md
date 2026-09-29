@@ -29,7 +29,7 @@ Source/
   RasterField.Core/     class library   (netstandard2.0 ; net10.0)   assembly RasterField.Core, namespace RasterField.*
   RasterField.Gdal/     GDAL adapter     (net10.0)                    GeoTIFF and windowed I/O
   RasterField/          Avalonia app     (net10.0, win/linux/osx)
-  RasterField.Tests/    xUnit suite      (224 tests)
+  RasterField.Tests/    xUnit suite      (233 tests)
 RasterField.slnx        solution
 P_00_01.ers / P_00_01.dat   sample dataset (640×450 IEEE4, EOV)
 ```
@@ -270,7 +270,9 @@ made.Save("new.ers");
 * **Large datasets, transparently** — a dataset over `ErsDocument.IsLargeDataset`'s
   threshold (~4000&#215;4000 cells by default) is never loaded into memory: the
   view opens a `RasterSource` and re-reads only the visible window (decimated
-  to match the zoom level) on every pan/zoom, so memory use stays a small,
+  to match the zoom level) on a background worker after a short debounce. Rapid pan/zoom
+  gestures cancel superseded requests, only the newest result may update the view, and source
+  access/disposal is serialised to avoid races. Memory use stays a small,
   roughly constant amount regardless of the source file's size — a 192 MB scene
   in testing added only ~15–20 MB to the process, versus the whole file (plus
   an equally large colourised bitmap) before this. The status bar and on‑canvas
@@ -392,6 +394,10 @@ measured, not just assumed, faster:
   the destination's own representation once byte order matches — there's nothing left to "decode"
   one cell at a time. **Measured: a 2000×2000 streamed window read went from 34 ms to 14 ms — 2.4×**;
   a full 4000×4000 (16M-cell) load takes ~45 ms.
+* **Streaming interaction** no longer performs disk/GDAL window reads on Avalonia's UI thread.
+  A 40 ms debounce coalesces wheel/pan bursts, cancellation generations discard stale results,
+  and a single read gate prevents overlapping source access. The last valid frame remains visible
+  while the new window loads, with a small `streaming · loading…` status hint.
 
 Every existing test (including the exact byte-order and no-data-mapping ones) still passes
 unchanged — both optimizations produce bit-identical output to the code they replaced.

@@ -17,7 +17,8 @@ namespace RasterField.Rasters
     /// a "virtual" overview computed on demand by skipping rows/columns during the read, rather
     /// than a persisted pyramid file (no <c>.ovr</c>-style sidecar is written). Seeking past
     /// skipped rows is cheap, so both stay fast regardless of the source's true size.
-    /// Not thread-safe: use one <see cref="RasterSource"/> from one thread at a time.
+    /// Window reads and disposal are serialised so a viewer can safely replace a pending
+    /// background request while the previous request is finishing.
     /// </remarks>
     public sealed class RasterSource : IRasterSource
     {
@@ -27,6 +28,7 @@ namespace RasterField.Rasters
         private readonly int _sampleSize;
         private readonly bool _swap;
         private readonly ErsCellType _cellType;
+        private readonly object _gate = new object();
         private bool _disposed;
 
         private RasterSource(Stream stream, bool ownsStream, ErsHeader header)
@@ -91,51 +93,55 @@ namespace RasterField.Rasters
         /// </summary>
         public Raster ReadWindow(int x, int y, int width, int height, int stepX = 1, int stepY = 1, int band = 0)
         {
-            ThrowIfDisposed();
             if (stepX < 1) throw new ArgumentOutOfRangeException(nameof(stepX));
             if (stepY < 1) throw new ArgumentOutOfRangeException(nameof(stepY));
             if (band < 0 || band >= BandCount) throw new ArgumentOutOfRangeException(nameof(band));
 
-            int x0 = Math.Max(0, x);
-            int y0 = Math.Max(0, y);
-            int x1 = Math.Min(Width, x + Math.Max(0, width));
-            int y1 = Math.Min(Height, y + Math.Max(0, height));
-            int spanW = x1 - x0;
-            int spanH = y1 - y0;
-
-            if (spanW <= 0 || spanH <= 0)
-                return new Raster(0, 0, NoDataValue);
-
-            int outWidth = (spanW + stepX - 1) / stepX;
-            int outHeight = (spanH + stepY - 1) / stepY;
-            var result = new Raster(outWidth, outHeight, NoDataValue);
-
-            long lineBytes = (long)Width * BandCount * _sampleSize;
-            var rowBuf = new byte[spanW * _sampleSize];
-            var scratch = new byte[8];
-
-            for (int oy = 0; oy < outHeight; oy++)
+            lock (_gate)
             {
-                int sy = y0 + oy * stepY;
-                long offset = _headerOffset + (long)sy * lineBytes + (long)band * Width * _sampleSize + (long)x0 * _sampleSize;
-                _stream.Seek(offset, SeekOrigin.Begin);
-                BilCodec.ReadExact(_stream, rowBuf, rowBuf.Length);
+                ThrowIfDisposed();
 
-                if (_cellType == ErsCellType.IEEE4ByteReal && stepX == 1)
+                int x0 = Math.Max(0, x);
+                int y0 = Math.Max(0, y);
+                int x1 = Math.Min(Width, x + Math.Max(0, width));
+                int y1 = Math.Min(Height, y + Math.Max(0, height));
+                int spanW = x1 - x0;
+                int spanH = y1 - y0;
+
+                if (spanW <= 0 || spanH <= 0)
+                    return new Raster(0, 0, NoDataValue);
+
+                int outWidth = (spanW + stepX - 1) / stepX;
+                int outHeight = (spanH + stepY - 1) / stepY;
+                var result = new Raster(outWidth, outHeight, NoDataValue);
+
+                long lineBytes = (long)Width * BandCount * _sampleSize;
+                var rowBuf = new byte[spanW * _sampleSize];
+                var scratch = new byte[8];
+
+                for (int oy = 0; oy < outHeight; oy++)
                 {
-                    BilCodec.DecodeFloat32Row(rowBuf, 0, result.Samples, oy * outWidth, outWidth, _swap);
-                    continue;
+                    int sy = y0 + oy * stepY;
+                    long offset = _headerOffset + (long)sy * lineBytes + (long)band * Width * _sampleSize + (long)x0 * _sampleSize;
+                    _stream.Seek(offset, SeekOrigin.Begin);
+                    BilCodec.ReadExact(_stream, rowBuf, rowBuf.Length);
+
+                    if (_cellType == ErsCellType.IEEE4ByteReal && stepX == 1)
+                    {
+                        BilCodec.DecodeFloat32Row(rowBuf, 0, result.Samples, oy * outWidth, outWidth, _swap);
+                        continue;
+                    }
+
+                    for (int ox = 0; ox < outWidth; ox++)
+                    {
+                        int sx = ox * stepX * _sampleSize;
+                        result.SetValueFast(oy, ox, BilCodec.ReadSample(rowBuf, sx, _sampleSize, _cellType, _swap, scratch));
+                    }
                 }
 
-                for (int ox = 0; ox < outWidth; ox++)
-                {
-                    int sx = ox * stepX * _sampleSize;
-                    result.SetValueFast(oy, ox, BilCodec.ReadSample(rowBuf, sx, _sampleSize, _cellType, _swap, scratch));
-                }
+                result.InvalidateStatistics();
+                return result;
             }
-
-            result.InvalidateStatistics();
-            return result;
         }
 
         /// <summary>
@@ -162,9 +168,12 @@ namespace RasterField.Rasters
         /// <inheritdoc />
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
-            if (_ownsStream) _stream.Dispose();
+            lock (_gate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                if (_ownsStream) _stream.Dispose();
+            }
         }
     }
 }
