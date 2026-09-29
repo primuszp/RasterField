@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using RasterField.ErMapper;
 using RasterField.Gdal;
@@ -54,6 +55,56 @@ namespace RasterField.Tests
             Assert.Equal(1f, result.Difference[0, 0]);
             Assert.Equal(4f, result.Difference[1, 0]);
             Assert.True(float.IsNaN(result.Difference[0, 1]));
+        }
+
+        [Fact]
+        public void Streaming_summary_matches_materialised_change_analysis()
+        {
+            var first = new Raster(37, 29, noDataValue: -9999);
+            var second = new Raster(37, 29, noDataValue: -9999);
+            for (int row = 0; row < first.Height; row++)
+            {
+                for (int col = 0; col < first.Width; col++)
+                {
+                    first[row, col] = col + row * 0.5f;
+                    second[row, col] = first[row, col] + (col % 5 - 2) * 0.75f + row * 0.02f;
+                }
+            }
+            first[8, 9] = -9999;
+            second[17, 22] = -9999;
+            var geo = new RasterGeoReference(37, 29, 0, 1, 0, 29, 0, -1);
+            var polygon = new[] { (3.0, 26.0), (31.0, 24.0), (33.0, 6.0), (7.0, 3.0) };
+            RasterChangeResult expected = RasterChangeAnalysis.Compute(first, second, geo, 1.0, polygon);
+            using var firstSource = new MemoryRasterSource(first);
+            using var secondSource = new MemoryRasterSource(second);
+
+            RasterChangeSummary actual = RasterChangeAnalysis.ComputeSummary(
+                firstSource, secondSource, geo, 1.0, polygon, tileSize: 8);
+
+            Assert.Equal(expected.Count, actual.Count);
+            Assert.Equal(expected.NoDataCount, actual.NoDataCount);
+            Assert.Equal(expected.Minimum, actual.Minimum, 9);
+            Assert.Equal(expected.Maximum, actual.Maximum, 9);
+            Assert.Equal(expected.Mean, actual.Mean, 9);
+            Assert.Equal(expected.StandardDeviation, actual.StandardDeviation, 8);
+            Assert.Equal(expected.ThresholdCellCount, actual.ThresholdCellCount);
+            Assert.Equal(expected.ThresholdArea, actual.ThresholdArea, 9);
+            Assert.Equal(expected.CutVolume, actual.CutVolume, 8);
+            Assert.Equal(expected.FillVolume, actual.FillVolume, 8);
+            Assert.Equal(expected.NetVolume, actual.NetVolume, 8);
+        }
+
+        [Fact]
+        public void Streaming_summary_can_be_cancelled_before_reading()
+        {
+            using var first = new MemoryRasterSource(new Raster(100, 100));
+            using var second = new MemoryRasterSource(new Raster(100, 100));
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            Assert.Throws<OperationCanceledException>(() => RasterChangeAnalysis.ComputeSummary(
+                first, second, new RasterGeoReference(100, 100, 0, 1, 0, 0, 0, 1),
+                cancellationToken: cancellation.Token));
         }
 
         [Fact]

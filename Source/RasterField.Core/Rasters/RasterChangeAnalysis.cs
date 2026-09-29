@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using RasterField.ErMapper;
 
@@ -78,13 +79,12 @@ namespace RasterField.Rasters
     }
 
     /// <summary>Statistics and volume totals of a second-minus-first raster comparison.</summary>
-    public sealed class RasterChangeResult
+    public class RasterChangeSummary
     {
-        internal RasterChangeResult(Raster difference, long count, long noDataCount, double minimum,
-            double maximum, double sum, double sumSquares, long thresholdCount, double cellArea,
-            double cutVolume, double fillVolume)
+        internal RasterChangeSummary(long count, long noDataCount, double minimum, double maximum,
+            double sum, double sumSquares, long thresholdCount, double cellArea, double cutVolume,
+            double fillVolume)
         {
-            Difference = difference;
             Count = count;
             NoDataCount = noDataCount;
             Minimum = count == 0 ? double.NaN : minimum;
@@ -99,9 +99,6 @@ namespace RasterField.Rasters
             FillVolume = fillVolume;
             NetVolume = fillVolume - cutVolume;
         }
-
-        /// <summary>Gets the calculated second-minus-first raster.</summary>
-        public Raster Difference { get; }
 
         /// <summary>Gets the number of valid cells included in the result.</summary>
         public long Count { get; }
@@ -138,6 +135,22 @@ namespace RasterField.Rasters
 
         /// <summary>Gets fill volume minus cut volume.</summary>
         public double NetVolume { get; }
+    }
+
+    /// <summary>A change summary together with the materialised second-minus-first raster.</summary>
+    public sealed class RasterChangeResult : RasterChangeSummary
+    {
+        internal RasterChangeResult(Raster difference, long count, long noDataCount, double minimum,
+            double maximum, double sum, double sumSquares, long thresholdCount, double cellArea,
+            double cutVolume, double fillVolume)
+            : base(count, noDataCount, minimum, maximum, sum, sumSquares, thresholdCount, cellArea,
+                cutVolume, fillVolume)
+        {
+            Difference = difference;
+        }
+
+        /// <summary>Gets the calculated second-minus-first raster.</summary>
+        public Raster Difference { get; }
     }
 
     /// <summary>Cell-aligned elevation change, threshold-area and cut/fill-volume analysis.</summary>
@@ -217,6 +230,174 @@ namespace RasterField.Rasters
             difference.InvalidateStatistics();
             return new RasterChangeResult(difference, total.Count, total.NoData, total.Min, total.Max,
                 total.Sum, total.SumSquares, total.ThresholdCount, cellArea, total.CutVolume, total.FillVolume);
+        }
+
+        /// <summary>
+        /// Computes change statistics and cut/fill volumes directly from two aligned windowed
+        /// sources. Only matching bounded tiles are held in memory and no full difference raster
+        /// is created, making this suitable for very large datasets.
+        /// </summary>
+        public static RasterChangeSummary ComputeSummary(
+            IRasterSource first, IRasterSource second, RasterGeoReference geoReference,
+            double absoluteThreshold = 0, IReadOnlyList<(double X, double Y)>? polygon = null,
+            int firstBand = 0, int secondBand = 0, int tileSize = 256,
+            CancellationToken cancellationToken = default)
+        {
+            if (first == null) throw new ArgumentNullException(nameof(first));
+            if (second == null) throw new ArgumentNullException(nameof(second));
+            if (geoReference == null) throw new ArgumentNullException(nameof(geoReference));
+            if (first.Width != second.Width || first.Height != second.Height)
+                throw new ArgumentException("Raster dimensions must match.", nameof(second));
+            if (firstBand < 0 || firstBand >= first.BandCount) throw new ArgumentOutOfRangeException(nameof(firstBand));
+            if (secondBand < 0 || secondBand >= second.BandCount) throw new ArgumentOutOfRangeException(nameof(secondBand));
+            if (absoluteThreshold < 0 || double.IsNaN(absoluteThreshold))
+                throw new ArgumentOutOfRangeException(nameof(absoluteThreshold));
+            if (polygon != null && polygon.Count < 3)
+                throw new ArgumentException("A comparison zone needs at least three vertices.", nameof(polygon));
+            if (tileSize < 1) throw new ArgumentOutOfRangeException(nameof(tileSize));
+
+            double[]? px = null, py = null;
+            if (polygon != null)
+            {
+                if (!geoReference.IsInvertible)
+                    throw new InvalidOperationException("The georeference is not invertible.");
+                px = new double[polygon.Count];
+                py = new double[polygon.Count];
+                for (int i = 0; i < polygon.Count; i++)
+                    (px[i], py[i]) = geoReference.WorldToPixel(polygon[i].X, polygon[i].Y);
+            }
+
+            var transform = geoReference.GeoTransform;
+            double cellArea = Math.Abs(transform.B * transform.F - transform.C * transform.E);
+            var total = new Accumulator();
+            int tileRows = (first.Height + tileSize - 1) / tileSize;
+
+            if (px == null || py == null)
+            {
+                // For a whole-grid comparison, full-width horizontal strips are much faster for
+                // BIL sources than square tiles: every source row stays one contiguous read. Cap
+                // each strip near one million cells so the two input windows remain bounded.
+                const int targetStripCells = 1_048_576;
+                int stripHeight = Math.Max(1, Math.Min(tileSize,
+                    Math.Max(1, targetStripCells / Math.Max(1, first.Width))));
+                for (int originY = 0; originY < first.Height; originY += stripHeight)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int height = Math.Min(stripHeight, first.Height - originY);
+                    Raster a = first.ReadWindow(0, originY, first.Width, height, band: firstBand);
+                    Raster b = second.ReadWindow(0, originY, first.Width, height, band: secondBand);
+                    for (int row = 0; row < height; row++)
+                        ProcessSourceRange(row, 0, first.Width - 1, a, b,
+                            absoluteThreshold, cellArea, total);
+                }
+            }
+            else
+            {
+                var crossings = new List<double>();
+                for (int tileRow = 0; tileRow < tileRows; tileRow++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int tileOriginY = tileRow * tileSize;
+                    int toRow = Math.Min(first.Height, tileOriginY + tileSize) - 1;
+                    var spansByTile = new Dictionary<int, List<CellSpan>>();
+                    for (int row = tileOriginY; row <= toRow; row++)
+                    {
+                        double y = row + 0.5;
+                        crossings.Clear();
+                        for (int i = 0, j = px.Length - 1; i < px.Length; j = i++)
+                        {
+                            if ((py[i] > y) != (py[j] > y))
+                                crossings.Add(px[i] + (y - py[i]) / (py[j] - py[i]) * (px[j] - px[i]));
+                        }
+                        crossings.Sort();
+                        for (int k = 0; k + 1 < crossings.Count; k += 2)
+                        {
+                            int from = Math.Max(0, (int)Math.Ceiling(crossings[k] - 0.5));
+                            int to = Math.Min(first.Width - 1, (int)Math.Floor(crossings[k + 1] - 0.5));
+                            if (from > to) continue;
+                            int firstTileColumn = from / tileSize;
+                            int lastTileColumn = to / tileSize;
+                            for (int tileColumn = firstTileColumn; tileColumn <= lastTileColumn; tileColumn++)
+                            {
+                                int tileOriginX = tileColumn * tileSize;
+                                if (!spansByTile.TryGetValue(tileColumn, out List<CellSpan>? spans))
+                                {
+                                    spans = new List<CellSpan>();
+                                    spansByTile.Add(tileColumn, spans);
+                                }
+                                spans.Add(new CellSpan(row, Math.Max(from, tileOriginX),
+                                    Math.Min(to, tileOriginX + tileSize - 1)));
+                            }
+                        }
+                    }
+
+                    foreach (KeyValuePair<int, List<CellSpan>> entry in spansByTile)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        ProcessSourceTile(first, second, firstBand, secondBand, entry.Key, tileRow,
+                            tileSize, entry.Value, absoluteThreshold, cellArea, total);
+                    }
+                }
+            }
+
+            return new RasterChangeSummary(total.Count, total.NoData, total.Min, total.Max,
+                total.Sum, total.SumSquares, total.ThresholdCount, cellArea, total.CutVolume,
+                total.FillVolume);
+        }
+
+        private static void ProcessSourceTile(
+            IRasterSource first, IRasterSource second, int firstBand, int secondBand,
+            int tileColumn, int tileRow, int tileSize, IReadOnlyList<CellSpan>? spans,
+            double threshold, double cellArea, Accumulator accumulator)
+        {
+            int originX = tileColumn * tileSize;
+            int originY = tileRow * tileSize;
+            int width = Math.Min(tileSize, first.Width - originX);
+            int height = Math.Min(tileSize, first.Height - originY);
+            Raster a = first.ReadWindow(originX, originY, width, height, band: firstBand);
+            Raster b = second.ReadWindow(originX, originY, width, height, band: secondBand);
+
+            if (spans == null)
+            {
+                for (int row = 0; row < height; row++)
+                    ProcessSourceRange(row, 0, width - 1, a, b, threshold, cellArea, accumulator);
+                return;
+            }
+
+            foreach (CellSpan span in spans)
+                ProcessSourceRange(span.Row - originY, span.From - originX, span.To - originX,
+                    a, b, threshold, cellArea, accumulator);
+        }
+
+        private static void ProcessSourceRange(int row, int from, int to, Raster first, Raster second,
+            double threshold, double cellArea, Accumulator accumulator)
+        {
+            int offset = row * first.Width;
+            for (int col = from; col <= to; col++)
+            {
+                float av = first.Samples[offset + col];
+                float bv = second.Samples[offset + col];
+                if (first.IsNoData(av) || second.IsNoData(bv))
+                {
+                    accumulator.NoData++;
+                    continue;
+                }
+                accumulator.Add(bv - av, threshold, cellArea);
+            }
+        }
+
+        private readonly struct CellSpan
+        {
+            public CellSpan(int row, int from, int to)
+            {
+                Row = row;
+                From = from;
+                To = to;
+            }
+
+            public int Row { get; }
+            public int From { get; }
+            public int To { get; }
         }
 
         private static void ProcessRange(int row, int from, int to, Raster first, Raster second,

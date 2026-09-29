@@ -603,17 +603,9 @@ namespace RasterField
                 return;
             }
 
-            var loaded = layers.Where(l => l.Raster != null).ToList();
-            if (loaded.Count < 2)
-            {
-                await MessageAsync(T("Compare rasters"),
-                    T("At least two layers must be fully loaded. Clip large streaming layers to a smaller area first."));
-                return;
-            }
-
-            var names = loaded.Select(l => l.Name).ToList();
-            int secondDefault = loaded.IndexOf(_view.ActiveLayer!);
-            if (secondDefault < 0) secondDefault = loaded.Count - 1;
+            var names = layers.Select(l => l.Name).ToList();
+            int secondDefault = layers.IndexOf(_view.ActiveLayer!);
+            if (secondDefault < 0) secondDefault = layers.Count - 1;
             int firstDefault = secondDefault == 0 ? 1 : 0;
             bool zoneAvailable = _view.IsPathFinished && _view.CurrentPath.Count >= 3;
 
@@ -645,6 +637,23 @@ namespace RasterField
             };
             var run = new Button { Content = T("Compare → new ΔZ layer"), MinWidth = 150 };
             var cancel = new Button { Content = T("Cancel"), MinWidth = 80 };
+            var streamingHint = new TextBlock
+            {
+                Text = T("Large streamed layers produce statistics and volumes without creating an in-memory ΔZ layer."),
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = AppTheme.TextSecondary,
+                IsVisible = false,
+            };
+            void UpdateComparisonMode()
+            {
+                bool streaming = firstBox.SelectedIndex >= 0 && secondBox.SelectedIndex >= 0 &&
+                    (layers[firstBox.SelectedIndex].Raster == null || layers[secondBox.SelectedIndex].Raster == null);
+                run.Content = streaming ? T("Compare → statistics") : T("Compare → new ΔZ layer");
+                streamingHint.IsVisible = streaming;
+            }
+            firstBox.SelectionChanged += (_, _) => UpdateComparisonMode();
+            secondBox.SelectionChanged += (_, _) => UpdateComparisonMode();
+            UpdateComparisonMode();
             run.Click += (_, _) =>
             {
                 tcs.TrySetResult((firstBox.SelectedIndex, secondBox.SelectedIndex,
@@ -664,6 +673,7 @@ namespace RasterField
                     new TextBlock { Text = T("Second (newer)") }, secondBox,
                     new TextBlock { Text = T("Absolute change threshold") }, thresholdBox,
                     zoneBox,
+                    streamingHint,
                     new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { run, cancel } },
                 },
             };
@@ -676,8 +686,8 @@ namespace RasterField
                 return;
             }
 
-            RasterLayer first = loaded[choice.Value.First];
-            RasterLayer second = loaded[choice.Value.Second];
+            RasterLayer first = layers[choice.Value.First];
+            RasterLayer second = layers[choice.Value.Second];
             RasterGridCompatibility compatibility = RasterGridCompatibility.Check(first.Document, second.Document);
             if (!compatibility.IsCompatible)
             {
@@ -691,24 +701,42 @@ namespace RasterField
             try
             {
                 SetBusy(true, T("Computing ΔZ and volumes…"));
-                RasterChangeResult result = await Task.Run(() => RasterChangeAnalysis.Compute(
-                    first.Raster!, second.Raster!, first.Document.GeoReference, choice.Value.Threshold, polygon));
+                RasterChangeResult? materialized = null;
+                RasterChangeSummary result;
+                if (first.Raster != null && second.Raster != null)
+                {
+                    materialized = await Task.Run(() => RasterChangeAnalysis.Compute(
+                        first.Raster, second.Raster, first.Document.GeoReference,
+                        choice.Value.Threshold, polygon));
+                    result = materialized;
+                }
+                else
+                {
+                    result = await Task.Run(() => ComputeStreamingChangeSummary(
+                        first, second, choice.Value.Threshold, polygon));
+                }
                 SetBusy(false);
 
-                string layerName = $"{second.Name} − {first.Name} (ΔZ)";
                 string unit = first.Document.Header.CoordinateSpace.EffectiveUnits;
                 if (string.IsNullOrWhiteSpace(unit)) unit = T("map unit");
                 string scope = polygon == null ? T("Entire aligned grid") : T("Finished map zone");
-                string lineage = string.Format(CultureInfo.CurrentCulture,
-                    "ΔZ: {0} − {1} · {2} · |ΔZ| > {3:g6}: {4:N2} {9}² ({5:N0} cells) · cut {6:N2} {9}³ · fill {7:N2} {9}³ · net {8:N2} {9}³",
-                    second.Name, first.Name, scope, choice.Value.Threshold, result.ThresholdArea,
-                    result.ThresholdCellCount, result.CutVolume, result.FillVolume, result.NetVolume, unit);
-                AddDerivedRasterLayer(BuildDerivedDocument(result.Difference, first.Document), layerName, lineage);
-                _view.SetPalette(BuiltInPalettes.BlueWhiteRed);
-                double extent = Math.Max(Math.Abs(result.Minimum), Math.Abs(result.Maximum));
-                if (extent > 0 && !double.IsNaN(extent)) _view.SetValueRange(-extent, extent);
+                if (materialized != null)
+                {
+                    string layerName = $"{second.Name} − {first.Name} (ΔZ)";
+                    string lineage = string.Format(CultureInfo.CurrentCulture,
+                        "ΔZ: {0} − {1} · {2} · |ΔZ| > {3:g6}: {4:N2} {9}² ({5:N0} cells) · cut {6:N2} {9}³ · fill {7:N2} {9}³ · net {8:N2} {9}³",
+                        second.Name, first.Name, scope, choice.Value.Threshold, result.ThresholdArea,
+                        result.ThresholdCellCount, result.CutVolume, result.FillVolume, result.NetVolume, unit);
+                    AddDerivedRasterLayer(BuildDerivedDocument(materialized.Difference, first.Document), layerName, lineage);
+                    _view.SetPalette(BuiltInPalettes.BlueWhiteRed);
+                    double extent = Math.Max(Math.Abs(result.Minimum), Math.Abs(result.Maximum));
+                    if (extent > 0 && !double.IsNaN(extent)) _view.SetValueRange(-extent, extent);
+                }
 
-                await MessageAsync(T("Raster comparison complete"), string.Format(CultureInfo.CurrentCulture,
+                string streamedNote = materialized == null
+                    ? T("The large rasters were analysed tile by tile; no full in-memory ΔZ layer was created.") + "\n\n"
+                    : string.Empty;
+                await MessageAsync(T("Raster comparison complete"), streamedNote + string.Format(CultureInfo.CurrentCulture,
                     "{0}\n\nΔZ min / max: {1:N3} / {2:N3} {9}\nMean: {3:N3} {9}   σ: {4:N3} {9}\n|ΔZ| > {5:N3}: {6:N2} {9}² ({7:N0} cells)\n\nCut: {8:N2} {9}³\nFill: {10:N2} {9}³\nNet (fill − cut): {11:N2} {9}³",
                     scope, result.Minimum, result.Maximum, result.Mean, result.StandardDeviation,
                     choice.Value.Threshold, result.ThresholdArea, result.ThresholdCellCount,
@@ -718,6 +746,39 @@ namespace RasterField
             {
                 SetBusy(false);
                 await MessageAsync(T("Raster comparison failed"), ex.Message);
+            }
+        }
+
+        private static RasterChangeSummary ComputeStreamingChangeSummary(
+            RasterLayer first, RasterLayer second, double threshold,
+            IReadOnlyList<(double X, double Y)>? polygon)
+        {
+            IRasterSource? ownedFirst = null, ownedSecond = null;
+            try
+            {
+                IRasterSource firstSource;
+                if (first.Raster != null)
+                    firstSource = ownedFirst = new MemoryRasterSource(first.Document.Bands);
+                else if (first.SourceFactory != null)
+                    firstSource = ownedFirst = first.SourceFactory();
+                else
+                    firstSource = first.Source!;
+
+                IRasterSource secondSource;
+                if (second.Raster != null)
+                    secondSource = ownedSecond = new MemoryRasterSource(second.Document.Bands);
+                else if (second.SourceFactory != null)
+                    secondSource = ownedSecond = second.SourceFactory();
+                else
+                    secondSource = second.Source!;
+
+                return RasterChangeAnalysis.ComputeSummary(firstSource, secondSource,
+                    first.Document.GeoReference, threshold, polygon, first.ActiveBand, second.ActiveBand);
+            }
+            finally
+            {
+                ownedFirst?.Dispose();
+                ownedSecond?.Dispose();
             }
         }
 

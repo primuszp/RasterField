@@ -58,7 +58,7 @@ Robustness: LF/CRLF, UTF‑8 BOM, missing optional blocks, `NrOfBands` absent �
 | `BilRasterWriter` | **Inverse** of the reader: writes bands in BIL order, rounds & clamps for integer cell types, substitutes the null value for no‑data. |
 | `Raster` | Flat `float[]` band, no‑data aware; `RasterStatistics` (min/max/mean/σ, one pass), `RasterHistogram` (percentile stretches). |
 | `IRasterSource` / `GdalRasterSource` | Format-independent window/overview access, with a GDAL-backed implementation for GeoTIFF. |
-| `RasterChangeAnalysis` | Aligned-grid `second − first` ΔZ, statistics, absolute-threshold area and cut/fill/net volumes; optionally restricted to a world-coordinate polygon. |
+| `RasterChangeAnalysis` | Aligned-grid `second − first` ΔZ, statistics, absolute-threshold area and cut/fill/net volumes; optionally restricted to a world-coordinate polygon. `ComputeSummary(IRasterSource, …)` processes matching bounded tiles without creating a full difference band, while `MemoryRasterSource` lets the same path compare a loaded layer with a streamed one. |
 | `RasterGeoReference` | Affine image ⇄ world mapping from `RegistrationCoord` / `RegistrationCell` / `CellInfo` / `Rotation`: `PixelToWorld`, `WorldToPixel`, `WorldToCell`, `WorldBounds`. |
 | `NoDataFiller` | Patches no-data gaps, non-destructively, **restricted to the convex hull of the raster's valid data** — a genuine internal gap (sensor dropout, cloud mask, stripe, …) gets filled, but the no-data margin *outside* the data's actual footprint (a rotated scene's background corners, a mosaic's missing corner, …) is always left untouched. `FillNearest` — classic two-pass nearest-valid-cell propagation (Rosenfeld & Pfaltz, 1966; same operation as Esri's *Nibble* / GRASS's `r.grow.distance`), no distance limit. `FillInverseDistanceWeighted` — GDAL's `GDALFillNodata` algorithm: directional ray search + inverse-distance-weighted average + optional smoothing, finished off with a nearest-neighbour backstop so every in-hull gap ends up filled regardless of the chosen search distance. `CountNoDataWithinHull` reports just the real gaps, separate from `CountNoData`'s raw (hull-inclusive-and-exclusive) total. The hull itself (`ConvexHull.Compute`) is a standard, reusable Andrew's-monotone-chain implementation. |
 | `RasterClipper` / `ErsDocument.Clip(...)` / `.ClipToWorldExtent(...)` | Crops a raster (and, at the document level, re-anchors the georeference so the crop's origin lands exactly where it did in the source — correct even under rotation) to a pixel window or a world-coordinate extent. Works whether or not the raster is loaded: with no bands loaded it reads straight from disk (see `RasterSource` below), so it doubles as the extraction tool for a large dataset. |
@@ -292,8 +292,8 @@ made.Save("new.ers");
   an equally large colourised bitmap) before this. The status bar and on‑canvas
   hint show *(streaming)* in this mode; the Clip tool still works (and is the
   recommended way to pull a smaller, fully‑editable region out of a huge scene). Multi-point
-  profiles and zonal statistics also read only the small source tiles crossed by the path or
-  polygon, so they work directly on these large layers without a preliminary clip.
+  profiles, zonal statistics and ΔZ/volume summaries also read only bounded source tiles, so they
+  work directly on these large layers without a preliminary clip.
 * **Palettes** — built‑ins + every `.pal` and PNG/BMP strip in `palette/`; reverse
   toggle; continuous / discrete / nearest modes; live legend. The bundled files are
   named in English by their content, low → high (e.g. *Precipitation (brown-blue)*,
@@ -355,6 +355,8 @@ made.Save("new.ers");
 * **Change analysis** (*Analysis ▸ Compare / ΔZ & volume…*) — validates exact grid/CRS
   compatibility, creates a blue-white-red `second − first` layer, and reports min/max/mean/σ,
   threshold-exceedance area and cut/fill/net volumes for the full raster or the finished map zone.
+  If either input is a huge streamed layer, statistics and volumes are computed tile by tile with
+  bounded memory; in that mode no multi-gigabyte in-memory ΔZ layer is created.
 * **Swipe / Blink comparison** (*View ▸ Comparison*) — isolates any two raster layers for visual
   inspection. Swipe places them on opposite sides of a draggable vertical divider; Blink alternates
   them at a configurable interval. Vector overlays remain visible in both modes, and `Esc` restores
