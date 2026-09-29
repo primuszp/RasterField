@@ -19,6 +19,8 @@
     <!-- Cross-platform: runs on Windows, Linux and macOS wherever the .NET 10 runtime exists. -->
     <RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <!-- Windows .exe icon (Explorer, taskbar); built by Packaging/icon/build_icons.py. -->
+    <ApplicationIcon>Assets\RasterField.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -36,6 +38,11 @@
 
   <ItemGroup>
     <None Include="palette\**\*" CopyToOutputDirectory="PreserveNewest" LinkBase="palette\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Window / taskbar icon at run time (all platforms). The .icns is used by the macOS .app bundle. -->
+    <AvaloniaResource Include="Assets\RasterField-256.png" />
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>RasterField</string>
+    <key>CFBundleDisplayName</key>
+    <string>RasterField</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.primuszp.RasterField</string>
+    <key>CFBundleExecutable</key>
+    <string>RasterField</string>
+    <key>CFBundleIconFile</key>
+    <string>RasterField</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__VERSION__</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.graphics-design</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSRequiresAquaSystemAppearance</key>
+    <false/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>RasterField project</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>rfproj</string></array>
+            <key>CFBundleTypeIconFile</key>
+            <string>RasterField</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>ER Mapper dataset</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>ers</string><string>erv</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>GeoJSON</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>geojson</string></array>
+        </dict>
+    </array>
+</dict>
+</plist>

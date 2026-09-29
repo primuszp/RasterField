@@ -49,11 +49,14 @@ jobs:
       - name: Archive
         shell: bash
         run: |
-          cd publish/${{ matrix.rid }}
           if [[ "${{ matrix.rid }}" == win-* ]]; then
-            zip -r ../../RasterField-${{ matrix.rid }}.zip .
+            (cd publish/${{ matrix.rid }} && zip -r ../../RasterField-${{ matrix.rid }}.zip .)
+          elif [[ "${{ matrix.rid }}" == osx-* ]]; then
+            # A real .app bundle, so macOS shows the app icon in the Dock, Finder and Launchpad.
+            Packaging/macOS/make-app.sh publish/${{ matrix.rid }} bundle "${{ github.event.inputs.tag || github.ref_name }}"
+            (cd bundle && zip -r -y ../RasterField-${{ matrix.rid }}.zip RasterField.app)
           else
-            tar -czf ../../RasterField-${{ matrix.rid }}.tar.gz .
+            (cd publish/${{ matrix.rid }} && tar -czf ../../RasterField-${{ matrix.rid }}.tar.gz .)
           fi
 
       - name: Upload release asset

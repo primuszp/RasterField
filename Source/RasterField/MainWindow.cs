@@ -130,6 +130,7 @@ namespace RasterField
             MinWidth = 900;
             MinHeight = 560;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://RasterField/Assets/RasterField-256.png")));
 
             // A native-feeling backdrop where the platform offers one (Windows 11's Mica, macOS's
             // vibrancy) — Avalonia tries each in order and silently falls back to a plain
