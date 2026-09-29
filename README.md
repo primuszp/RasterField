@@ -26,7 +26,7 @@ and *Vector Datasets and Header Files (.erv)*).
 Source/
   RasterField.Core/     class library   (netstandard2.0 ; net10.0)   assembly RasterField.Core, namespace RasterField.*
   RasterField/          Avalonia app     (net10.0, win/linux/osx)
-  RasterField.Tests/    xUnit suite      (194 tests)
+  RasterField.Tests/    xUnit suite      (214 tests)
 RasterField.slnx        solution
 P_00_01.ers / P_00_01.dat   sample dataset (640×450 IEEE4, EOV)
 ```
@@ -66,7 +66,9 @@ Robustness: LF/CRLF, UTF‑8 BOM, missing optional blocks, `NrOfBands` absent �
 | `RgbCompositeRenderer` (`RasterField.Rendering`) | The inverse direction: renders three bands directly as an RGB `RasterImage` — no palette. Auto-stretches each band independently (its own 2nd–98th percentile, falling back to plain min/max then a unit range) unless told the data is already display-ready 0-255. A cell only renders transparent when *every* band is no-data there, so a pixel that's merely pure black in one channel isn't mistaken for missing data. |
 | `RasterAlgebra` | A small band-math expression language — `Evaluate("(b1 - b2) / (b1 + b2)", bands)` for an NDVI-style index. Arithmetic, comparisons (`== != < <= > >=`), `abs sqrt exp log log10 min max pow iif(cond,a,b)`, constants `pi`/`e`. A cell is no-data in the output whenever any band *referenced by the expression* is no-data there — an unused band's gaps never leak into the result. |
 | `RasterMosaic` / `ErsDocument.Mosaic(...)` | Merges several rasters (each with its own georeference — differing rotation/registration all honoured) over their combined world extent, at a chosen output cell size. `MosaicOverlapMode`: `FirstWins`, `LastWins`, or `Average` where sources overlap. |
-| `ContourGenerator` | Traces lines of constant value through a raster (marching squares), with the standard centre-average disambiguation at saddle cells; `TraceLevels` does many levels in one pass. Returns world-coordinate polylines — a natural fit for `.erv` export (see the app's *Generate contours…*). |
+| `ContourGenerator` | Traces lines of constant value through a raster (marching squares), with the standard centre-average disambiguation at saddle cells; `TraceLevels` does many levels in one pass. Returns world-coordinate polylines (vertices on the cell-centre grid, where the values actually sit) — a natural fit for `.erv` export. `Trace(raster, geo, ContourOptions)` adds index (major) contours every *n*-th level (`ContourLine.IsIndex`), Chaikin corner-cutting smoothing that keeps open lines' endpoints and closed rings closed, and a minimum-length filter; `BuildLevels` lists the whole multiples of an interval in a range. |
+| `BezierPatchInterpolator` / `ErsDocument.Subdivide(...)` | Bicubic **Bézier-patch** interpolation of a gridded surface and **subdivision** to a *k*× finer cell size. Each patch spans four neighbouring cell centres; its 16 control points come from the node values and central-difference (Catmull-Rom) derivatives via the Hermite → Bézier conversion, so the surface is C¹-continuous across patches and reproduces a plane exactly. `Tension` blends from Catmull-Rom (1) to exact bilinear (0); `Monotone` limits tangents (Fritsch–Carlson style) and clamps to the patch's corner range so sharp steps don't overshoot; `NoData` chooses a bilinear fallback or strict no-data next to gaps. The image border is extended by point reflection. `ErsDocument.Subdivide` works on every band (loaded or streamed), for the whole dataset or a cell window, keeping extent/origin/rotation and dividing the cell size by *k*. |
+| `StreamNetwork` | Vector stream network from D8 flow direction + accumulation: cells at or above a threshold are chained downstream into segments that break at confluences, each with its **Strahler order** and outlet accumulation. |
 
 ### Large datasets — streaming instead of loading everything
 
@@ -161,6 +163,39 @@ made.Save("new.ers");
   whatever raster is loaded (page-relative map-composition objects are skipped —
   this is a data viewer, not a print-layout renderer). Needs at least one raster
   layer loaded first, to give the view a coordinate frame.
+* **Derived layers (mini-GIS workflow)** — every analysis result (Bézier subdivision,
+  contours, stream network, slope/aspect/hillshade/curvature, flow direction/accumulation,
+  viewshed, band math, clip) becomes a **new layer in memory** on top of the stack instead of
+  forcing a save dialog. Its card is marked `↳` (derived) and `●` (not saved yet), its tooltip
+  says what it was made from and with which parameters, and a `⤓` button (or *Layer ▸ Save
+  active layer…*) writes it as `.ers` + data or `.erv`. Raster cards also carry an **opacity**
+  slider, so a hillshade or a derived surface can be blended over another layer.
+* **Bézier-patch subdivision** (*Interpolation ▸ Bézier-patch subdivision…*, `Ctrl+B`) —
+  pick ×2/×3/×4/×8 (or a custom factor), whole layer or just the current view, tension,
+  monotone (no overshoot) and no-data behaviour; the dialog shows the resulting cell size,
+  dimensions and memory estimate, and a live side-by-side preview (original vs. Bézier) of
+  the view's centre in the layer's own colours. The result keeps the source layer's palette
+  and stretch.
+* **Bézier display smoothing** (*View ▸ Magnification ▸ Bézier patch*, or `B`) — besides
+  nearest (crisp cells) and bilinear, magnified cells of the active layer can be drawn as a
+  smooth Bézier surface computed for the visible window only (display only; the data is not
+  changed). Settings under *Interpolation ▸ Bézier display settings…*.
+* **Contours as a layer** (*Vector ▸ Generate contours…*) — min/max/interval (a “nice”
+  interval is pre-filled), index contours every *n*-th level drawn thicker and **labelled
+  along the line**, and under *Advanced* the source surface (original grid or a Bézier ×2/×4
+  surface for stair-free lines on coarse grids), Chaikin smoothing and a minimum line length.
+* **Stream network** (*Vector ▸ Stream network…*) — D8 flow direction + accumulation +
+  threshold → a vector layer whose line widths grow with Strahler order.
+* **Identify** (*Tools ▸ Identify*, `I`) — click the map to list, for every visible layer,
+  the cell value (all bands), the bilinear and the Bézier-interpolated value, and for vector
+  layers the nearest object's attribute.
+* **Statistics & histogram** (*Raster ▸ Statistics & histogram…*) — min/max/mean/σ, valid and
+  no-data counts (and how many gaps lie inside the data footprint), lineage, and a log-scale
+  histogram drawn in the layer's palette.
+* **Menus & shortcuts** — the menu is organised GIS-style (*File · View · Layer · Raster ·
+  Interpolation · Vector · Terrain · Tools · Palette · Help*) from one shared model that also
+  drives the macOS system menu bar. Single-key tools: `I` identify, `P` profile, `C` clip,
+  `G` cell grid, `B` Bézier display smoothing, `Tab` (on the map) next raster layer.
 * **Per-layer display settings** — select a raster layer in the Layers panel,
   then use the right-side panel to change that selected file's palette, stretch,
   gamma, band and RGB-composite settings. Every raster retains its own settings
@@ -225,26 +260,26 @@ made.Save("new.ers");
   distance (world units per screen pixel, from the georeference — correct for
   rotated images too) and an approximate map scale (`1 : N`, from the display's
   actual DPI where available).
-* **Fill no-data gaps** (*Tools ▸ Fill no-data gaps…*) — patches gaps with either
+* **Fill no-data gaps** (*Raster ▸ Fill no-data gaps…*) — patches gaps with either
   a fast nearest‑valid‑cell fill or GDAL‑style inverse‑distance‑weighted
   directional search with optional smoothing (see `RasterField.Rasters.NoDataFiller`
   above); only counts and fills gaps *inside* the data's convex hull, and every
   one of those is guaranteed filled — the outside-footprint background is
   reported and touched never.
-* **Clip / cutout tool** (*Tools ▸ Clip tool*) — a fully visual, adjustable
+* **Clip / cutout tool** (*Tools ▸ Clip tool*, `C`) — a fully visual, adjustable
   selector: drag out a rectangle, then keep dragging its **body to move it** or
   any of its **8 corner/edge handles to resize it**; a live label on the
   rectangle shows its size in both pixels and world units, and a floating bar
-  over the view shows the same plus **Crop & save as…** / **Cancel** (or
-  `Escape` to clear it). *Tools ▸ Clip by extent (E/N)…* offers the same result
+  over the view shows the same plus **Crop → new layer** / **Cancel** (or
+  `Escape` to clear it). *Raster ▸ Clip by extent (E/N)…* offers the same result
   from typed numeric bounds instead of dragging. Either way it writes a
-  brand-new, correctly re‑anchored `.ers` + data pair and opens it.
-* **Profile tool** (*Tools ▸ Profile tool*) — drag a line across the raster (either
+  brand-new, correctly re‑anchored dataset as a derived layer (save it with its card's `⤓`).
+* **Profile tool** (*Tools ▸ Profile tool*, `P`) — drag a line across the raster (either
   end stays adjustable, `Escape` clears it), then **Show profile…** opens a window
   with a hand-drawn distance-vs-value chart (bilinearly sampled, gaps shown as
   breaks in the line) and an **Export CSV…** button.
 * **Terrain** menu — **Slope**, **Aspect**, **Hillshade**, **Curvature** (General/Profile/Plan)
-  from the loaded band, each writing a new `.ers` dataset that opens automatically; **Flow
+  from the loaded band, each added as a new derived layer (in memory until saved); **Flow
   direction** and **Flow accumulation** (D8 hydrology); **Viewshed** (pick an observer cell,
   eye/target height and an optional distance cap in a dialog); and **Swiss-style relief** — a
   multi-directional-hillshade-plus-aerial-perspective colour image (not a palette-mapped
@@ -261,15 +296,12 @@ made.Save("new.ers");
   Switch it off to fall back to single-band + palette viewing via the Band selector; the
   palette/stretch/gamma controls are disabled while the composite is showing, since they don't
   apply to it.
-* **Band math** (*Tools ▸ Band math…*) — type an expression over the current
+* **Band math** (*Raster ▸ Band math…*) — type an expression over the current
   dataset's bands (`b1`, `b2`, …) — e.g. an NDVI-style `(b1 - b2) / (b1 + b2)` —
-  and save the result as a new dataset.
-* **Generate contours** (*Tools ▸ Generate contours…*) — pick a min/max/interval
-  (pre-filled from the data range) and export the traced lines as a new `.erv`
-  vector dataset, one polyline per crossing, labelled with its level.
-* **Mosaic rasters** (*File ▸ Mosaic rasters…*) — pick two or more `.ers` files,
-  an output cell size and an overlap rule (first/last/average), and save the
-  merged result as a new dataset.
+  and get the result as a new derived layer.
+* **Mosaic rasters** (*Raster ▸ Mosaic rasters…*) — pick two or more `.ers` files,
+  an output cell size and an overlap rule (first/last/average); the merged result
+  becomes a new derived layer.
 * **Write** — *Save header as .ers*, *Save dataset as…* (`.ers` + BIL, with an
   optional output **cell type** and **byte order** for on‑the‑fly conversion),
   *Export view as PNG*.
@@ -277,11 +309,12 @@ made.Save("new.ers");
   under the pointer; dataset summary (size, cell type, projection + resolved EPSG,
   byte order, data range).
 
-## UI / UX roadmap
+## UI / UX plan
 
-The planned mini-GIS interface — docked layer/properties panels, derived raster and
-vector layers (contours, stream networks), and Bézier-patch subdivision for
-increasing resolution — is described in [`docs/UI-UX-TERV.md`](docs/UI-UX-TERV.md) (Hungarian).
+The mini-GIS interface design — layer model, derived raster and vector layers
+(contours, stream networks), analysis tools and Bézier-patch subdivision — is
+described in [`docs/UI-UX-TERV.md`](docs/UI-UX-TERV.md) (Hungarian), including a
+section on what is implemented so far and what is still open.
 
 ## Build · test · run
 

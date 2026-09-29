@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Avalonia.Media;
 using RasterField.Vectors;
 
@@ -84,5 +85,30 @@ namespace RasterField
 
         /// <summary>Line width (points) every object in this layer is drawn with.</summary>
         public double LineWidth { get; set; } = 2.0;
+
+        /// <summary><see langword="true"/> for a derived layer (contours, stream network, …) not yet saved as <c>.erv</c>.</summary>
+        public bool IsUnsaved { get; internal set; }
+
+        /// <summary>How a derived layer was made, or <see langword="null"/> for a layer opened from a file.</summary>
+        public string? Lineage { get; internal set; }
+
+        /// <summary>
+        /// Optional per-object line-width multipliers (same order as <see cref="ErvDocument.Objects"/>) —
+        /// e.g. 2× for index contours, or widths growing with Strahler order on a stream network.
+        /// </summary>
+        public IReadOnlyList<double>? WidthFactors { get; private set; }
+
+        /// <summary>Optional per-object labels drawn along the line (e.g. a contour's level); <see langword="null"/> entries are unlabelled.</summary>
+        public IReadOnlyList<string?>? Labels { get; private set; }
+
+        /// <summary>Sets <see cref="WidthFactors"/> and <see cref="Labels"/>; each list must match the object count (or be null).</summary>
+        public void SetObjectStyles(IReadOnlyList<double>? widthFactors, IReadOnlyList<string?>? labels)
+        {
+            int n = Document.Objects.Count;
+            if (widthFactors != null && widthFactors.Count != n) throw new ArgumentException("One width factor per object is required.", nameof(widthFactors));
+            if (labels != null && labels.Count != n) throw new ArgumentException("One label (or null) per object is required.", nameof(labels));
+            WidthFactors = widthFactors;
+            Labels = labels;
+        }
     }
 }

@@ -544,3 +544,25 @@ Minden fázis után: `dotnet build` figyelmeztetés nélkül (TreatWarningsAsErr
 - [ ] Egy 200 MB‑os streaming rétegen minden eszköz (profil, azonosító, előnézet) működik, a UI nem fagy.
 - [ ] Minden származtatott réteg megmondja, miből és milyen paraméterekkel készült.
 - [ ] Mentetlen munka nem veszhet el figyelmeztetés nélkül.
+
+---
+
+## 17. Megvalósítás állapota
+
+| Terület | Állapot | Megjegyzés |
+|---|---|---|
+| **Bézier‑patch interpoláció (Core)** | ✅ kész | `BezierPatchInterpolator` (Subdivide / SubdivideWindow / Sample), τ feszesség, monoton mód, no‑data módok, tükrözéses szegély; `ErsDocument.Subdivide` teljes rétegre vagy ablakra, georeferencia megtartásával. 13 egységteszt (sík reprodukció, identitás, C¹ folytonosság, túllövés, no‑data, ablak, georeferencia). |
+| **Bézier‑subdivision ablak** | ✅ kész | ×2/×3/×4/×8/egyedi, teljes réteg vagy aktuális nézet, haladó beállítások, méret‑ és memóriabecslés, egymás melletti előnézet (eredeti ↔ Bézier). Az osztott, húzható elválasztós nézet helyett két kép van egymás mellett. |
+| **Bézier megjelenítési simítás** | ✅ kész | *Nézet ▸ Nagyítás ▸ Bézier*; csak a látható ablakra, késleltetett újraszámolással; nem módosítja az adatot. |
+| **Származtatott rétegek** | ✅ kész | Minden elemzés eredménye memóriabeli réteg `↳` és `●` jelöléssel, a tooltipben a levezetéssel; mentés a kártyán vagy *Réteg* menüből. Receptből való újraszámolás még nincs. |
+| **Szintvonal** | ✅ kész | Alapköz, fővonal minden n‑edik szinten (vastagabb és vonal menti felirattal), Chaikin‑simítás, minimális hossz, Bézier ×2/×4 forrásfelszín. A szintvonalak most a cellaközéppontokon ülnek (korábban fél cellával ÉNy‑ra csúsztak). |
+| **Vízhálózat** | ✅ kész | D8 + küszöb → vektorréteg, Strahler‑rend szerinti vonalvastagság. |
+| **Pontazonosító** | ✅ kész | Minden látható réteg értéke (összes sáv, bilineáris és Bézier‑becslés), vektoroknál a legközelebbi objektum attribútuma. |
+| **Statisztika + hisztogram** | ✅ kész | Külön ablakban, a réteg palettájával színezett log‑skálás hisztogrammal. Az interaktív (húzható fogantyús) hisztogram a jobb panelen még nincs meg. |
+| **Réteg‑átlátszóság** | ✅ kész | Csúszka a raszterkártyán. Keverési módok (szorzás, képernyő, …) még nincsenek. |
+| **Menüszerkezet, gyorsbillentyűk** | ✅ kész | Egy közös menümodell az ablakmenühöz és a macOS rendszermenühöz; `I`, `P`, `C`, `G`, `B`, `Tab`, `Ctrl+B`. |
+| **Háromoszlopos dokkolt elrendezés, parancskereső** | ⏳ nyitott | A rétegpanel és a tulajdonságok továbbra is egy jobb oldali oszlopban vannak. |
+| **Magyar/angol felület** | ⏳ nyitott | A felület angol; erőforrás‑alapú fordítás még nincs. |
+| **Projektfájl (`.rfproj`), visszavonás** | ⏳ nyitott | — |
+| **GeoJSON / CSV import‑export, többpontos profil, mérés, zonális statisztika** | ⏳ nyitott | — |
+| **Vektor első rétegként** | ⏳ nyitott | Továbbra is kell legalább egy raszterréteg a koordináta‑kerethez. |

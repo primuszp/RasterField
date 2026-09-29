@@ -30,6 +30,28 @@ namespace RasterField
         /// <summary>Whether this layer is drawn at all. Hidden layers are skipped entirely, including in streaming refreshes.</summary>
         public bool IsVisible { get; set; } = true;
 
+        /// <summary>Draw opacity in [0, 1] — lets a hillshade or a derived surface be blended over another layer.</summary>
+        public double Opacity { get; internal set; } = 1.0;
+
+        /// <summary>
+        /// <see langword="true"/> for a derived layer (Bézier subdivision, terrain product, …) that so
+        /// far exists only in memory; cleared once it has been saved to disk.
+        /// </summary>
+        public bool IsUnsaved { get; internal set; }
+
+        /// <summary>How a derived layer was made ("Bézier ×4 of DTM (τ 1.00)"), or <see langword="null"/> for a layer opened from a file.</summary>
+        public string? Lineage { get; internal set; }
+
+        /// <summary>Bumped on every re-colourisation, so cached renderings (the Bézier display overlay) know they're stale.</summary>
+        internal int RenderVersion { get; set; }
+
+        /// <summary>Bézier display-smoothing overlay of the visible window (active layer only), in this layer's cell space.</summary>
+        internal WriteableBitmap? SmoothBitmap { get; set; }
+        internal double SmoothOriginX { get; set; }
+        internal double SmoothOriginY { get; set; }
+        internal double SmoothStep { get; set; } = 1.0;
+        internal string? SmoothKey { get; set; }
+
         /// <summary>Fully loaded active-band raster (small/medium dataset only).</summary>
         public Raster? Raster { get; internal set; }
 
@@ -112,6 +134,14 @@ namespace RasterField
             DisposeSource();
             Bitmap?.Dispose();
             Bitmap = null;
+            DisposeSmooth();
+        }
+
+        internal void DisposeSmooth()
+        {
+            SmoothBitmap?.Dispose();
+            SmoothBitmap = null;
+            SmoothKey = null;
         }
     }
 }

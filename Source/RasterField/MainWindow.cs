@@ -25,7 +25,7 @@ namespace RasterField
     /// right, a status bar with the world coordinate and sampled value under the pointer, and
     /// the <see cref="RasterView"/> filling the rest. Reads and writes <c>.ers</c> + BIL.
     /// </summary>
-    public sealed class MainWindow : Window, IDisposable
+    public sealed partial class MainWindow : Window, IDisposable
     {
         private readonly RasterView _view = new RasterView();
         private readonly LegendControl _legend = new LegendControl { Width = 150 };
@@ -59,7 +59,7 @@ namespace RasterField
         };
         private readonly TextBlock _clipTitleText = new TextBlock { Text = "Clip tool —", FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center };
         private readonly TextBlock _clipInfoText = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
-        private readonly Button _clipCropBtn = new Button { Content = "Crop & save as…", IsEnabled = false };
+        private readonly Button _clipCropBtn = new Button { Content = "Crop → new layer", IsEnabled = false };
 
         private readonly Border _profileBar = new Border
         {
@@ -112,10 +112,6 @@ namespace RasterField
         private static readonly FilePickerFileType[] LayerOpenFileTypeFilter = { _ersOrErvFileType, ErsHeaderFileType, ErvFileTypeChoices[0], FilePickerFileTypes.All };
 
         private bool _syncing;
-        private MenuItem? _clipSelectToggle;
-        private MenuItem? _profileSelectToggle;
-        private Avalonia.Controls.NativeMenuItem? _nativeClipToggle;
-        private Avalonia.Controls.NativeMenuItem? _nativeProfileToggle;
         private Avalonia.Controls.NativeMenu? _nativeRecentMenu;
         private Border? _sidePanelBorder;
         private DockPanel? _statusBarHost;
@@ -343,191 +339,6 @@ namespace RasterField
             return root;
         }
 
-        private Menu BuildMenu()
-        {
-            MenuItem Item(string header, EventHandler<Avalonia.Interactivity.RoutedEventArgs> click, KeyGesture? gesture = null)
-            {
-                var mi = new MenuItem { Header = header };
-                mi.Click += click;
-                if (gesture != null) mi.InputGesture = gesture;
-                return mi;
-            }
-
-            var file = new MenuItem { Header = "_File" };
-            file.Items.Add(Item("_Open .ers…", async (_, _) => await OpenDialogAsync(), new KeyGesture(Key.O, KeyModifiers.Control)));
-            file.Items.Add(Item("_Add layer(s)…", async (_, _) => await AddLayerDialogAsync(), new KeyGesture(Key.O, KeyModifiers.Control | KeyModifiers.Shift)));
-            var recent = new MenuItem { Header = "Open _recent" };
-            file.Items.Add(recent);
-            _recentMenu = recent;
-            file.Items.Add(new Separator());
-            file.Items.Add(Item("Save _header as .ers…", async (_, _) => await SaveHeaderAsAsync()));
-            file.Items.Add(Item("Save _dataset as… (.ers + data)", async (_, _) => await SaveDatasetAsAsync(), new KeyGesture(Key.S, KeyModifiers.Control)));
-            file.Items.Add(Item("_Export view as PNG…", async (_, _) => await ExportPngAsync()));
-            file.Items.Add(new Separator());
-            file.Items.Add(Item("_Mosaic rasters…", async (_, _) => await MosaicAsync()));
-            file.Items.Add(new Separator());
-            file.Items.Add(Item("E_xit", (_, _) => Close()));
-
-            var view = new MenuItem { Header = "_View" };
-            view.Items.Add(Item("Zoom to _fit", (_, _) => _view.ZoomToFit(), new KeyGesture(Key.D0, KeyModifiers.Control)));
-            view.Items.Add(Item("Zoom _in", (_, _) => _view.ZoomBy(1.25), new KeyGesture(Key.OemPlus, KeyModifiers.Control)));
-            view.Items.Add(Item("Zoom _out", (_, _) => _view.ZoomBy(0.8), new KeyGesture(Key.OemMinus, KeyModifiers.Control)));
-            view.Items.Add(new Separator());
-            var gridToggle = new MenuItem { Header = "Show cell _grid", ToggleType = MenuItemToggleType.CheckBox };
-            gridToggle.Click += (_, _) => { _view.ShowGrid = gridToggle.IsChecked; _view.InvalidateVisual(); };
-            view.Items.Add(gridToggle);
-            var smoothToggle = new MenuItem { Header = "_Smooth magnification", ToggleType = MenuItemToggleType.CheckBox };
-            smoothToggle.Click += (_, _) => { _view.SmoothScaling = smoothToggle.IsChecked; _view.InvalidateVisual(); };
-            view.Items.Add(smoothToggle);
-            view.Items.Add(new Separator());
-            var themeMenu = new MenuItem { Header = "_Theme" };
-            themeMenu.Items.Add(Item("_System", (_, _) => SetThemeMode(ThemeMode.System)));
-            themeMenu.Items.Add(Item("_Light", (_, _) => SetThemeMode(ThemeMode.Light)));
-            themeMenu.Items.Add(Item("_Dark", (_, _) => SetThemeMode(ThemeMode.Dark)));
-            view.Items.Add(themeMenu);
-
-            var palette = new MenuItem { Header = "_Palette" };
-            palette.Items.Add(Item("_Edit current palette…", (_, _) => OpenPaletteEditor(CurrentPalette())));
-            palette.Items.Add(Item("_New palette…", (_, _) => OpenPaletteEditor(null)));
-
-            var tools = new MenuItem { Header = "_Tools" };
-            tools.Items.Add(Item("Fill _no-data gaps…", async (_, _) => await FillNoDataAsync()));
-            tools.Items.Add(new Separator());
-            var clipSelectToggle = new MenuItem { Header = "_Clip tool (drag a rectangle)", ToggleType = MenuItemToggleType.CheckBox };
-            clipSelectToggle.Click += (_, _) => SetClipToolActive(clipSelectToggle.IsChecked);
-            tools.Items.Add(clipSelectToggle);
-            _clipSelectToggle = clipSelectToggle;
-            tools.Items.Add(Item("Clip by _extent (E/N)…", async (_, _) => await ClipByExtentAsync()));
-            tools.Items.Add(new Separator());
-            var profileToggle = new MenuItem { Header = "_Profile tool (drag a line)", ToggleType = MenuItemToggleType.CheckBox };
-            profileToggle.Click += (_, _) => SetProfileToolActive(profileToggle.IsChecked);
-            tools.Items.Add(profileToggle);
-            _profileSelectToggle = profileToggle;
-            tools.Items.Add(new Separator());
-            tools.Items.Add(Item("_Band math…", async (_, _) => await BandMathAsync()));
-            tools.Items.Add(Item("Generate _contours…", async (_, _) => await GenerateContoursAsync()));
-
-            var terrain = new MenuItem { Header = "_Terrain" };
-            terrain.Items.Add(Item("_Slope…", async (_, _) => await ComputeTerrainAsync(TerrainProduct.Slope)));
-            terrain.Items.Add(Item("_Aspect…", async (_, _) => await ComputeTerrainAsync(TerrainProduct.Aspect)));
-            terrain.Items.Add(Item("_Hillshade…", async (_, _) => await ComputeTerrainAsync(TerrainProduct.Hillshade)));
-            terrain.Items.Add(Item("_Curvature…", async (_, _) => await ComputeCurvatureAsync()));
-            terrain.Items.Add(new Separator());
-            terrain.Items.Add(Item("_Flow direction (D8)…", async (_, _) => await ComputeFlowDirectionAsync()));
-            terrain.Items.Add(Item("Flow acc_umulation…", async (_, _) => await ComputeFlowAccumulationAsync()));
-            terrain.Items.Add(new Separator());
-            terrain.Items.Add(Item("_Viewshed…", async (_, _) => await ComputeViewshedAsync()));
-            terrain.Items.Add(new Separator());
-            terrain.Items.Add(Item("S_wiss-style relief (export PNG)…", async (_, _) => await ExportSwissReliefAsync()));
-
-            var help = new MenuItem { Header = "_Help" };
-            help.Items.Add(Item("_About…", async (_, _) => await ShowAboutAsync()));
-
-            return new Menu { Items = { file, view, palette, tools, terrain, help } };
-        }
-
-        /// <summary>
-        /// The same menu structure as <see cref="BuildMenu"/>, built for macOS's system menu bar
-        /// instead of an in-window one — the single biggest "this looks like a real Mac app"
-        /// signal Avalonia offers. Shortcuts use Cmd (<see cref="KeyModifiers.Meta"/>), the
-        /// platform convention, rather than Ctrl.
-        /// </summary>
-        private Avalonia.Controls.NativeMenu BuildNativeMenu()
-        {
-            Avalonia.Controls.NativeMenuItem Item(string header, Action click, KeyGesture? gesture = null)
-            {
-                var mi = new Avalonia.Controls.NativeMenuItem(header);
-                mi.Click += (_, _) => click();
-                if (gesture != null) mi.Gesture = gesture;
-                return mi;
-            }
-            Avalonia.Controls.NativeMenuItem Sub(string header, params Avalonia.Controls.NativeMenuItemBase[] items)
-            {
-                var mi = new Avalonia.Controls.NativeMenuItem(header) { Menu = new Avalonia.Controls.NativeMenu() };
-                foreach (var item in items) mi.Menu.Items.Add(item);
-                return mi;
-            }
-            Avalonia.Controls.NativeMenuItemSeparator Sep() => new Avalonia.Controls.NativeMenuItemSeparator();
-
-            var root = new Avalonia.Controls.NativeMenu();
-
-            // The app menu: macOS supplies the app's name for this first entry automatically.
-            root.Items.Add(Sub("RasterField",
-                Item("About RasterField…", () => _ = ShowAboutAsync()),
-                Sep(),
-                Item("Quit RasterField", Close, new KeyGesture(Key.Q, KeyModifiers.Meta))));
-
-            var recent = new Avalonia.Controls.NativeMenu();
-            var recentItem = new Avalonia.Controls.NativeMenuItem("Open Recent") { Menu = recent };
-            _nativeRecentMenu = recent;
-
-            root.Items.Add(Sub("File",
-                Item("Open .ers…", () => _ = OpenDialogAsync(), new KeyGesture(Key.O, KeyModifiers.Meta)),
-                Item("Add layer(s)…", () => _ = AddLayerDialogAsync(), new KeyGesture(Key.O, KeyModifiers.Meta | KeyModifiers.Shift)),
-                recentItem,
-                Sep(),
-                Item("Save header as .ers…", () => _ = SaveHeaderAsAsync()),
-                Item("Save dataset as… (.ers + data)", () => _ = SaveDatasetAsAsync(), new KeyGesture(Key.S, KeyModifiers.Meta)),
-                Item("Export view as PNG…", () => _ = ExportPngAsync()),
-                Sep(),
-                Item("Mosaic rasters…", () => _ = MosaicAsync())));
-
-            var gridToggle = new Avalonia.Controls.NativeMenuItem("Show cell grid") { ToggleType = Avalonia.Controls.NativeMenuItemToggleType.CheckBox };
-            gridToggle.Click += (_, _) => { _view.ShowGrid = gridToggle.IsChecked; _view.InvalidateVisual(); };
-            var smoothToggle = new Avalonia.Controls.NativeMenuItem("Smooth magnification") { ToggleType = Avalonia.Controls.NativeMenuItemToggleType.CheckBox };
-            smoothToggle.Click += (_, _) => { _view.SmoothScaling = smoothToggle.IsChecked; _view.InvalidateVisual(); };
-
-            root.Items.Add(Sub("View",
-                Item("Zoom to fit", () => _view.ZoomToFit(), new KeyGesture(Key.D0, KeyModifiers.Meta)),
-                Item("Zoom in", () => _view.ZoomBy(1.25), new KeyGesture(Key.OemPlus, KeyModifiers.Meta)),
-                Item("Zoom out", () => _view.ZoomBy(0.8), new KeyGesture(Key.OemMinus, KeyModifiers.Meta)),
-                Sep(),
-                gridToggle,
-                smoothToggle,
-                Sep(),
-                Sub("Theme",
-                    Item("System", () => SetThemeMode(ThemeMode.System)),
-                    Item("Light", () => SetThemeMode(ThemeMode.Light)),
-                    Item("Dark", () => SetThemeMode(ThemeMode.Dark)))));
-
-            root.Items.Add(Sub("Palette",
-                Item("Edit current palette…", () => OpenPaletteEditor(CurrentPalette())),
-                Item("New palette…", () => OpenPaletteEditor(null))));
-
-            var clipToggle = new Avalonia.Controls.NativeMenuItem("Clip tool (drag a rectangle)") { ToggleType = Avalonia.Controls.NativeMenuItemToggleType.CheckBox };
-            clipToggle.Click += (_, _) => SetClipToolActive(clipToggle.IsChecked);
-            _nativeClipToggle = clipToggle;
-            var profileToggle = new Avalonia.Controls.NativeMenuItem("Profile tool (drag a line)") { ToggleType = Avalonia.Controls.NativeMenuItemToggleType.CheckBox };
-            profileToggle.Click += (_, _) => SetProfileToolActive(profileToggle.IsChecked);
-            _nativeProfileToggle = profileToggle;
-
-            root.Items.Add(Sub("Tools",
-                Item("Fill no-data gaps…", () => _ = FillNoDataAsync()),
-                Sep(),
-                clipToggle,
-                Item("Clip by extent (E/N)…", () => _ = ClipByExtentAsync()),
-                Sep(),
-                profileToggle,
-                Sep(),
-                Item("Band math…", () => _ = BandMathAsync()),
-                Item("Generate contours…", () => _ = GenerateContoursAsync())));
-
-            root.Items.Add(Sub("Terrain",
-                Item("Slope…", () => _ = ComputeTerrainAsync(TerrainProduct.Slope)),
-                Item("Aspect…", () => _ = ComputeTerrainAsync(TerrainProduct.Aspect)),
-                Item("Hillshade…", () => _ = ComputeTerrainAsync(TerrainProduct.Hillshade)),
-                Item("Curvature…", () => _ = ComputeCurvatureAsync()),
-                Sep(),
-                Item("Flow direction (D8)…", () => _ = ComputeFlowDirectionAsync()),
-                Item("Flow accumulation…", () => _ = ComputeFlowAccumulationAsync()),
-                Sep(),
-                Item("Viewshed…", () => _ = ComputeViewshedAsync()),
-                Sep(),
-                Item("Swiss-style relief…", () => _ = ExportSwissReliefAsync())));
-
-            return root;
-        }
-
         private DockPanel BuildStatusBar()
         {
             var panel = new StackPanel
@@ -569,10 +380,9 @@ namespace RasterField
         {
             _view.SelectionMode = active;
             _clipBar.IsVisible = active;
-            if (_clipSelectToggle != null) _clipSelectToggle.IsChecked = active;
-            if (_nativeClipToggle != null) _nativeClipToggle.IsChecked = active;
-            if (active) SetProfileToolActive(false);
+            if (active) { SetProfileToolActive(false); _view.IdentifyMode = false; }
             UpdateClipPanel();
+            RefreshMenuChecks();
         }
 
         /// <summary>The floating toolbar shown over the raster while the profile tool is active.</summary>
@@ -614,10 +424,9 @@ namespace RasterField
         {
             _view.LineToolMode = active;
             _profileBar.IsVisible = active;
-            if (_profileSelectToggle != null) _profileSelectToggle.IsChecked = active;
-            if (_nativeProfileToggle != null) _nativeProfileToggle.IsChecked = active;
-            if (active) SetClipToolActive(false);
+            if (active) { SetClipToolActive(false); _view.IdentifyMode = false; }
             UpdateProfilePanel();
+            RefreshMenuChecks();
         }
 
         private void UpdateProfilePanel()
@@ -814,6 +623,7 @@ namespace RasterField
             _view.ViewChanged += (_, _) => UpdateScaleText();
             _view.SelectionChanged += (_, _) => UpdateClipPanel();
             _view.LineChanged += (_, _) => UpdateProfilePanel();
+            _view.IdentifyRequested += OnIdentifyRequested;
 
             _bandBox.SelectionChanged += (_, _) => { if (!_syncing) _view.SetActiveBand(_bandBox.SelectedIndex); };
             _rgbCompositeBox.IsCheckedChanged += (_, _) => { if (!_syncing) _view.ShowRgbComposite = _rgbCompositeBox.IsChecked == true; };
@@ -1028,7 +838,13 @@ namespace RasterField
                 var visBox = new CheckBox { IsChecked = layer.IsVisible, VerticalAlignment = VerticalAlignment.Center };
                 visBox.IsCheckedChanged += (_, _) => RunLayerActionSafely(() => _view.SetVectorLayerVisible(layer, visBox.IsChecked == true));
 
-                var nameText = new TextBlock { Text = "▤ " + layer.Name, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+                var nameText = new TextBlock
+                {
+                    Text = (layer.Lineage != null ? "↳▤ " : "▤ ") + layer.Name + (layer.IsUnsaved ? " ●" : ""),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                };
+                ToolTip.SetTip(nameText, LayerTip(layer.Name, layer.Lineage, layer.IsUnsaved));
                 var upBtn = CircleIconButton("▲");
                 upBtn.IsEnabled = _view.CanMoveLayerUp(layer);
                 upBtn.Click += (_, _) => RunLayerActionSafely(() => _view.MoveVectorLayerUp(layer));
@@ -1038,7 +854,15 @@ namespace RasterField
                 var removeBtn = CircleIconButton("✕", AppTheme.Danger);
                 removeBtn.Click += (_, _) => RunLayerActionSafely(() => _view.RemoveVectorLayer(layer));
 
-                _layersPanel.Children.Add(BuildLayerCard(visBox, nameText, upBtn, downBtn, removeBtn, isActive: false, BuildVectorStyleRow(layer)));
+                var styleRow = BuildVectorStyleRow(layer);
+                if (layer.IsUnsaved)
+                {
+                    var saveBtn = CircleIconButton("⤓");
+                    ToolTip.SetTip(saveBtn, "Save this derived layer as .erv");
+                    saveBtn.Click += async (_, _) => await SaveVectorLayerAsync(layer);
+                    styleRow.Children.Add(saveBtn);
+                }
+                _layersPanel.Children.Add(BuildLayerCard(visBox, nameText, upBtn, downBtn, removeBtn, isActive: false, styleRow));
         }
 
         private void AddRasterLayerCard(RasterLayer layer)
@@ -1053,7 +877,13 @@ namespace RasterField
 
                 var nameBtn = new Button
                 {
-                    Content = layer.Name,
+                    // A TextBlock, not a plain string: a string Content treats "_" as an access-key
+                    // marker, which silently swallowed the underscore in names like "P_00_01".
+                    Content = new TextBlock
+                    {
+                        Text = (layer.Lineage != null ? "↳ " : "") + layer.Name + (layer.IsUnsaved ? " ●" : ""),
+                        TextTrimming = TextTrimming.CharacterEllipsis,
+                    },
                     HorizontalContentAlignment = HorizontalAlignment.Left,
                     VerticalContentAlignment = VerticalAlignment.Center,
                     FontWeight = isActive ? FontWeight.Bold : FontWeight.Normal,
@@ -1062,6 +892,7 @@ namespace RasterField
                     Padding = new Thickness(2, 0),
                 };
                 nameBtn.Click += (_, _) => RunLayerActionSafely(() => _view.SetActiveLayer(layer));
+                ToolTip.SetTip(nameBtn, LayerTip(layer.Name, layer.Lineage, layer.IsUnsaved, layer.IsStreaming));
 
                 var upBtn = CircleIconButton("▲");
                 upBtn.IsEnabled = _view.CanMoveLayerUp(layer);
@@ -1075,7 +906,43 @@ namespace RasterField
                 // Raster display options live in one place: the right-side panel. Its controls
                 // always target ActiveLayer, so selecting this card first makes it unambiguous
                 // which file's palette, stretch, band and gamma are being changed.
-                _layersPanel.Children.Add(BuildLayerCard(visBox, nameBtn, upBtn, downBtn, removeBtn, isActive));
+                _layersPanel.Children.Add(BuildLayerCard(visBox, nameBtn, upBtn, downBtn, removeBtn, isActive, BuildRasterLayerRow(layer)));
+        }
+
+        /// <summary>A raster card's second row: opacity slider, and a save button while the layer only exists in memory.</summary>
+        private StackPanel BuildRasterLayerRow(RasterLayer layer)
+        {
+            var opacity = new Slider { Minimum = 0, Maximum = 100, Value = layer.Opacity * 100, Width = 120, VerticalAlignment = VerticalAlignment.Center };
+            var percent = new TextBlock { Text = $"{layer.Opacity * 100:0} %", VerticalAlignment = VerticalAlignment.Center, Width = 40, Opacity = 0.8 };
+            ToolTip.SetTip(opacity, "Layer opacity");
+            opacity.PropertyChanged += (_, e) =>
+            {
+                if (e.Property != RangeBase.ValueProperty) return;
+                _view.SetLayerOpacity(layer, opacity.Value / 100.0);
+                percent.Text = $"{opacity.Value:0} %";
+            };
+
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(26, 0, 0, 0) };
+            row.Children.Add(opacity);
+            row.Children.Add(percent);
+            if (layer.IsStreaming) row.Children.Add(new TextBlock { Text = "⇶ streaming", Opacity = 0.7, VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
+            if (layer.IsUnsaved)
+            {
+                var saveBtn = CircleIconButton("⤓");
+                ToolTip.SetTip(saveBtn, "Save this derived layer (.ers + data)");
+                saveBtn.Click += async (_, _) => await SaveRasterLayerAsync(layer);
+                row.Children.Add(saveBtn);
+            }
+            return row;
+        }
+
+        private static string LayerTip(string name, string? lineage, bool unsaved, bool streaming = false)
+        {
+            string tip = name;
+            if (lineage != null) tip += "\nMade from: " + lineage;
+            if (unsaved) tip += "\n● In memory only — not saved yet";
+            if (streaming) tip += "\n⇶ Large dataset, streamed from disk";
+            return tip;
         }
 
         /// <summary>A vector layer's inline style row: a hex-colour swatch/box and a line-width stepper, both scoped to THIS layer.</summary>
@@ -1242,6 +1109,7 @@ namespace RasterField
                     ByteOrder = SelectedOutputByteOrder(),
                 };
                 _view.Document.Save(path!, options);
+                if (_view.ActiveLayer is { IsUnsaved: true } saved) _view.MarkSaved(saved, path!);
                 Flash($"Dataset written: {Path.GetFileName(path)} (+ data file)");
             }
             catch (Exception ex) { await MessageAsync("Save failed", ex.Message); }
@@ -1688,24 +1556,16 @@ namespace RasterField
         private async Task PerformClipAndSaveAsync(ErsDocument clip) => await PerformDerivedSaveAsync(clip, "_clip", "Clip");
 
         /// <summary>
-        /// Prompts for a save location, writes <paramref name="result"/> (a clip, a computed
-        /// terrain/band-math/mosaic raster, …) as a new <c>.ers</c> dataset, and opens it.
+        /// Adds a computed result (a clip, a terrain/band-math/mosaic raster, …) as a new derived
+        /// layer in memory — nothing is written until the user saves it (the layer card's 💾, or
+        /// Layer ▸ Save active layer).
         /// </summary>
-        private async Task PerformDerivedSaveAsync(ErsDocument result, string suggestedSuffix, string label)
+        private Task PerformDerivedSaveAsync(ErsDocument result, string suggestedSuffix, string label)
         {
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = $"Save {label.ToLowerInvariant()} dataset (writes .ers + binary data file)",
-                DefaultExtension = "ers",
-                SuggestedFileName = SuggestName() + suggestedSuffix + ".ers",
-                FileTypeChoices = ErsSaveFileTypeChoices,
-            });
-            var path = file?.TryGetLocalPath();
-            if (string.IsNullOrEmpty(path)) return;
-
-            result.Save(path!);
-            Flash($"{label} saved: {Path.GetFileName(path)}  ({result.Band!.Width}×{result.Band!.Height})");
-            OpenDataset(path!);
+            string source = _view.ActiveLayer?.Name ?? SuggestName();
+            string name = source + suggestedSuffix;
+            AddDerivedRasterLayer(result, name, $"{label} of {source}");
+            return Task.CompletedTask;
         }
 
         /// <summary>
@@ -2290,121 +2150,12 @@ namespace RasterField
             return await tcs.Task;
         }
 
-        // ---- contours ----------------------------------------------------------------
-
-        private async Task GenerateContoursAsync()
-        {
-            var loaded = await TryGetLoadedRasterAsync("Generate contours");
-            if (loaded == null) return;
-            var (raster, _, _) = loaded.Value;
-            var doc = _view.Document!;
-
-            var stats = raster.Statistics;
-            var options = await ShowContourDialogAsync(stats.Minimum, stats.Maximum);
-            if (options == null) return;
-
-            var levels = BuildContourLevels(options.Value.Min, options.Value.Max, options.Value.Interval);
-            if (levels.Count == 0)
-            {
-                await MessageAsync("Generate contours", "No levels fall within the given range/interval.");
-                return;
-            }
-
-            SetBusy(true, "Tracing contours…");
-            var lines = await Task.Run(() => ContourGenerator.TraceLevels(raster, doc.GeoReference, levels));
-            SetBusy(false);
-            if (lines.Count == 0)
-            {
-                await MessageAsync("Generate contours", "No contour lines were produced for these levels.");
-                return;
-            }
-
-            var erv = ErvDocument.Create(doc.Header.CoordinateSpace.Projection, doc.Header.CoordinateSpace.Datum);
-            foreach (var line in lines)
-            {
-                var poly = new VectorPolyline { Attribute = line.Level.ToString("g6", CultureInfo.InvariantCulture) };
-                foreach (var p in line.Points) poly.Points.Add((p.X, p.Y));
-                erv.Objects.Add(poly);
-            }
-
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = "Save contours as ER Mapper vector dataset",
-                DefaultExtension = "erv",
-                SuggestedFileName = SuggestName() + "_contours.erv",
-                FileTypeChoices = ErvFileTypeChoices,
-            });
-            var path = file?.TryGetLocalPath();
-            if (string.IsNullOrEmpty(path)) return;
-
-            erv.Save(path!);
-            Flash($"Contours saved: {Path.GetFileName(path)}  ({lines.Count} line(s), {levels.Count} level(s))");
-        }
-
-        private static List<double> BuildContourLevels(double min, double max, double interval)
-        {
-            var levels = new List<double>();
-            if (interval <= 0 || max <= min) return levels;
-
-            double start = Math.Ceiling(min / interval) * interval;
-            for (double v = start; v <= max + 1e-9; v += interval)
-                levels.Add(v);
-            return levels;
-        }
-
-        private async Task<(double Min, double Max, double Interval)?> ShowContourDialogAsync(double dataMin, double dataMax)
-        {
-            var tcs = new TaskCompletionSource<(double, double, double)?>();
-
-            double defaultInterval = Math.Max(1e-6, (dataMax - dataMin) / 10.0);
-            var minBox = new NumericUpDown { Value = (decimal)dataMin, FormatString = "0.###", Increment = 1, Width = 130, HorizontalAlignment = HorizontalAlignment.Left };
-            var maxBox = new NumericUpDown { Value = (decimal)dataMax, FormatString = "0.###", Increment = 1, Width = 130, HorizontalAlignment = HorizontalAlignment.Left };
-            var intervalBox = new NumericUpDown { Value = (decimal)defaultInterval, FormatString = "0.###", Increment = 1, Minimum = 0.000001M, Width = 130, HorizontalAlignment = HorizontalAlignment.Left };
-
-            var dialog = new Window
-            {
-                Title = "Generate contours",
-                Width = 360,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-
-            var okBtn = new Button { Content = "Generate…", MinWidth = 80 };
-            var cancelBtn = new Button { Content = "Cancel", MinWidth = 80 };
-            okBtn.Click += (_, _) =>
-            {
-                tcs.TrySetResult(((double)(minBox.Value ?? (decimal)dataMin), (double)(maxBox.Value ?? (decimal)dataMax), (double)(intervalBox.Value ?? (decimal)defaultInterval)));
-                dialog.Close();
-            };
-            cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
-            buttons.Children.Add(okBtn);
-            buttons.Children.Add(cancelBtn);
-
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 6,
-                Children =
-                {
-                    new TextBlock { Text = $"Data range: {dataMin:g4} … {dataMax:g4}", TextWrapping = TextWrapping.Wrap },
-                    new TextBlock { Text = "Minimum level" }, minBox,
-                    new TextBlock { Text = "Maximum level" }, maxBox,
-                    new TextBlock { Text = "Interval" }, intervalBox,
-                    buttons,
-                },
-            };
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
-        }
-
         // ---- misc -------------------------------------------------------------
 
         private void OnWindowKeyDown(object? sender, KeyEventArgs e)
         {
+            if (HandleToolKey(e)) { e.Handled = true; return; }
+
             if (e.KeyModifiers == (KeyModifiers.Control | KeyModifiers.Shift))
             {
                 if (e.Key == Key.O) { _ = AddLayerDialogAsync(); e.Handled = true; }
@@ -2417,6 +2168,7 @@ namespace RasterField
                 {
                     case Key.O: _ = OpenDialogAsync(); e.Handled = true; break;
                     case Key.S: _ = SaveDatasetAsAsync(); e.Handled = true; break;
+                    case Key.B: _ = BezierSubdivisionAsync(); e.Handled = true; break;
                     case Key.D0: _view.ZoomToFit(); e.Handled = true; break;
                     case Key.OemPlus: _view.ZoomBy(1.25); e.Handled = true; break;
                     case Key.OemMinus: _view.ZoomBy(0.8); e.Handled = true; break;
@@ -2461,7 +2213,8 @@ namespace RasterField
         private string SuggestName()
         {
             var hp = _view.Document?.HeaderPath;
-            return hp != null ? Path.GetFileNameWithoutExtension(hp) : "raster";
+            if (hp != null) return Path.GetFileNameWithoutExtension(hp);
+            return _view.ActiveLayer != null ? SafeFileName(_view.ActiveLayer.Name) : "raster";
         }
 
         private void LoadImageStripPalettes()

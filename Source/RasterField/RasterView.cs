@@ -143,6 +143,12 @@ namespace RasterField
         /// </summary>
         public event EventHandler? LineChanged;
 
+        /// <summary>
+        /// Raised on a left click while <see cref="IdentifyMode"/> is on, with the clicked world
+        /// coordinate (the host lists every layer's value there).
+        /// </summary>
+        public event EventHandler<RasterReadoutEventArgs>? IdentifyRequested;
+
         /// <summary>Background fill behind the raster.</summary>
         public IBrush Background { get; set; }
 
@@ -252,8 +258,10 @@ namespace RasterField
             // simply clear it — consistent with how switching datasets already behaved.
             _hasSelection = false; _selDrag = SelDrag.None;
             _hasLine = false; _lineDrag = LineDrag.None;
+            oldActive?.DisposeSmooth();
 
             RefreshStreamingWindow();
+            ScheduleSmoothOverlay();
             InvalidateVisual();
             RasterLoaded?.Invoke(this, EventArgs.Empty);
             LayersChanged?.Invoke(this, EventArgs.Empty);
@@ -746,9 +754,185 @@ namespace RasterField
         /// <summary>Use smooth (bilinear) interpolation instead of nearest-neighbour when magnified.</summary>
         public bool SmoothScaling
         {
-            get => RenderOptions.GetBitmapInterpolationMode(this) != BitmapInterpolationMode.None;
-            set => RenderOptions.SetBitmapInterpolationMode(this,
-                value ? BitmapInterpolationMode.HighQuality : BitmapInterpolationMode.None);
+            get => DisplayResampling != DisplayResampling.Nearest;
+            set => DisplayResampling = value ? DisplayResampling.Bilinear : DisplayResampling.Nearest;
+        }
+
+        private DisplayResampling _displayResampling = DisplayResampling.Nearest;
+
+        /// <summary>
+        /// How magnified cells are drawn: crisp cells, bilinear, or a bicubic Bézier-patch surface
+        /// (<see cref="BezierPatchInterpolator"/>) computed for the visible window of the active
+        /// layer. Display only — the data is never changed.
+        /// </summary>
+        public DisplayResampling DisplayResampling
+        {
+            get => _displayResampling;
+            set
+            {
+                _displayResampling = value;
+                RenderOptions.SetBitmapInterpolationMode(this,
+                    value == DisplayResampling.Bilinear ? BitmapInterpolationMode.HighQuality : BitmapInterpolationMode.None);
+                if (value != DisplayResampling.Bezier)
+                    foreach (var l in _layers) l.DisposeSmooth();
+                ScheduleSmoothOverlay();
+                InvalidateVisual();
+            }
+        }
+
+        /// <summary>Tension / monotone settings used by the Bézier display mode.</summary>
+        public BezierPatchOptions DisplayBezierOptions { get; } = new BezierPatchOptions();
+
+        private bool _identifyMode;
+
+        /// <summary>When on, a left click raises <see cref="IdentifyRequested"/> instead of starting a pan.</summary>
+        public bool IdentifyMode
+        {
+            get => _identifyMode;
+            set
+            {
+                _identifyMode = value;
+                Cursor = value ? new Cursor(StandardCursorType.Help) : Cursor.Default;
+            }
+        }
+
+        /// <summary>Sets a raster layer's draw opacity (0–1).</summary>
+        public void SetLayerOpacity(RasterLayer layer, double opacity)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            layer.Opacity = Math.Clamp(opacity, 0.0, 1.0);
+            InvalidateVisual();
+        }
+
+        /// <summary>Marks a layer as derived/in-memory with a human-readable description of how it was made.</summary>
+        public void MarkDerived(object layer, string lineage)
+        {
+            switch (layer)
+            {
+                case RasterLayer r: r.IsUnsaved = true; r.Lineage = lineage; break;
+                case VectorLayer v: v.IsUnsaved = true; v.Lineage = lineage; break;
+                default: return;
+            }
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Records that a derived layer has been written to <paramref name="path"/> (renames it after the file).</summary>
+        public void MarkSaved(object layer, string path)
+        {
+            string name = Path.GetFileNameWithoutExtension(path);
+            switch (layer)
+            {
+                case RasterLayer r: r.IsUnsaved = false; r.Name = name; break;
+                case VectorLayer v: v.IsUnsaved = false; v.Name = name; break;
+                default: return;
+            }
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Copies palette, stretch, gamma and render mode from one raster layer to another (e.g. onto its Bézier-subdivided copy).</summary>
+        public void CopyDisplaySettings(RasterLayer from, RasterLayer to)
+        {
+            ArgumentNullException.ThrowIfNull(from);
+            ArgumentNullException.ThrowIfNull(to);
+            if (from.Colorizer == null || to.Colorizer == null) return;
+            to.Colorizer.Palette = from.Colorizer.Palette;
+            to.Colorizer.Minimum = from.Colorizer.Minimum;
+            to.Colorizer.Maximum = from.Colorizer.Maximum;
+            to.Colorizer.Gamma = from.Colorizer.Gamma;
+            to.Colorizer.Mode = from.Colorizer.Mode;
+            to.Colorizer.ClassCount = from.Colorizer.ClassCount;
+            RebuildLayerBitmap(to);
+            if (ReferenceEquals(to, ActiveLayer)) RasterLoaded?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>The cell window of the active layer currently on screen (clamped to the dataset), or <see langword="null"/>.</summary>
+        public PixelRect? VisibleCellWindow()
+        {
+            var layer = ActiveLayer;
+            if (layer == null || Bounds.Width <= 0 || Bounds.Height <= 0) return null;
+            Point a = ScreenToCell(new Point(0, 0)), b = ScreenToCell(new Point(Bounds.Width, Bounds.Height));
+            int x0 = (int)Math.Max(0, Math.Floor(Math.Min(a.X, b.X)));
+            int y0 = (int)Math.Max(0, Math.Floor(Math.Min(a.Y, b.Y)));
+            int x1 = (int)Math.Min(layer.DatasetWidth, Math.Ceiling(Math.Max(a.X, b.X)));
+            int y1 = (int)Math.Min(layer.DatasetHeight, Math.Ceiling(Math.Max(a.Y, b.Y)));
+            return x1 > x0 && y1 > y0 ? new PixelRect(x0, y0, x1 - x0, y1 - y0) : null;
+        }
+
+        // ---- Bézier display overlay -------------------------------------------------
+
+        /// <summary>Upper bound on the overlay's cell count (≈ a 2.5k × 1.6k screen) — keeps a rebuild well under ~100 ms.</summary>
+        private const long MaxSmoothCells = 4_000_000;
+
+        private Avalonia.Threading.DispatcherTimer? _smoothTimer;
+
+        /// <summary>Debounces overlay rebuilds so panning stays fluid; the stale overlay stays correctly placed meanwhile.</summary>
+        private void ScheduleSmoothOverlay()
+        {
+            if (_displayResampling != DisplayResampling.Bezier) return;
+            if (_smoothTimer == null)
+            {
+                _smoothTimer = new Avalonia.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+                _smoothTimer.Tick += (_, _) => { _smoothTimer!.Stop(); UpdateSmoothOverlay(); };
+            }
+            _smoothTimer.Stop();
+            _smoothTimer.Start();
+        }
+
+        private void UpdateSmoothOverlay()
+        {
+            var layer = ActiveLayer;
+            if (layer == null || _displayResampling != DisplayResampling.Bezier) return;
+            if (layer.Raster == null || layer.ShowRgbComposite || layer.Colorizer == null || _scale < 1.5)
+            {
+                if (layer.SmoothBitmap != null) { layer.DisposeSmooth(); InvalidateVisual(); }
+                return;
+            }
+
+            var window = VisibleCellWindow();
+            if (window == null) return;
+            var (x0, y0, w, h) = (window.Value.X, window.Value.Y, window.Value.Width, window.Value.Height);
+
+            int k = Math.Clamp((int)Math.Ceiling(_scale), 2, 8);
+            while (k > 2 && (long)w * h * k * k > MaxSmoothCells) k--;
+            if ((long)w * h * k * k > MaxSmoothCells) return;
+
+            var o = DisplayBezierOptions;
+            string key = FormattableString.Invariant($"{x0},{y0},{w},{h},{k},{layer.RenderVersion},{o.Tension},{o.Monotone},{o.NoData}");
+            if (key == layer.SmoothKey) return;
+
+            var raster = layer.Raster;
+            int mx0 = Math.Max(0, x0 - 2), my0 = Math.Max(0, y0 - 2);
+            int mx1 = Math.Min(raster.Width, x0 + w + 2), my1 = Math.Min(raster.Height, y0 + h + 2);
+            var source = RasterClipper.Crop(raster, mx0, my0, mx1 - mx0, my1 - my0);
+            var fine = BezierPatchInterpolator.Subdivide(source, new BezierPatchOptions
+            {
+                Factor = k, Tension = o.Tension, Monotone = o.Monotone, NoData = o.NoData,
+            });
+            var inner = RasterClipper.Crop(fine, (x0 - mx0) * k, (y0 - my0) * k, w * k, h * k);
+            var image = RasterImageRenderer.Render(inner, layer.Colorizer);
+
+            layer.SmoothBitmap?.Dispose();
+            layer.SmoothBitmap = ToBitmap(image);
+            layer.SmoothOriginX = x0;
+            layer.SmoothOriginY = y0;
+            layer.SmoothStep = 1.0 / k;
+            layer.SmoothKey = key;
+            InvalidateVisual();
+        }
+
+        /// <summary>Copies a rendered BGRA image into a new Avalonia bitmap.</summary>
+        internal static WriteableBitmap ToBitmap(RasterImage image)
+        {
+            var bmp = new WriteableBitmap(new PixelSize(Math.Max(1, image.Width), Math.Max(1, image.Height)), new Vector(96, 96),
+                PixelFormat.Bgra8888, AlphaFormat.Unpremul);
+            using ILockedFramebuffer fb = bmp.Lock();
+            int srcStride = image.Stride, dstStride = fb.RowBytes;
+            if (srcStride == dstStride)
+                Marshal.Copy(image.Pixels, 0, fb.Address, image.Pixels.Length);
+            else
+                for (int y = 0; y < image.Height; y++)
+                    Marshal.Copy(image.Pixels, y * srcStride, fb.Address + y * dstStride, srcStride);
+            return bmp;
         }
 
         // ---- loading ----------------------------------------------------------------
@@ -921,6 +1105,7 @@ namespace RasterField
         private void RaiseViewChanged()
         {
             RefreshStreamingWindow();
+            ScheduleSmoothOverlay();
             ViewChanged?.Invoke(this, EventArgs.Empty);
             InvalidateVisual();
         }
@@ -1046,6 +1231,8 @@ namespace RasterField
         private void RebuildLayerBitmap(RasterLayer layer)
         {
             RasterImage image;
+            layer.RenderVersion++;
+            if (ReferenceEquals(layer, ActiveLayer)) ScheduleSmoothOverlay();
 
             if (layer.ShowRgbComposite)
             {
@@ -1121,8 +1308,9 @@ namespace RasterField
             {
                 switch (layer)
                 {
-                    case RasterLayer rasterLayer when rasterLayer.IsVisible && rasterLayer.Bitmap != null:
-                        DrawLayer(context, rasterLayer, active, activeInvertible);
+                    case RasterLayer rasterLayer when rasterLayer.IsVisible && rasterLayer.Bitmap != null && rasterLayer.Opacity > 0:
+                        using (context.PushOpacity(rasterLayer.Opacity))
+                            DrawLayer(context, rasterLayer, active, activeInvertible);
                         break;
                     case VectorLayer vectorLayer when vectorLayer.IsVisible && activeInvertible:
                         DrawVectorLayer(context, vectorLayer, active);
@@ -1181,6 +1369,16 @@ namespace RasterField
                 double destY = _offsetY + layer.BitmapOriginY * _scale;
                 var dest = new Rect(destX, destY, bw * layer.BitmapStep * _scale, bh * layer.BitmapStep * _scale);
                 context.DrawImage(bmp, new Rect(0, 0, bw, bh), dest);
+
+                var smooth = layer.SmoothBitmap;
+                if (smooth != null && _displayResampling == DisplayResampling.Bezier)
+                {
+                    double sw = smooth.PixelSize.Width, sh = smooth.PixelSize.Height;
+                    var sdest = new Rect(_offsetX + layer.SmoothOriginX * _scale, _offsetY + layer.SmoothOriginY * _scale,
+                        sw * layer.SmoothStep * _scale, sh * layer.SmoothStep * _scale);
+                    using (context.PushRenderOptions(new RenderOptions { BitmapInterpolationMode = BitmapInterpolationMode.HighQuality }))
+                        context.DrawImage(smooth, new Rect(0, 0, sw, sh), sdest);
+                }
                 return;
             }
 
@@ -1273,16 +1471,30 @@ namespace RasterField
             var strokeBrush = new SolidColorBrush(layer.Color);
             var pen = new Pen(strokeBrush, Math.Max(0.5, layer.LineWidth));
             var fillBrush = new SolidColorBrush(layer.Color, 0.35);
+            var widthFactors = layer.WidthFactors;
+            var labels = layer.Labels;
+            Dictionary<double, Pen>? pens = widthFactors == null ? null : new Dictionary<double, Pen>();
 
             for (int i = 0; i < objects.Count; i++)
             {
                 var (bMinX, bMinY, bMaxX, bMaxY) = bounds[i];
                 if (bMaxX < minX || bMinX > maxX || bMaxY < minY || bMinY > maxY) continue;
 
+                Pen objectPen = pen;
+                if (pens != null && widthFactors![i] != 1.0)
+                {
+                    double factor = widthFactors[i];
+                    if (!pens.TryGetValue(factor, out objectPen!))
+                        pens[factor] = objectPen = new Pen(strokeBrush, Math.Max(0.5, layer.LineWidth * factor));
+                }
+
                 switch (objects[i])
                 {
                     case VectorPoint p: DrawVectorPoint(context, active, strokeBrush, p); break;
-                    case VectorPolyObject poly: DrawVectorPoly(context, active, pen, fillBrush, poly); break;
+                    case VectorPolyObject poly:
+                        DrawVectorPoly(context, active, objectPen, fillBrush, poly);
+                        if (labels?[i] is string label) DrawLineLabel(context, active, strokeBrush, poly, label);
+                        break;
                     case VectorRectangleObject rect: DrawVectorRect(context, active, pen, fillBrush, rect); break;
                     case VectorTextObject text: DrawVectorText(context, active, strokeBrush, text); break;
                 }
@@ -1315,6 +1527,36 @@ namespace RasterField
 
             IBrush? fill = closed && poly.Fill != 0 ? fillBrush : null;
             context.DrawGeometry(fill, pen, geometry);
+        }
+
+        /// <summary>
+        /// Draws a label on a polyline at its middle vertex, rotated to follow the line (kept upright),
+        /// on a translucent halo — only when the line is long enough on screen to carry it.
+        /// </summary>
+        private void DrawLineLabel(DrawingContext context, RasterLayer active, IBrush brush, VectorPolyObject poly, string label)
+        {
+            var pts = poly.Points;
+            if (poly.Page || pts.Count < 2) return;
+            int mid = pts.Count / 2;
+            Point a = WorldToScreen(active, pts[Math.Max(0, mid - 1)].X, pts[Math.Max(0, mid - 1)].Y);
+            Point b = WorldToScreen(active, pts[mid].X, pts[mid].Y);
+            Point first = WorldToScreen(active, pts[0].X, pts[0].Y), last = WorldToScreen(active, pts[pts.Count - 1].X, pts[pts.Count - 1].Y);
+            var ft = new FormattedText(label, System.Globalization.CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight, new Typeface(Typeface.Default.FontFamily, FontStyle.Normal, FontWeight.SemiBold), 11, brush);
+            if (Distance(first, last) < ft.Width * 1.5 && pts.Count < 8) return; // too small on screen
+
+            double angle = Math.Atan2(b.Y - a.Y, b.X - a.X);
+            if (angle > Math.PI / 2) angle -= Math.PI;
+            if (angle < -Math.PI / 2) angle += Math.PI;
+            var centre = new Point((a.X + b.X) / 2, (a.Y + b.Y) / 2);
+
+            var m = Matrix.CreateTranslation(-ft.Width / 2, -ft.Height / 2) * Matrix.CreateRotation(angle) * Matrix.CreateTranslation(centre.X, centre.Y);
+            using (context.PushTransform(m))
+            {
+                // Map-style label: the line's own colour on a pale halo, readable over any palette.
+                context.FillRectangle(new SolidColorBrush(Color.FromArgb(215, 255, 255, 250)), new Rect(-3, 0, ft.Width + 6, ft.Height), 3);
+                context.DrawText(ft, new Point(0, 0));
+            }
         }
 
         private void DrawVectorRect(DrawingContext context, RasterLayer active, Pen pen, IBrush fillBrush, VectorRectangleObject rect)
@@ -1563,6 +1805,19 @@ namespace RasterField
                 return;
             }
 
+            if (IdentifyMode && p.Properties.IsLeftButtonPressed && Document != null)
+            {
+                Point c = ScreenToCell(p.Position);
+                var (wx, wy) = Document.GeoReference.PixelToWorld(c.X, c.Y);
+                IdentifyRequested?.Invoke(this, new RasterReadoutEventArgs
+                {
+                    WorldX = wx, WorldY = wy,
+                    Column = (int)Math.Floor(c.X), Row = (int)Math.Floor(c.Y),
+                    InsideRaster = c.X >= 0 && c.Y >= 0 && c.X < DatasetWidth && c.Y < DatasetHeight,
+                });
+                return;
+            }
+
             if (p.Properties.IsLeftButtonPressed || p.Properties.IsMiddleButtonPressed)
             {
                 _panning = true;
@@ -1600,7 +1855,8 @@ namespace RasterField
             {
                 _panning = false;
                 e.Pointer.Capture(null);
-                Cursor = SelectionMode ? new Cursor(StandardCursorType.Cross) : Cursor.Default;
+                Cursor = SelectionMode ? new Cursor(StandardCursorType.Cross)
+                    : IdentifyMode ? new Cursor(StandardCursorType.Help) : Cursor.Default;
             }
         }
 
@@ -1806,6 +2062,19 @@ namespace RasterField
         }
 
         private static double Clamp(double v, double lo, double hi) => v < lo ? lo : v > hi ? hi : v;
+    }
+
+    /// <summary>How <see cref="RasterView"/> draws cells when magnified.</summary>
+    public enum DisplayResampling
+    {
+        /// <summary>Crisp cells (nearest neighbour).</summary>
+        Nearest,
+
+        /// <summary>Bilinear blending between cells.</summary>
+        Bilinear,
+
+        /// <summary>A smooth bicubic Bézier-patch surface of the visible window (display only).</summary>
+        Bezier,
     }
 
     /// <summary>Display-range strategies offered by <see cref="RasterView.AutoRange"/>.</summary>
