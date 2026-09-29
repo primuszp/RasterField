@@ -277,6 +277,12 @@ made.Save("new.ers");
   under the pointer; dataset summary (size, cell type, projection + resolved EPSG,
   byte order, data range).
 
+## UI / UX roadmap
+
+The planned mini-GIS interface — docked layer/properties panels, derived raster and
+vector layers (contours, stream networks), and Bézier-patch subdivision for
+increasing resolution — is described in [`docs/UI-UX-TERV.md`](docs/UI-UX-TERV.md) (Hungarian).
+
 ## Build · test · run
 
 ```bash
