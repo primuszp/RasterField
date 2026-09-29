@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using RasterField.Projects;
 using RasterField.Rasters;
 using RasterField.Vectors;
@@ -126,6 +127,47 @@ namespace RasterField.Tests
         }
 
         [Fact]
+        public void Streaming_zonal_statistics_match_in_memory_and_use_bounded_tiles()
+        {
+            var raster = Build(80, 60, (x, y) => x * 0.25 + y * 2, noData: -9999);
+            raster[18, 22] = -9999;
+            raster[31, 47] = -9999;
+            var polygon = new[]
+            {
+                (7.0, 5.0), (66.0, 9.0), (73.0, 37.0),
+                (49.0, 55.0), (12.0, 45.0), (3.0, 21.0),
+            };
+            ZonalResult expected = ZonalStatistics.Compute(raster, Identity, polygon);
+            using var source = new CountingRasterSource(raster);
+
+            ZonalResult actual = ZonalStatistics.Compute(source, Identity, polygon, tileSize: 16);
+
+            Assert.Equal(expected.Count, actual.Count);
+            Assert.Equal(expected.NoDataCount, actual.NoDataCount);
+            Assert.Equal(expected.Minimum, actual.Minimum, 9);
+            Assert.Equal(expected.Maximum, actual.Maximum, 9);
+            Assert.Equal(expected.Mean, actual.Mean, 9);
+            Assert.Equal(expected.StandardDeviation, actual.StandardDeviation, 9);
+            Assert.Equal(expected.Sum, actual.Sum, 7);
+            Assert.Equal(expected.Area, actual.Area, 9);
+            Assert.True(source.ReadCount > 1);
+            Assert.True(source.MaxRequestedCellCount <= 16 * 16);
+        }
+
+        [Fact]
+        public void Streaming_zonal_statistics_can_be_cancelled_before_reading()
+        {
+            using var source = new CountingRasterSource(Build(40, 40, (x, y) => x + y));
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            Assert.Throws<OperationCanceledException>(() => ZonalStatistics.Compute(
+                source, Identity, new[] { (1.0, 1.0), (30.0, 1.0), (30.0, 30.0), (1.0, 30.0) },
+                cancellationToken: cancellation.Token));
+            Assert.Equal(0, source.ReadCount);
+        }
+
+        [Fact]
         public void Measurement_length_perimeter_area_and_surface_length()
         {
             var square = new[] { (0.0, 0.0), (3.0, 0.0), (3.0, 4.0), (0.0, 4.0) };
@@ -163,6 +205,49 @@ namespace RasterField.Tests
             public ToleranceComparer(double tol) { _tol = tol; }
             public bool Equals(double a, double b) => Math.Abs(a - b) <= _tol;
             public int GetHashCode(double v) => 0;
+        }
+
+        private sealed class CountingRasterSource : IRasterSource
+        {
+            private readonly Raster _raster;
+
+            public CountingRasterSource(Raster raster) => _raster = raster;
+
+            public int Width => _raster.Width;
+            public int Height => _raster.Height;
+            public int BandCount => 1;
+            public int ReadCount { get; private set; }
+            public int MaxRequestedCellCount { get; private set; }
+
+            public Raster ReadWindow(int x, int y, int width, int height, int stepX = 1, int stepY = 1, int band = 0)
+            {
+                ArgumentOutOfRangeException.ThrowIfLessThan(stepX, 1);
+                ArgumentOutOfRangeException.ThrowIfLessThan(stepY, 1);
+                ArgumentOutOfRangeException.ThrowIfNotEqual(band, 0);
+                ReadCount++;
+                MaxRequestedCellCount = Math.Max(MaxRequestedCellCount, Math.Max(0, width) * Math.Max(0, height));
+
+                int x0 = Math.Max(0, x), y0 = Math.Max(0, y);
+                int x1 = Math.Min(Width, x + Math.Max(0, width));
+                int y1 = Math.Min(Height, y + Math.Max(0, height));
+                int outputWidth = Math.Max(0, (x1 - x0 + stepX - 1) / stepX);
+                int outputHeight = Math.Max(0, (y1 - y0 + stepY - 1) / stepY);
+                var result = new Raster(outputWidth, outputHeight, _raster.NoDataValue);
+                for (int row = 0; row < outputHeight; row++)
+                    for (int col = 0; col < outputWidth; col++)
+                        result.SetValueFast(row, col, _raster[y0 + row * stepY, x0 + col * stepX]);
+                return result;
+            }
+
+            public Raster ReadOverview(int maxWidth, int maxHeight, int band = 0)
+            {
+                int step = Math.Max(1, Math.Max(
+                    (Width + maxWidth - 1) / maxWidth,
+                    (Height + maxHeight - 1) / maxHeight));
+                return ReadWindow(0, 0, Width, Height, step, step, band);
+            }
+
+            public void Dispose() { }
         }
 
         // ---- project file -----------------------------------------------------------------

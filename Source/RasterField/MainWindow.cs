@@ -231,13 +231,17 @@ namespace RasterField
             };
         }
 
-        /// <summary>Releases background profile work, rendered bitmaps and streaming readers.</summary>
+        /// <summary>Releases background analysis work, rendered bitmaps and streaming readers.</summary>
         public void Dispose()
         {
             _profileGeneration++;
             _profileCts?.Cancel();
             _profileCts?.Dispose();
             _profileCts = null;
+            _zoneGeneration++;
+            _zoneCts?.Cancel();
+            _zoneCts?.Dispose();
+            _zoneCts = null;
             _view.Dispose();
         }
 

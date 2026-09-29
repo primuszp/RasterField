@@ -73,7 +73,7 @@ Robustness: LF/CRLF, UTF‑8 BOM, missing optional blocks, `NrOfBands` absent �
 | `RasterMosaic` / `ErsDocument.Mosaic(...)` | Merges several rasters (each with its own georeference — differing rotation/registration all honoured) over their combined world extent, at a chosen output cell size. `MosaicOverlapMode`: `FirstWins`, `LastWins`, or `Average` where sources overlap. |
 | `ContourGenerator` | Traces lines of constant value through a raster (marching squares), with the standard centre-average disambiguation at saddle cells; `TraceLevels` does many levels in one pass. Returns world-coordinate polylines (vertices on the cell-centre grid, where the values actually sit) — a natural fit for `.erv` export. `Trace(raster, geo, ContourOptions)` adds index (major) contours every *n*-th level (`ContourLine.IsIndex`), Chaikin corner-cutting smoothing that keeps open lines' endpoints and closed rings closed, and a minimum-length filter; `BuildLevels` lists the whole multiples of an interval in a range. |
 | `BezierPatchInterpolator` / `ErsDocument.Subdivide(...)` | Bicubic **Bézier-patch** interpolation of a gridded surface and **subdivision** to a *k*× finer cell size. Each patch spans four neighbouring cell centres; its 16 control points come from the node values and central-difference (Catmull-Rom) derivatives via the Hermite → Bézier conversion, so the surface is C¹-continuous across patches and reproduces a plane exactly. `Tension` blends from Catmull-Rom (1) to exact bilinear (0); `Monotone` limits tangents (Fritsch–Carlson style) and clamps to the patch's corner range so sharp steps don't overshoot; `NoData` chooses a bilinear fallback or strict no-data next to gaps. The image border is extended by point reflection. `ErsDocument.Subdivide` works on every band (loaded or streamed), for the whole dataset or a cell window, keeping extent/origin/rotation and dividing the cell size by *k*. |
-| `ZonalStatistics` / `Measurement` | Statistics of the cells whose centre lies inside a polygon (scanline, works under rotation); polyline length, polygon perimeter/area, and terrain-following surface length. `RasterProfiler.SamplePolylineWorld` samples a multi-vertex path with a pluggable interpolator (bilinear or Bézier). |
+| `ZonalStatistics` / `Measurement` | Statistics of the cells whose centre lies inside a polygon (scanline, works under rotation); the `IRasterSource` overload groups intersecting scanline spans into bounded tiles so huge streamed rasters are analysed without loading the full band. Polyline length, polygon perimeter/area, and terrain-following surface length. `RasterProfiler.SamplePolylineWorld` samples a multi-vertex path with a pluggable interpolator (bilinear or Bézier). |
 | `StreamNetwork` | Vector stream network from D8 flow direction + accumulation: cells at or above a threshold are chained downstream into segments that break at confluences, each with its **Strahler order** and outlet accumulation. |
 
 ### Large datasets — streaming instead of loading everything
@@ -211,7 +211,9 @@ made.Save("new.ers");
   or along a vector line (card menu). **Measure** (`M`): length, terrain-following surface length,
   perimeter and area. **Zone** (`Z`): zonal statistics of every visible raster inside a drawn
   polygon; *Analysis ▸ Zonal statistics by polygon layer…* does it per polygon of a vector layer,
-  with CSV export. Click adds a point, drag moves it, dragging the small handle at a segment's
+  with CSV export. Both zonal modes work directly on huge streamed rasters in the background;
+  redrawing the interactive zone cancels its superseded calculation. Click adds a point, drag
+  moves it, dragging the small handle at a segment's
   midpoint inserts a new point there (also on a polygon's closing edge), double-click / Enter
   finishes, Backspace removes the last point.
 * **Bézier-patch subdivision** (*Raster ▸ Bézier-patch subdivision…*, `Ctrl+B`) —
@@ -290,8 +292,8 @@ made.Save("new.ers");
   an equally large colourised bitmap) before this. The status bar and on‑canvas
   hint show *(streaming)* in this mode; the Clip tool still works (and is the
   recommended way to pull a smaller, fully‑editable region out of a huge scene). Multi-point
-  profiles also read only the small source tiles crossed by the path, so they work directly on
-  these large layers without a preliminary clip.
+  profiles and zonal statistics also read only the small source tiles crossed by the path or
+  polygon, so they work directly on these large layers without a preliminary clip.
 * **Palettes** — built‑ins + every `.pal` and PNG/BMP strip in `palette/`; reverse
   toggle; continuous / discrete / nearest modes; live legend. The bundled files are
   named in English by their content, low → high (e.g. *Precipitation (brown-blue)*,

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace RasterField.Rasters
 {
@@ -108,6 +109,128 @@ namespace RasterField.Rasters
                 }
             }
             return new ZonalResult(count, noData, min, max, sum, sumSq, cellArea);
+        }
+
+        /// <summary>
+        /// Computes zonal statistics directly from a windowed source. The polygon scanlines are
+        /// grouped into bounded tiles and every intersected tile is read at most once, so even a
+        /// very large raster can be analysed without materialising its complete band.
+        /// </summary>
+        public static ZonalResult Compute(
+            IRasterSource source, RasterGeoReference geoReference,
+            IReadOnlyList<(double X, double Y)> polygon, int band = 0, int tileSize = 256,
+            CancellationToken cancellationToken = default)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            if (geoReference == null) throw new ArgumentNullException(nameof(geoReference));
+            if (polygon == null) throw new ArgumentNullException(nameof(polygon));
+            if (polygon.Count < 3) throw new ArgumentException("A zone needs at least three vertices.", nameof(polygon));
+            if (!geoReference.IsInvertible) throw new InvalidOperationException("The georeference is not invertible.");
+            if (band < 0 || band >= source.BandCount) throw new ArgumentOutOfRangeException(nameof(band));
+            if (tileSize < 1) throw new ArgumentOutOfRangeException(nameof(tileSize));
+
+            var px = new double[polygon.Count];
+            var py = new double[polygon.Count];
+            double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+            for (int i = 0; i < polygon.Count; i++)
+            {
+                var (c, r) = geoReference.WorldToPixel(polygon[i].X, polygon[i].Y);
+                px[i] = c; py[i] = r;
+                minX = Math.Min(minX, c); maxX = Math.Max(maxX, c);
+                minY = Math.Min(minY, r); maxY = Math.Max(maxY, r);
+            }
+
+            int c0 = Math.Max(0, (int)Math.Floor(minX)), c1 = Math.Min(source.Width - 1, (int)Math.Ceiling(maxX));
+            int r0 = Math.Max(0, (int)Math.Floor(minY)), r1 = Math.Min(source.Height - 1, (int)Math.Ceiling(maxY));
+            var (_, b, cc, _, e, f) = geoReference.GeoTransform;
+            double cellArea = Math.Abs(b * f - cc * e);
+
+            long count = 0, noData = 0;
+            double min = double.MaxValue, max = double.MinValue, sum = 0, sumSq = 0;
+            if (c0 > c1 || r0 > r1)
+                return new ZonalResult(count, noData, min, max, sum, sumSq, cellArea);
+
+            var crossings = new List<double>();
+            int firstTileRow = r0 / tileSize;
+            int lastTileRow = r1 / tileSize;
+            for (int tileRow = firstTileRow; tileRow <= lastTileRow; tileRow++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int tileOriginY = tileRow * tileSize;
+                int fromRow = Math.Max(r0, tileOriginY);
+                int toRow = Math.Min(r1, tileOriginY + tileSize - 1);
+                var spansByTile = new Dictionary<int, List<CellSpan>>();
+
+                for (int row = fromRow; row <= toRow; row++)
+                {
+                    double y = row + 0.5;
+                    crossings.Clear();
+                    for (int i = 0, j = polygon.Count - 1; i < polygon.Count; j = i++)
+                    {
+                        if ((py[i] > y) != (py[j] > y))
+                            crossings.Add(px[i] + (y - py[i]) / (py[j] - py[i]) * (px[j] - px[i]));
+                    }
+                    crossings.Sort();
+                    for (int k = 0; k + 1 < crossings.Count; k += 2)
+                    {
+                        int from = Math.Max(c0, (int)Math.Ceiling(crossings[k] - 0.5));
+                        int to = Math.Min(c1, (int)Math.Floor(crossings[k + 1] - 0.5));
+                        if (from > to) continue;
+
+                        int firstTileColumn = from / tileSize;
+                        int lastTileColumn = to / tileSize;
+                        for (int tileColumn = firstTileColumn; tileColumn <= lastTileColumn; tileColumn++)
+                        {
+                            int tileOriginX = tileColumn * tileSize;
+                            int spanFrom = Math.Max(from, tileOriginX);
+                            int spanTo = Math.Min(to, tileOriginX + tileSize - 1);
+                            if (!spansByTile.TryGetValue(tileColumn, out List<CellSpan>? spans))
+                            {
+                                spans = new List<CellSpan>();
+                                spansByTile.Add(tileColumn, spans);
+                            }
+                            spans.Add(new CellSpan(row, spanFrom, spanTo));
+                        }
+                    }
+                }
+
+                foreach (KeyValuePair<int, List<CellSpan>> entry in spansByTile)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int tileOriginX = entry.Key * tileSize;
+                    int width = Math.Min(tileSize, source.Width - tileOriginX);
+                    int height = Math.Min(tileSize, source.Height - tileOriginY);
+                    Raster tile = source.ReadWindow(tileOriginX, tileOriginY, width, height, band: band);
+                    foreach (CellSpan span in entry.Value)
+                    {
+                        int localRow = span.Row - tileOriginY;
+                        for (int col = span.From; col <= span.To; col++)
+                        {
+                            float value = tile[localRow, col - tileOriginX];
+                            if (tile.IsNoData(value)) { noData++; continue; }
+                            count++;
+                            sum += value; sumSq += (double)value * value;
+                            if (value < min) min = value;
+                            if (value > max) max = value;
+                        }
+                    }
+                }
+            }
+            return new ZonalResult(count, noData, min, max, sum, sumSq, cellArea);
+        }
+
+        private readonly struct CellSpan
+        {
+            public CellSpan(int row, int from, int to)
+            {
+                Row = row;
+                From = from;
+                To = to;
+            }
+
+            public int Row { get; }
+            public int From { get; }
+            public int To { get; }
         }
     }
 

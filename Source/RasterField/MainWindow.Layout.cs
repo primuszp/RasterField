@@ -53,6 +53,8 @@ namespace RasterField
         private IReadOnlyList<ProfileSeries> _lastProfile = Array.Empty<ProfileSeries>();
         private CancellationTokenSource? _profileCts;
         private int _profileGeneration;
+        private CancellationTokenSource? _zoneCts;
+        private int _zoneGeneration;
 
         private static readonly FilePickerFileType[] CsvTypes = { new("CSV (*.csv)") { Patterns = new[] { "*.csv" } } };
         private static readonly FilePickerFileType[] GeoJsonTypes = { new("GeoJSON (*.geojson)") { Patterns = new[] { "*.geojson", "*.json" } } };
@@ -395,6 +397,16 @@ namespace RasterField
 
         private void SetPathTool(PathTool tool)
         {
+            if (tool != PathTool.Profile)
+            {
+                _profileGeneration++;
+                _profileCts?.Cancel();
+            }
+            if (tool != PathTool.Zone)
+            {
+                _zoneGeneration++;
+                _zoneCts?.Cancel();
+            }
             if (tool != PathTool.None)
             {
                 SetClipToolActive(false);
@@ -608,34 +620,139 @@ namespace RasterField
             _measureText.Text = sb.ToString().TrimEnd();
         }
 
-        private void UpdateZone()
+        private async void UpdateZone()
         {
+            _zoneCts?.Cancel();
+            _zoneCts?.Dispose();
+            _zoneCts = new CancellationTokenSource();
+            CancellationToken token = _zoneCts.Token;
+            int generation = ++_zoneGeneration;
+
             var path = _view.CurrentPath.ToList();
             if (path.Count < 3) { _measureText.Text = T("Draw a polygon with at least three points."); return; }
             string unit = DistanceUnit();
-            var sb = new StringBuilder();
-            sb.AppendLine(L.F("Zone area: {0:N2} {1}² · perimeter {2:N2} {1}", Measurement.Area(path), unit, Measurement.Perimeter(path)));
-            foreach (var layer in _view.DrawOrder.OfType<RasterLayer>().Where(l => l.IsVisible && !l.IsFrame).Reverse())
+            string heading = L.F("Zone area: {0:N2} {1}² · perimeter {2:N2} {1}", Measurement.Area(path), unit, Measurement.Perimeter(path));
+            _measureText.Text = heading + "\n\n" + T("Computing zonal statistics…");
+
+            var requests = _view.DrawOrder.OfType<RasterLayer>()
+                .Where(l => l.IsVisible && !l.IsFrame && (l.Raster != null || l.Source != null))
+                .Reverse()
+                .Select(l => new ZoneLayerRequest(l.Name, l.Raster, l.Source, l.SourceFactory,
+                    l.ActiveBand, l.Document.GeoReference))
+                .Where(r => r.GeoReference.IsInvertible)
+                .ToList();
+
+            try
             {
-                sb.AppendLine();
-                if (layer.Raster == null) { sb.AppendLine(layer.Name + ": " + T("streaming layer — clip it first for zonal statistics")); continue; }
-                if (!layer.Document.GeoReference.IsInvertible) continue;
-                var z = ZonalStatistics.Compute(layer.Raster, layer.Document.GeoReference, path);
-                sb.AppendLine(layer.Name);
-                sb.AppendLine(z.Count == 0
-                    ? "  " + T("no valid cells inside")
-                    : L.F("  cells {0:N0} (+{1:N0} no-data) · min {2:g6} · max {3:g6}\n  mean {4:g6} · σ {5:g6} · sum {6:g6}", z.Count, z.NoDataCount, z.Minimum, z.Maximum, z.Mean, z.StandardDeviation, z.Sum));
+                List<ZoneLayerResult> results = await Task.Run(() => CalculateZones(requests, path, token), token);
+                if (token.IsCancellationRequested || generation != _zoneGeneration) return;
+
+                var sb = new StringBuilder(heading);
+                foreach (ZoneLayerResult result in results)
+                {
+                    sb.AppendLine().AppendLine();
+                    AppendZoneResult(sb, result.Name, result.Result);
+                }
+                _measureText.Text = sb.ToString().TrimEnd();
             }
-            _measureText.Text = sb.ToString().TrimEnd();
+            catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) when (token.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.TraceError($"Zonal statistics failed: {ex}");
+                if (generation == _zoneGeneration)
+                    _measureText.Text = heading + "\n\n" + T("Operation failed") + ": " + ex.Message;
+            }
+        }
+
+        private static List<ZoneLayerResult> CalculateZones(
+            IReadOnlyList<ZoneLayerRequest> requests, IReadOnlyList<(double X, double Y)> path,
+            CancellationToken token)
+        {
+            var results = new List<ZoneLayerResult>(requests.Count);
+            foreach (ZoneLayerRequest request in requests)
+            {
+                token.ThrowIfCancellationRequested();
+                ZonalResult result;
+                if (request.Raster != null)
+                {
+                    result = ZonalStatistics.Compute(request.Raster, request.GeoReference, path);
+                }
+                else
+                {
+                    IRasterSource? ownedSource = null;
+                    try
+                    {
+                        IRasterSource source = request.SourceFactory != null
+                            ? ownedSource = request.SourceFactory()
+                            : request.Source!;
+                        result = ZonalStatistics.Compute(
+                            source, request.GeoReference, path, request.Band, cancellationToken: token);
+                    }
+                    finally
+                    {
+                        ownedSource?.Dispose();
+                    }
+                }
+                results.Add(new ZoneLayerResult(request.Name, result));
+            }
+            return results;
+        }
+
+        private static void AppendZoneResult(StringBuilder sb, string name, ZonalResult result)
+        {
+            sb.AppendLine(name);
+            sb.AppendLine(result.Count == 0
+                ? "  " + T("no valid cells inside")
+                : L.F("  cells {0:N0} (+{1:N0} no-data) · min {2:g6} · max {3:g6}\n  mean {4:g6} · σ {5:g6} · sum {6:g6}",
+                    result.Count, result.NoDataCount, result.Minimum, result.Maximum,
+                    result.Mean, result.StandardDeviation, result.Sum));
+        }
+
+        private sealed record ZoneLayerRequest(string Name, Raster? Raster, IRasterSource? Source,
+            Func<IRasterSource>? SourceFactory, int Band, RasterGeoReference GeoReference);
+
+        private sealed record ZoneLayerResult(string Name, ZonalResult Result);
+
+        private sealed record PolygonZone(string? Attribute, IReadOnlyList<(double X, double Y)> Ring);
+
+        private sealed record PolygonZoneResult(string? Attribute, ZonalResult Result);
+
+        private sealed record RasterLayerRequest(Raster? Raster, IRasterSource? Source,
+            Func<IRasterSource>? SourceFactory, int Band, RasterGeoReference GeoReference);
+
+        private static List<PolygonZoneResult> CalculatePolygonZones(
+            RasterLayerRequest raster, IReadOnlyList<PolygonZone> zones)
+        {
+            var results = new List<PolygonZoneResult>(zones.Count);
+            IRasterSource? ownedSource = null;
+            try
+            {
+                IRasterSource? source = null;
+                if (raster.Raster == null)
+                    source = raster.SourceFactory != null ? ownedSource = raster.SourceFactory() : raster.Source;
+                foreach (PolygonZone zone in zones)
+                {
+                    ZonalResult result = raster.Raster != null
+                        ? ZonalStatistics.Compute(raster.Raster, raster.GeoReference, zone.Ring)
+                        : ZonalStatistics.Compute(source!, raster.GeoReference, zone.Ring, raster.Band);
+                    results.Add(new PolygonZoneResult(zone.Attribute, result));
+                }
+            }
+            finally
+            {
+                ownedSource?.Dispose();
+            }
+            return results;
         }
 
         /// <summary>Zonal statistics of the active raster for every polygon of a vector layer, as a table with CSV export.</summary>
         private async Task ZonalByLayerAsync(VectorLayer? layer)
         {
             var raster = _view.ActiveLayer;
-            if (raster?.Raster == null || raster.IsFrame)
+            if (raster == null || raster.IsFrame || (raster.Raster == null && raster.Source == null))
             {
-                await MessageAsync(T("Zonal statistics"), T("Select a (fully loaded) raster layer first."));
+                await MessageAsync(T("Zonal statistics"), T("Select a raster layer first."));
                 return;
             }
             layer ??= _view.VectorLayers.FirstOrDefault(v => v.Document.Objects.OfType<VectorPolyObject>().Any(p => p is VectorPolygon or VectorMapPolygon));
@@ -648,21 +765,40 @@ namespace RasterField
             var polygons = layer.Document.Objects.OfType<VectorPolyObject>().Where(p => (p is VectorPolygon or VectorMapPolygon) && p.Points.Count >= 3).ToList();
             var boxes = layer.Document.Objects.OfType<VectorBox>().ToList();
             var geo = raster.Document.GeoReference;
+            if (!geo.IsInvertible) return;
+            var zones = polygons.Select(p => new PolygonZone(p.Attribute, p.Points.ToList()))
+                .Concat(boxes.Select(b => new PolygonZone(b.Attribute,
+                    new[] { (b.Ltx, b.Lty), (b.Rbx, b.Lty), (b.Rbx, b.Rby), (b.Ltx, b.Rby) })))
+                .ToList();
+            if (zones.Count == 0) { await MessageAsync(T("Zonal statistics"), T("The layer has no polygons.")); return; }
+
+            List<PolygonZoneResult> computed;
+            SetBusy(true, T("Computing zonal statistics…"));
+            try
+            {
+                var request = new RasterLayerRequest(raster.Raster, raster.Source,
+                    raster.SourceFactory, raster.ActiveBand, geo);
+                computed = await Task.Run(() => CalculatePolygonZones(request, zones));
+            }
+            catch (Exception ex)
+            {
+                SetBusy(false);
+                await MessageAsync(T("Zonal statistics"), ex.Message);
+                return;
+            }
+            SetBusy(false);
+
             var rows = new List<string> { "zone,attribute,cells,nodata,min,max,mean,std,sum,area" };
             var text = new StringBuilder();
             int i = 0;
-            IEnumerable<(string? Attr, IReadOnlyList<(double X, double Y)> Ring)> zones =
-                polygons.Select(p => (p.Attribute, (IReadOnlyList<(double X, double Y)>)p.Points.ToList()))
-                .Concat(boxes.Select(b => (b.Attribute, (IReadOnlyList<(double X, double Y)>)new[] { (b.Ltx, b.Lty), (b.Rbx, b.Lty), (b.Rbx, b.Rby), (b.Ltx, b.Rby) })));
-            foreach (var (attr, ring) in zones)
+            foreach (PolygonZoneResult item in computed)
             {
                 i++;
-                var z = ZonalStatistics.Compute(raster.Raster, geo, ring);
-                rows.Add(string.Join(",", i, "\"" + (attr ?? "").Replace("\"", "\"\"", StringComparison.Ordinal) + "\"", z.Count, z.NoDataCount,
+                ZonalResult z = item.Result;
+                rows.Add(string.Join(",", i, "\"" + (item.Attribute ?? "").Replace("\"", "\"\"", StringComparison.Ordinal) + "\"", z.Count, z.NoDataCount,
                     Inv(z.Minimum), Inv(z.Maximum), Inv(z.Mean), Inv(z.StandardDeviation), Inv(z.Sum), Inv(z.Area)));
-                text.AppendLine(L.F("#{0} {1}: n={2:N0}  min {3:g5}  max {4:g5}  mean {5:g5}  σ {6:g5}", i, attr ?? "", z.Count, z.Minimum, z.Maximum, z.Mean, z.StandardDeviation));
+                text.AppendLine(L.F("#{0} {1}: n={2:N0}  min {3:g5}  max {4:g5}  mean {5:g5}  σ {6:g5}", i, item.Attribute ?? "", z.Count, z.Minimum, z.Maximum, z.Mean, z.StandardDeviation));
             }
-            if (i == 0) { await MessageAsync(T("Zonal statistics"), T("The layer has no polygons.")); return; }
 
             var dialog = new Window
             {
