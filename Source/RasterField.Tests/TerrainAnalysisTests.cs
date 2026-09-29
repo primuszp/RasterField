@@ -130,5 +130,16 @@ namespace RasterField.Tests
             Assert.Equal((7, 4), (aspect.Width, aspect.Height));
             Assert.Equal((7, 4), (hillshade.Width, hillshade.Height));
         }
+
+        [Fact]
+        public void Parallel_slope_path_matches_the_analytic_gradient()
+        {
+            const double rise = 1.25;
+            var elevation = EastRisingRamp(96, 80, rise);
+
+            var slope = TerrainAnalysis.Slope(elevation, 1, 1, SlopeUnits.Percent);
+
+            Assert.Equal(rise * 100.0, slope[70, 50], 4);
+        }
     }
 }

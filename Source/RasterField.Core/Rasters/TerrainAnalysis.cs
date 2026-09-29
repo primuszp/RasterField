@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 
 namespace RasterField.Rasters
 {
@@ -36,6 +37,8 @@ namespace RasterField.Rasters
     /// </remarks>
     public static class TerrainAnalysis
     {
+        private const int ParallelRowThreshold = 64;
+
         /// <summary>Computes slope (steepness), in <paramref name="units"/>.</summary>
         public static Raster Slope(Raster elevation, double cellSizeX, double cellSizeY, SlopeUnits units = SlopeUnits.Degrees, double zFactor = 1.0)
         {
@@ -113,22 +116,22 @@ namespace RasterField.Rasters
 
             double cx2 = cellSizeX * cellSizeX, cy2 = cellSizeY * cellSizeY;
 
-            for (int r = 0; r < h; r++)
+            void ComputeRow(int r)
             {
                 for (int c = 0; c < w; c++)
                 {
-                    if (!TryGetWindow(elevation, c, r, out double[] z))
+                    if (!TryGetWindow(elevation, c, r, out Window3x3 z))
                     {
                         output.SetValueFast(r, c, float.NaN);
                         continue;
                     }
 
                     // z[0..8] row-major 3x3 (Z1..Z9 in Zevenbergen & Thorne's own numbering).
-                    double d = ((z[3] + z[5]) / 2.0 - z[4]) / cx2;
-                    double e = ((z[1] + z[7]) / 2.0 - z[4]) / cy2;
-                    double f = (-z[0] + z[2] + z[6] - z[8]) / (4.0 * cellSizeX * cellSizeY);
-                    double g = (z[5] - z[3]) / (2.0 * cellSizeX);
-                    double hh = (z[1] - z[7]) / (2.0 * cellSizeY);
+                    double d = ((z.Z3 + z.Z5) / 2.0 - z.Z4) / cx2;
+                    double e = ((z.Z1 + z.Z7) / 2.0 - z.Z4) / cy2;
+                    double f = (-z.Z0 + z.Z2 + z.Z6 - z.Z8) / (4.0 * cellSizeX * cellSizeY);
+                    double g = (z.Z5 - z.Z3) / (2.0 * cellSizeX);
+                    double hh = (z.Z1 - z.Z7) / (2.0 * cellSizeY);
 
                     double general = -2.0 * (d + e);
                     double value;
@@ -155,6 +158,11 @@ namespace RasterField.Rasters
                 }
             }
 
+            if (h >= ParallelRowThreshold)
+                Parallel.For(0, h, ComputeRow);
+            else
+                for (int r = 0; r < h; r++) ComputeRow(r);
+
             output.InvalidateStatistics();
             return output;
         }
@@ -167,44 +175,85 @@ namespace RasterField.Rasters
             int w = elevation.Width, h = elevation.Height;
             var output = new Raster(w, h, double.IsNaN(elevation.NoDataValue) ? float.NaN : elevation.NoDataValue);
 
-            for (int r = 0; r < h; r++)
+            void ComputeRow(int r)
             {
                 for (int c = 0; c < w; c++)
                 {
-                    if (!TryGetWindow(elevation, c, r, out double[] z))
+                    if (!TryGetWindow(elevation, c, r, out Window3x3 z))
                     {
                         output.SetValueFast(r, c, float.NaN);
                         continue;
                     }
 
                     // Horn's method: z[0..8] = a..i, row-major 3x3 (a b c / d e f / g h i)
-                    double dzdx = ((z[2] + 2 * z[5] + z[8]) - (z[0] + 2 * z[3] + z[6])) / (8 * cellSizeX);
-                    double dzdy = ((z[6] + 2 * z[7] + z[8]) - (z[0] + 2 * z[1] + z[2])) / (8 * cellSizeY);
+                    double dzdx = ((z.Z2 + 2 * z.Z5 + z.Z8) - (z.Z0 + 2 * z.Z3 + z.Z6)) / (8 * cellSizeX);
+                    double dzdy = ((z.Z6 + 2 * z.Z7 + z.Z8) - (z.Z0 + 2 * z.Z1 + z.Z2)) / (8 * cellSizeY);
                     output.SetValueFast(r, c, (float)derive(dzdx, dzdy));
                 }
             }
+
+            if (h >= ParallelRowThreshold)
+                Parallel.For(0, h, ComputeRow);
+            else
+                for (int r = 0; r < h; r++) ComputeRow(r);
 
             output.InvalidateStatistics();
             return output;
         }
 
         /// <summary>Gathers the 3&#215;3 neighbourhood around (col,row), replicating the edge; <see langword="false"/> if any cell is no-data.</summary>
-        private static bool TryGetWindow(Raster raster, int col, int row, out double[] z)
+        private static bool TryGetWindow(Raster raster, int col, int row, out Window3x3 z)
         {
-            z = new double[9];
-            int i = 0;
-            for (int dy = -1; dy <= 1; dy++)
+            int width = raster.Width;
+            int top = Clamp(row - 1, raster.Height) * width;
+            int middle = row * width;
+            int bottom = Clamp(row + 1, raster.Height) * width;
+            int left = Clamp(col - 1, width);
+            int right = Clamp(col + 1, width);
+            float[] samples = raster.Samples;
+
+            float z0 = samples[top + left], z1 = samples[top + col], z2 = samples[top + right];
+            float z3 = samples[middle + left], z4 = samples[middle + col], z5 = samples[middle + right];
+            float z6 = samples[bottom + left], z7 = samples[bottom + col], z8 = samples[bottom + right];
+
+            if (raster.IsNoData(z0) || raster.IsNoData(z1) || raster.IsNoData(z2) ||
+                raster.IsNoData(z3) || raster.IsNoData(z4) || raster.IsNoData(z5) ||
+                raster.IsNoData(z6) || raster.IsNoData(z7) || raster.IsNoData(z8))
             {
-                int rr = Clamp(row + dy, raster.Height);
-                for (int dx = -1; dx <= 1; dx++)
-                {
-                    int cc = Clamp(col + dx, raster.Width);
-                    float v = raster[rr, cc];
-                    if (raster.IsNoData(v)) return false;
-                    z[i++] = v;
-                }
+                z = default;
+                return false;
             }
+
+            z = new Window3x3(z0, z1, z2, z3, z4, z5, z6, z7, z8);
             return true;
+        }
+
+        /// <summary>
+        /// Stack-only neighbourhood value. The earlier double[9] representation allocated one
+        /// managed object per output cell, which dominated both GC traffic and terrain-analysis
+        /// time on large rasters.
+        /// </summary>
+        private readonly struct Window3x3
+        {
+            public Window3x3(
+                double z0, double z1, double z2,
+                double z3, double z4, double z5,
+                double z6, double z7, double z8)
+            {
+                Z0 = z0; Z1 = z1; Z2 = z2;
+                Z3 = z3; Z4 = z4; Z5 = z5;
+                Z6 = z6; Z7 = z7; Z8 = z8;
+            }
+
+            public double Z0 { get; }
+            public double Z1 { get; }
+            public double Z2 { get; }
+            public double Z3 { get; }
+            public double Z4 { get; }
+            public double Z5 { get; }
+            public double Z6 { get; }
+            public double Z7 { get; }
+            public double Z8 { get; }
         }
 
         private static int Clamp(int v, int length) => v < 0 ? 0 : v >= length ? length - 1 : v;

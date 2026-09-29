@@ -15,6 +15,8 @@ namespace RasterField.Rendering
         /// <summary>Bytes per pixel (always 4).</summary>
         public const int BytesPerPixel = 4;
 
+        private const int ParallelRowThreshold = 64;
+
         /// <summary>Creates a transparent image of the given size.</summary>
         public RasterImage(int width, int height)
         {
@@ -65,24 +67,38 @@ namespace RasterField.Rendering
         /// </summary>
         public (Raster R, Raster G, Raster B) ToRgbBands()
         {
-            var r = new Raster(Width, Height, noDataValue: 0);
-            var g = new Raster(Width, Height, noDataValue: 0);
-            var b = new Raster(Width, Height, noDataValue: 0);
+            int pixelCount = checked(Width * Height);
+            var red = new float[pixelCount];
+            var green = new float[pixelCount];
+            var blue = new float[pixelCount];
 
-            for (int y = 0; y < Height; y++)
+            // Walk both row-major buffers linearly. This avoids four coordinate calculations,
+            // a ColorRgba construction and three setter calls for every pixel. Transparent
+            // pixels need no writes because newly allocated float arrays already contain the
+            // no-data value used here (zero).
+            void SplitRow(int y)
             {
-                for (int x = 0; x < Width; x++)
+                int pixel = y * Width;
+                int source = pixel * BytesPerPixel;
+                int end = pixel + Width;
+                for (; pixel < end; pixel++, source += BytesPerPixel)
                 {
-                    ColorRgba c = GetPixel(x, y);
-                    bool transparent = c.A == 0;
-                    r.SetValueFast(y, x, transparent ? 0 : c.R);
-                    g.SetValueFast(y, x, transparent ? 0 : c.G);
-                    b.SetValueFast(y, x, transparent ? 0 : c.B);
+                    if (Pixels[source + 3] == 0) continue;
+                    blue[pixel] = Pixels[source];
+                    green[pixel] = Pixels[source + 1];
+                    red[pixel] = Pixels[source + 2];
                 }
             }
 
-            r.InvalidateStatistics(); g.InvalidateStatistics(); b.InvalidateStatistics();
-            return (r, g, b);
+            if (Height >= ParallelRowThreshold)
+                System.Threading.Tasks.Parallel.For(0, Height, SplitRow);
+            else
+                for (int y = 0; y < Height; y++) SplitRow(y);
+
+            return (
+                new Raster(Width, Height, red, noDataValue: 0),
+                new Raster(Width, Height, green, noDataValue: 0),
+                new Raster(Width, Height, blue, noDataValue: 0));
         }
     }
 

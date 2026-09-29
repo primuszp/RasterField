@@ -10,6 +10,9 @@ namespace RasterField.Rendering
     /// </summary>
     public static class RgbCompositeRenderer
     {
+        /// <summary>Rows at or above which independent scanlines are rendered concurrently.</summary>
+        private const int ParallelRowThreshold = 64;
+
         /// <summary>
         /// Renders <paramref name="r"/>/<paramref name="g"/>/<paramref name="b"/> (same
         /// dimensions required) as an RGB image. When <paramref name="autoStretch"/> is
@@ -40,20 +43,53 @@ namespace RasterField.Rendering
             var (bLo, bHi) = StretchRange(b, autoStretch, lowPercentile, highPercentile);
 
             var image = new RasterImage(r.Width, r.Height);
-            for (int y = 0; y < r.Height; y++)
+            float[] red = r.Samples;
+            float[] green = g.Samples;
+            float[] blue = b.Samples;
+            byte[] pixels = image.Pixels;
+            int width = r.Width;
+
+            bool redHasSentinel = !double.IsNaN(r.NoDataValue);
+            bool greenHasSentinel = !double.IsNaN(g.NoDataValue);
+            bool blueHasSentinel = !double.IsNaN(b.NoDataValue);
+            float redSentinel = (float)r.NoDataValue;
+            float greenSentinel = (float)g.NoDataValue;
+            float blueSentinel = (float)b.NoDataValue;
+
+            void RenderRow(int y)
             {
-                for (int x = 0; x < r.Width; x++)
+                int sample = y * width;
+                int target = sample * RasterImage.BytesPerPixel;
+                int end = sample + width;
+                for (; sample < end; sample++, target += RasterImage.BytesPerPixel)
                 {
-                    float rv = r[y, x], gv = g[y, x], bv = b[y, x];
-                    if (r.IsNoData(rv) && g.IsNoData(gv) && b.IsNoData(bv))
+                    float rv = red[sample];
+                    float gv = green[sample];
+                    float bv = blue[sample];
+                    bool redMissing = float.IsNaN(rv) || (redHasSentinel && rv == redSentinel);
+                    bool greenMissing = float.IsNaN(gv) || (greenHasSentinel && gv == greenSentinel);
+                    bool blueMissing = float.IsNaN(bv) || (blueHasSentinel && bv == blueSentinel);
+                    if (redMissing && greenMissing && blueMissing)
                     {
-                        image.SetPixel(x, y, ColorRgba.Transparent);
+                        // RGB was zero-initialised with the image; only alpha needs stating.
+                        pixels[target + 3] = 0;
                         continue;
                     }
 
-                    image.SetPixel(x, y, new ColorRgba(Stretch(rv, rLo, rHi), Stretch(gv, gLo, gHi), Stretch(bv, bLo, bHi)));
+                    // RasterImage is BGRA in memory. Writing the backing buffer directly avoids
+                    // an index calculation and ColorRgba construction per sample.
+                    pixels[target] = Stretch(bv, bLo, bHi);
+                    pixels[target + 1] = Stretch(gv, gLo, gHi);
+                    pixels[target + 2] = Stretch(rv, rLo, rHi);
+                    pixels[target + 3] = 255;
                 }
             }
+
+            if (r.Height >= ParallelRowThreshold)
+                System.Threading.Tasks.Parallel.For(0, r.Height, RenderRow);
+            else
+                for (int y = 0; y < r.Height; y++) RenderRow(y);
+
             return image;
         }
 

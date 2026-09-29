@@ -142,5 +142,22 @@ namespace RasterField.Tests
             Assert.Null(g.GetValueOrNull(0, 0));
             Assert.Null(b.GetValueOrNull(0, 0));
         }
+
+        [Fact]
+        public void ToRgbBands_parallel_path_preserves_opaque_and_transparent_pixels()
+        {
+            var image = new RasterImage(2, 80);
+            image.SetPixel(0, 70, new ColorRgba(12, 34, 56));
+            image.SetPixel(1, 70, ColorRgba.Transparent);
+
+            var (r, g, b) = image.ToRgbBands();
+
+            Assert.Equal(12f, r[70, 0]);
+            Assert.Equal(34f, g[70, 0]);
+            Assert.Equal(56f, b[70, 0]);
+            Assert.Null(r.GetValueOrNull(70, 1));
+            Assert.Null(g.GetValueOrNull(70, 1));
+            Assert.Null(b.GetValueOrNull(70, 1));
+        }
     }
 }

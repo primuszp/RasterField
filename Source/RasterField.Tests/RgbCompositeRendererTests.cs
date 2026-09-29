@@ -96,5 +96,20 @@ namespace RasterField.Tests
             var image = RgbCompositeRenderer.Render(r, r, r, autoStretch: false);
             Assert.Equal((7, 4), (image.Width, image.Height));
         }
+
+        [Fact]
+        public void Parallel_render_path_preserves_channel_order_and_transparency()
+        {
+            const int height = 80; // Exceeds the renderer's parallel-row threshold.
+            var r = Constant(3, height, 10, noData: -9999);
+            var g = Constant(3, height, 20, noData: -9999);
+            var b = Constant(3, height, 30, noData: -9999);
+            r[70, 2] = -9999; g[70, 2] = -9999; b[70, 2] = -9999;
+
+            var image = RgbCompositeRenderer.Render(r, g, b, autoStretch: false);
+
+            Assert.Equal(new ColorRgba(10, 20, 30), image.GetPixel(1, 70));
+            Assert.Equal(ColorRgba.Transparent, image.GetPixel(2, 70));
+        }
     }
 }
