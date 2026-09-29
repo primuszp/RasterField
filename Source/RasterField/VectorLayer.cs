@@ -23,13 +23,42 @@ namespace RasterField
             ObjectBounds = BuildObjectBounds(document);
         }
 
+        /// <summary>Swaps in new content (a recomputed derived layer), keeping name and style.</summary>
+        internal void ReplaceDocument(ErvDocument document, IReadOnlyList<double>? widthFactors, IReadOnlyList<string?>? labels)
+        {
+            Document = document ?? throw new ArgumentNullException(nameof(document));
+            ObjectBounds = BuildObjectBounds(document);
+            WidthFactors = null;
+            Labels = null;
+            SetObjectStyles(widthFactors, labels);
+        }
+
+        /// <summary>World bounding box of all objects, or <see langword="null"/> when empty.</summary>
+        public (double MinX, double MinY, double MaxX, double MaxY)? Extent()
+        {
+            if (ObjectBounds.Length == 0) return null;
+            double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+            foreach (var (a, b, c, d) in ObjectBounds)
+            {
+                minX = Math.Min(minX, a); minY = Math.Min(minY, b);
+                maxX = Math.Max(maxX, c); maxY = Math.Max(maxY, d);
+            }
+            return (minX, minY, maxX, maxY);
+        }
+
+        /// <summary>How a derived layer can be recomputed; null for a file layer.</summary>
+        public LayerRecipe? Recipe { get; internal set; }
+
+        /// <summary>The GeoJSON / CSV file this layer was imported from (an .erv layer uses its document's HeaderPath).</summary>
+        public string? SourcePath { get; internal set; }
+
         /// <summary>
         /// Each object's world-space bounding box (min/max X/Y), in the same order as
         /// <see cref="ErvDocument.Objects"/> — computed once at load time so the renderer can cull
         /// off-screen objects on every repaint without re-walking a polygon's (possibly large)
         /// point list every single frame just to find out it's nowhere near the viewport.
         /// </summary>
-        internal (double MinX, double MinY, double MaxX, double MaxY)[] ObjectBounds { get; }
+        internal (double MinX, double MinY, double MaxX, double MaxY)[] ObjectBounds { get; private set; }
 
         private static (double, double, double, double)[] BuildObjectBounds(ErvDocument document)
         {
@@ -68,7 +97,7 @@ namespace RasterField
         }
 
         /// <summary>The vector dataset this layer shows.</summary>
-        public ErvDocument Document { get; }
+        public ErvDocument Document { get; private set; }
 
         /// <summary>Display name in the layer list (defaults to the file name).</summary>
         public string Name { get; set; }

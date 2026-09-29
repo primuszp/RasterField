@@ -10,6 +10,7 @@ namespace RasterField
         public override void Initialize()
         {
             Styles.Add(new FluentTheme());
+            L.SetLanguage(AppSettings.Load().Language);
 
             // Follow the OS light/dark setting by default (live — FluentTheme reacts to it
             // automatically), unless the user has explicitly forced one from View ▸ Theme.
@@ -28,7 +29,9 @@ namespace RasterField
                 var window = new MainWindow();
                 desktop.MainWindow = window;
 
-                if (Program.StartupFiles.Length > 0 || Program.StartupVectorFiles.Length > 0)
+                if (Program.StartupProject != null)
+                    window.Opened += async (_, _) => await window.LoadProjectAsync(Program.StartupProject);
+                else if (Program.StartupFiles.Length > 0 || Program.StartupVectorFiles.Length > 0)
                 {
                     window.Opened += (_, _) =>
                     {

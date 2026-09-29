@@ -13,37 +13,50 @@ using RasterField.Rasters;
 
 namespace RasterField
 {
+    /// <summary>One curve of a profile chart: a layer (or interpolation) sampled along the path.</summary>
+    public sealed class ProfileSeries
+    {
+        public ProfileSeries(string name, IReadOnlyList<ProfileSample> samples, Color color, bool dashed = false)
+        {
+            Name = name;
+            Samples = samples ?? throw new ArgumentNullException(nameof(samples));
+            Color = color;
+            Dashed = dashed;
+        }
+
+        public string Name { get; }
+        public IReadOnlyList<ProfileSample> Samples { get; }
+        public Color Color { get; }
+        public bool Dashed { get; }
+    }
+
     /// <summary>
-    /// Shows a cross-section / elevation profile sampled along a line drawn on the raster:
-    /// a hand-drawn line chart (distance along the line vs. sampled value) with an "Export CSV…" button.
+    /// A larger, resizable view of a profile (every series on one chart) with an "Export CSV…" button.
+    /// The same chart is also docked in the main window's Analysis panel.
     /// </summary>
     public sealed class ProfileWindow : Window
     {
-        private static readonly FilePickerFileType[] CsvFileTypes =
-            { new("CSV (*.csv)") { Patterns = new[] { "*.csv" } } };
-
-        private readonly IReadOnlyList<ProfileSample> _samples;
+        private readonly IReadOnlyList<ProfileSeries> _series;
         private readonly string _distanceUnit;
-        private readonly string? _valueUnit;
 
-        public ProfileWindow(IReadOnlyList<ProfileSample> samples, string distanceUnit, string? valueUnit)
+        public ProfileWindow(IReadOnlyList<ProfileSeries> series, string distanceUnit, string? valueUnit)
         {
-            _samples = samples ?? throw new ArgumentNullException(nameof(samples));
+            _series = series ?? throw new ArgumentNullException(nameof(series));
             _distanceUnit = distanceUnit;
-            _valueUnit = valueUnit;
 
-            Title = "Profile";
-            Width = 680;
-            Height = 440;
+            Title = L.T("Profile");
+            Width = 760;
+            Height = 460;
             MinWidth = 420;
             MinHeight = 280;
             WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
-            var chart = new ProfileChartControl(samples, distanceUnit, valueUnit) { Margin = new Thickness(12) };
+            var chart = new ProfileChartControl { Margin = new Thickness(12) };
+            chart.SetSeries(series, distanceUnit, valueUnit);
 
-            var exportBtn = new Button { Content = "Export CSV…" };
-            exportBtn.Click += async (_, _) => await ExportCsvAsync();
-            var closeBtn = new Button { Content = "Close" };
+            var exportBtn = new Button { Content = L.T("Export CSV…") };
+            exportBtn.Click += async (_, _) => await ExportCsvAsync(this, _series, _distanceUnit);
+            var closeBtn = new Button { Content = L.T("Close") };
             closeBtn.Click += (_, _) => Close();
 
             var buttons = new StackPanel
@@ -63,11 +76,16 @@ namespace RasterField
             Content = root;
         }
 
-        private async Task ExportCsvAsync()
+        private static readonly FilePickerFileType[] CsvFileTypes =
+            { new("CSV (*.csv)") { Patterns = new[] { "*.csv" } } };
+
+        /// <summary>Writes every series side by side: distance, x, y, then one value column per series.</summary>
+        internal static async Task ExportCsvAsync(TopLevel owner, IReadOnlyList<ProfileSeries> series, string distanceUnit)
         {
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+            if (series.Count == 0) return;
+            var file = await owner.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Export profile as CSV",
+                Title = L.T("Export profile as CSV"),
                 DefaultExtension = "csv",
                 SuggestedFileName = "profile.csv",
                 FileTypeChoices = CsvFileTypes,
@@ -76,31 +94,41 @@ namespace RasterField
             if (string.IsNullOrEmpty(path)) return;
 
             using var writer = new StreamWriter(path!);
-            writer.WriteLine($"distance_{_distanceUnit},x,y,value{(_valueUnit != null ? "_" + _valueUnit : "")}");
-            foreach (var s in _samples)
+            string Quote(string s) => "\"" + s.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+            writer.WriteLine($"distance_{distanceUnit},x,y," + string.Join(",", series.Select(s => Quote(s.Name))));
+            var first = series[0].Samples;
+            for (int i = 0; i < first.Count; i++)
             {
-                writer.WriteLine(string.Join(",",
-                    s.Distance.ToString("g9", CultureInfo.InvariantCulture),
-                    s.X.ToString("g9", CultureInfo.InvariantCulture),
-                    s.Y.ToString("g9", CultureInfo.InvariantCulture),
-                    s.Value.HasValue ? s.Value.Value.ToString("g9", CultureInfo.InvariantCulture) : ""));
+                var cells = new List<string>
+                {
+                    first[i].Distance.ToString("g9", CultureInfo.InvariantCulture),
+                    first[i].X.ToString("g9", CultureInfo.InvariantCulture),
+                    first[i].Y.ToString("g9", CultureInfo.InvariantCulture),
+                };
+                foreach (var s in series)
+                    cells.Add(i < s.Samples.Count && s.Samples[i].Value.HasValue ? s.Samples[i].Value!.Value.ToString("g9", CultureInfo.InvariantCulture) : "");
+                writer.WriteLine(string.Join(",", cells));
             }
         }
     }
 
-    /// <summary>Hand-drawn (no charting library) line chart of a profile: distance on X, sampled value on Y.</summary>
+    /// <summary>Hand-drawn (no charting library) multi-series line chart: distance on X, value on Y, with a legend.</summary>
     internal sealed class ProfileChartControl : Control
     {
-        private readonly IReadOnlyList<ProfileSample> _samples;
-        private readonly string _distanceUnit;
-        private readonly string? _valueUnit;
+        private IReadOnlyList<ProfileSeries> _series = Array.Empty<ProfileSeries>();
+        private string _distanceUnit = "";
+        private string? _valueUnit;
 
-        public ProfileChartControl(IReadOnlyList<ProfileSample> samples, string distanceUnit, string? valueUnit)
+        public ProfileChartControl() { ClipToBounds = true; }
+
+        public IReadOnlyList<ProfileSeries> Series => _series;
+
+        public void SetSeries(IReadOnlyList<ProfileSeries> series, string distanceUnit, string? valueUnit)
         {
-            _samples = samples;
+            _series = series;
             _distanceUnit = distanceUnit;
             _valueUnit = valueUnit;
-            ClipToBounds = true;
+            InvalidateVisual();
         }
 
         public override void Render(DrawingContext context)
@@ -108,20 +136,22 @@ namespace RasterField
             var bounds = new Rect(Bounds.Size);
             context.FillRectangle(new SolidColorBrush(Color.FromRgb(0x20, 0x20, 0x24)), bounds);
 
-            var valid = _samples.Where(s => s.Value.HasValue).ToList();
-            if (valid.Count < 2)
+            var all = _series.SelectMany(s => s.Samples).Where(s => s.Value.HasValue).ToList();
+            if (all.Count < 2)
             {
-                DrawCentredText(context, bounds, "Not enough valid samples along this line to chart.");
+                DrawCentredText(context, bounds, L.T("Draw a path on the map (click to add points, double-click to finish)."));
                 return;
             }
 
-            const double marginLeft = 60, marginRight = 16, marginTop = 16, marginBottom = 40;
+            const double marginLeft = 56, marginRight = 12, marginTop = 12;
+            double marginBottom = 34 + 14 * Math.Min(_series.Count, 4);
             double plotW = Math.Max(1, Bounds.Width - marginLeft - marginRight);
             double plotH = Math.Max(1, Bounds.Height - marginTop - marginBottom);
             if (plotW <= 1 || plotH <= 1) return;
 
-            double minDist = _samples[0].Distance, maxDist = _samples[^1].Distance;
-            double minVal = valid.Min(s => s.Value!.Value), maxVal = valid.Max(s => s.Value!.Value);
+            double minDist = _series.Min(s => s.Samples.Count > 0 ? s.Samples[0].Distance : 0);
+            double maxDist = _series.Max(s => s.Samples.Count > 0 ? s.Samples[^1].Distance : 0);
+            double minVal = all.Min(s => s.Value!.Value), maxVal = all.Max(s => s.Value!.Value);
             if (maxVal - minVal < 1e-9) { maxVal += 0.5; minVal -= 0.5; }
             if (maxDist - minDist < 1e-9) maxDist = minDist + 1;
 
@@ -131,7 +161,6 @@ namespace RasterField
             var axisPen = new Pen(new SolidColorBrush(Color.FromArgb(160, 200, 200, 200)), 1);
             var gridPen = new Pen(new SolidColorBrush(Color.FromArgb(40, 200, 200, 200)), 1);
 
-            // Horizontal gridlines + Y labels (5 bands).
             for (int i = 0; i <= 4; i++)
             {
                 double v = minVal + (maxVal - minVal) * i / 4.0;
@@ -139,41 +168,52 @@ namespace RasterField
                 context.DrawLine(gridPen, new Point(marginLeft, y), new Point(marginLeft + plotW, y));
                 DrawText(context, v.ToString("g4", CultureInfo.InvariantCulture), new Point(4, y - 7), Brushes.Gainsboro, 10);
             }
-
-            // X-axis distance labels (start / mid / end).
             foreach (double d in new[] { minDist, (minDist + maxDist) / 2, maxDist })
             {
                 double x = Sx(d);
                 var t = FormatText(d.ToString("0.##", CultureInfo.InvariantCulture), 10, Brushes.Gainsboro);
-                context.DrawText(t, new Point(Math.Clamp(x - t.Width / 2, marginLeft, marginLeft + plotW - t.Width), marginTop + plotH + 6));
+                context.DrawText(t, new Point(Math.Clamp(x - t.Width / 2, marginLeft, marginLeft + plotW - t.Width), marginTop + plotH + 4));
             }
-
             context.DrawLine(axisPen, new Point(marginLeft, marginTop), new Point(marginLeft, marginTop + plotH));
             context.DrawLine(axisPen, new Point(marginLeft, marginTop + plotH), new Point(marginLeft + plotW, marginTop + plotH));
 
-            // The profile itself — one polyline, with gaps (no-data runs) breaking the stroke.
-            var geometry = new StreamGeometry();
-            using (var gc = geometry.Open())
+            // Each series: one polyline, gaps (no-data runs) break the stroke.
+            foreach (var series in _series)
             {
-                bool open = false;
-                foreach (var s in _samples)
+                var geometry = new StreamGeometry();
+                using (var gc = geometry.Open())
                 {
-                    if (!s.Value.HasValue) { open = false; continue; }
-                    var pt = new Point(Sx(s.Distance), Sy(s.Value.Value));
-                    if (!open) { gc.BeginFigure(pt, isFilled: false); open = true; }
-                    else gc.LineTo(pt);
+                    bool open = false;
+                    foreach (var s in series.Samples)
+                    {
+                        if (!s.Value.HasValue) { open = false; continue; }
+                        var pt = new Point(Sx(s.Distance), Sy(s.Value.Value));
+                        if (!open) { gc.BeginFigure(pt, isFilled: false); open = true; }
+                        else gc.LineTo(pt);
+                    }
                 }
+                var pen = new Pen(new SolidColorBrush(series.Color), series.Dashed ? 1.5 : 2,
+                    series.Dashed ? new DashStyle(new double[] { 4, 3 }, 0) : null);
+                context.DrawGeometry(null, pen, geometry);
             }
-            context.DrawGeometry(null, new Pen(new SolidColorBrush(Color.FromArgb(255, 80, 200, 255)), 2), geometry);
 
-            string axisLabel = $"distance ({_distanceUnit})" + (_valueUnit != null ? $"   ·   value ({_valueUnit})" : "   ·   value");
-            DrawText(context, axisLabel, new Point(marginLeft, Bounds.Height - 16), Brushes.Gray, 10);
+            string axisLabel = L.F("distance ({0})", _distanceUnit) + (_valueUnit != null ? "   ·   " + L.F("value ({0})", _valueUnit) : "");
+            DrawText(context, axisLabel, new Point(marginLeft, marginTop + plotH + 18), Brushes.Gray, 10);
+
+            double ly = marginTop + plotH + 32;
+            foreach (var series in _series.Take(4))
+            {
+                context.DrawLine(new Pen(new SolidColorBrush(series.Color), 3), new Point(marginLeft, ly + 6), new Point(marginLeft + 18, ly + 6));
+                DrawText(context, series.Name, new Point(marginLeft + 24, ly - 1), Brushes.Gainsboro, 10);
+                ly += 14;
+            }
         }
 
         private static void DrawCentredText(DrawingContext context, Rect bounds, string message)
         {
-            var text = FormatText(message, 13, Brushes.Gainsboro);
-            context.DrawText(text, new Point((bounds.Width - text.Width) / 2, (bounds.Height - text.Height) / 2));
+            var text = FormatText(message, 12, Brushes.Gainsboro);
+            text.MaxTextWidth = Math.Max(50, bounds.Width - 20);
+            context.DrawText(text, new Point(Math.Max(10, (bounds.Width - text.Width) / 2), (bounds.Height - text.Height) / 2));
         }
 
         private static void DrawText(DrawingContext context, string text, Point at, IBrush brush, double size) =>

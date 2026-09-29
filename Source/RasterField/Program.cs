@@ -16,11 +16,15 @@ namespace RasterField
         /// <summary>Every <c>.erv</c> path passed on the command line, added as vector layers once the base raster is loaded.</summary>
         public static string[] StartupVectorFiles { get; private set; } = Array.Empty<string>();
 
+        /// <summary>A <c>.rfproj</c> passed on the command line, opened instead of individual files.</summary>
+        public static string? StartupProject { get; private set; }
+
         [STAThread]
         public static void Main(string[] args)
         {
             StartupFiles = args.Where(a => a.EndsWith(".ers", StringComparison.OrdinalIgnoreCase)).ToArray();
-            StartupVectorFiles = args.Where(a => a.EndsWith(".erv", StringComparison.OrdinalIgnoreCase)).ToArray();
+            StartupVectorFiles = args.Where(a => new[] { ".erv", ".geojson", ".json", ".csv" }.Any(ext => a.EndsWith(ext, StringComparison.OrdinalIgnoreCase))).ToArray();
+            StartupProject = args.FirstOrDefault(a => a.EndsWith(".rfproj", StringComparison.OrdinalIgnoreCase));
 
             BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
         }

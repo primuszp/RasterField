@@ -17,6 +17,7 @@ using RasterField.ErMapper;
 using RasterField.Rasters;
 using RasterField.Rendering;
 using RasterField.Vectors;
+using static RasterField.L;
 
 namespace RasterField
 {
@@ -32,7 +33,7 @@ namespace RasterField
         private readonly PaletteLibrary _palettes;
 
         private readonly ComboBox _paletteBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
-        private readonly CheckBox _reverseBox = new CheckBox { Content = "Reverse palette" };
+        private readonly CheckBox _reverseBox = new CheckBox { Content = T("Reverse palette") };
         private readonly ComboBox _stretchBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         private readonly ComboBox _modeBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         private readonly NumericUpDown _minBox = new NumericUpDown { FormatString = "0.###", Increment = 1, Width = 110, HorizontalAlignment = HorizontalAlignment.Left };
@@ -57,11 +58,11 @@ namespace RasterField
             VerticalAlignment = VerticalAlignment.Top,
             IsVisible = false,
         };
-        private readonly TextBlock _clipTitleText = new TextBlock { Text = "Clip tool —", FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center };
+        private readonly TextBlock _clipTitleText = new TextBlock { Text = T("Clip tool —"), FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center };
         private readonly TextBlock _clipInfoText = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
-        private readonly Button _clipCropBtn = new Button { Content = "Crop → new layer", IsEnabled = false };
+        private readonly Button _clipCropBtn = new Button { Content = T("Crop → new layer"), IsEnabled = false };
 
-        private readonly Border _profileBar = new Border
+        private readonly Border _pathBar = new Border
         {
             Background = new SolidColorBrush(Color.FromArgb(220, 0x1A, 0x1A, 0x1E)),
             BorderBrush = new SolidColorBrush(Color.FromRgb(80, 200, 255)),
@@ -71,13 +72,12 @@ namespace RasterField
             VerticalAlignment = VerticalAlignment.Top,
             IsVisible = false,
         };
-        private readonly TextBlock _profileTitleText = new TextBlock { Text = "Profile tool —", FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center };
-        private readonly TextBlock _profileInfoText = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
-        private readonly Button _profileShowBtn = new Button { Content = "Show profile…", IsEnabled = false };
+        private readonly TextBlock _pathTitleText = new TextBlock { FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center };
+        private readonly TextBlock _pathInfoText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
 
         private readonly ComboBox _bandBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         private readonly Border _bandGroup = new Border(); // wraps the band header+box; hidden for single-band datasets
-        private readonly CheckBox _rgbCompositeBox = new CheckBox { Content = "True colour (RGB composite)" };
+        private readonly CheckBox _rgbCompositeBox = new CheckBox { Content = T("True colour (RGB composite)") };
         private readonly StackPanel _layersPanel = new StackPanel { Spacing = 2 };
 
         private readonly TextBlock _busyText = new TextBlock
@@ -108,8 +108,14 @@ namespace RasterField
         private static readonly FilePickerFileType[] ErvFileTypeChoices =
             { new("ER Mapper vector header (*.erv)") { Patterns = new[] { "*.erv" } } };
         private static readonly FilePickerFileType _ersOrErvFileType =
-            new("ER Mapper header (*.ers, *.erv)") { Patterns = new[] { "*.ers", "*.erv" } };
-        private static readonly FilePickerFileType[] LayerOpenFileTypeFilter = { _ersOrErvFileType, ErsHeaderFileType, ErvFileTypeChoices[0], FilePickerFileTypes.All };
+            new("Layers (*.ers, *.erv, *.geojson, *.json, *.csv)") { Patterns = new[] { "*.ers", "*.erv", "*.geojson", "*.json", "*.csv" } };
+        private static readonly FilePickerFileType[] LayerOpenFileTypeFilter =
+        {
+            _ersOrErvFileType, ErsHeaderFileType, ErvFileTypeChoices[0],
+            new("GeoJSON (*.geojson, *.json)") { Patterns = new[] { "*.geojson", "*.json" } },
+            new("CSV points (*.csv, *.txt)") { Patterns = new[] { "*.csv", "*.txt" } },
+            FilePickerFileTypes.All,
+        };
 
         private bool _syncing;
         private Avalonia.Controls.NativeMenu? _nativeRecentMenu;
@@ -118,7 +124,7 @@ namespace RasterField
 
         public MainWindow()
         {
-            Title = "RasterField — ER Mapper raster viewer";
+            Title = T("RasterField — ER Mapper raster viewer");
             Width = 1180;
             Height = 720;
             MinWidth = 900;
@@ -166,7 +172,8 @@ namespace RasterField
             AddHandler(DragDrop.DropEvent, OnDrop);
             AddHandler(DragDrop.DragOverEvent, (_, e) => e.DragEffects =
                 e.Data.Contains(DataFormats.Files) ? DragDropEffects.Copy : DragDropEffects.None);
-            Closing += (_, _) => SaveWindowSettings();
+            Closing += OnWindowClosing;
+            UpdateTitle();
             Closed += (_, _) => Dispose();
         }
 
@@ -181,13 +188,14 @@ namespace RasterField
         {
             Background = AppTheme.WindowBackground;
             if (_sidePanelBorder != null) _sidePanelBorder.Background = AppTheme.PanelBackground;
+            if (_leftPanelBorder != null) _leftPanelBorder.Background = AppTheme.PanelBackground;
             if (_statusBarHost != null) _statusBarHost.Background = AppTheme.BarBackground;
             _clipBar.Background = AppTheme.BarBackground;
-            _profileBar.Background = AppTheme.BarBackground;
+            _pathBar.Background = AppTheme.BarBackground;
             _clipTitleText.Foreground = AppTheme.Accent;
             _clipInfoText.Foreground = AppTheme.TextPrimary;
-            _profileTitleText.Foreground = AppTheme.Accent;
-            _profileInfoText.Foreground = AppTheme.TextPrimary;
+            _pathTitleText.Foreground = AppTheme.Accent;
+            _pathInfoText.Foreground = AppTheme.TextPrimary;
             _busyOverlay.Background = AppTheme.OverlayScrim;
             _view.Background = AppTheme.CanvasBackground;
             _view.InvalidateVisual();
@@ -257,18 +265,18 @@ namespace RasterField
                 _recentMenu.Items.Clear();
                 if (_settings.RecentFiles.Count == 0)
                 {
-                    _recentMenu.Items.Add(new MenuItem { Header = "(no recent files)", IsEnabled = false });
+                    _recentMenu.Items.Add(new MenuItem { Header = T("(no recent files)"), IsEnabled = false });
                 }
                 else
                 {
                     foreach (string path in _settings.RecentFiles)
                     {
                         var item = new MenuItem { Header = path };
-                        item.Click += (_, _) => OpenDataset(path);
+                        item.Click += (_, _) => OpenRecent(path);
                         _recentMenu.Items.Add(item);
                     }
                     _recentMenu.Items.Add(new Separator());
-                    var clear = new MenuItem { Header = "Clear recent files" };
+                    var clear = new MenuItem { Header = T("Clear recent files") };
                     clear.Click += (_, _) => { _settings.RecentFiles.Clear(); RebuildRecentMenu(); };
                     _recentMenu.Items.Add(clear);
                 }
@@ -279,18 +287,18 @@ namespace RasterField
                 _nativeRecentMenu.Items.Clear();
                 if (_settings.RecentFiles.Count == 0)
                 {
-                    _nativeRecentMenu.Items.Add(new Avalonia.Controls.NativeMenuItem("(no recent files)") { IsEnabled = false });
+                    _nativeRecentMenu.Items.Add(new Avalonia.Controls.NativeMenuItem(T("(no recent files)")) { IsEnabled = false });
                 }
                 else
                 {
                     foreach (string path in _settings.RecentFiles)
                     {
                         var item = new Avalonia.Controls.NativeMenuItem(path);
-                        item.Click += (_, _) => OpenDataset(path);
+                        item.Click += (_, _) => OpenRecent(path);
                         _nativeRecentMenu.Items.Add(item);
                     }
                     _nativeRecentMenu.Items.Add(new Avalonia.Controls.NativeMenuItemSeparator());
-                    var clear = new Avalonia.Controls.NativeMenuItem("Clear recent files");
+                    var clear = new Avalonia.Controls.NativeMenuItem(T("Clear recent files"));
                     clear.Click += (_, _) => { _settings.RecentFiles.Clear(); RebuildRecentMenu(); };
                     _nativeRecentMenu.Items.Add(clear);
                 }
@@ -298,46 +306,6 @@ namespace RasterField
         }
 
         // ---- layout -----------------------------------------------------------------
-
-        private DockPanel BuildLayout()
-        {
-            var root = new DockPanel();
-
-            // On macOS the app's menu lives in the system menu bar (see BuildMenu), not in-window.
-            var menu = OperatingSystem.IsMacOS() ? null : BuildMenu();
-            var statusBar = BuildStatusBar();
-            _statusBarHost = statusBar;
-            if (menu != null) { DockPanel.SetDock(menu, Dock.Top); root.Children.Add(menu); }
-            DockPanel.SetDock(statusBar, Dock.Bottom);
-            root.Children.Add(statusBar);
-
-            var grid = new Grid
-            {
-                ColumnDefinitions = new ColumnDefinitions("*,Auto,300"),
-            };
-
-            // _view and the floating clip toolbar share one grid cell so the toolbar overlays the raster.
-            var viewHost = new Grid();
-            viewHost.Children.Add(_view);
-            viewHost.Children.Add(BuildClipBar());
-            viewHost.Children.Add(BuildProfileBar());
-            viewHost.Children.Add(BuildBusyOverlay());
-            Grid.SetColumn(viewHost, 0);
-
-            var splitter = new GridSplitter { Width = 4, Background = Brushes.Gray, ResizeDirection = GridResizeDirection.Columns };
-            Grid.SetColumn(splitter, 1);
-
-            var side = BuildSidePanel();
-            _sidePanelBorder = side;
-            Grid.SetColumn(side, 2);
-
-            grid.Children.Add(viewHost);
-            grid.Children.Add(splitter);
-            grid.Children.Add(side);
-
-            root.Children.Add(grid);
-            return root;
-        }
 
         private DockPanel BuildStatusBar()
         {
@@ -363,7 +331,7 @@ namespace RasterField
         /// <summary>The floating toolbar shown over the raster while the clip tool is active.</summary>
         private Border BuildClipBar()
         {
-            var cancelBtn = new Button { Content = "Cancel" };
+            var cancelBtn = new Button { Content = T("Cancel") };
             cancelBtn.Click += (_, _) => SetClipToolActive(false);
             _clipCropBtn.Click += async (_, _) => await CropSelectionAsync();
 
@@ -380,25 +348,9 @@ namespace RasterField
         {
             _view.SelectionMode = active;
             _clipBar.IsVisible = active;
-            if (active) { SetProfileToolActive(false); _view.IdentifyMode = false; }
+            if (active) { SetPathTool(PathTool.None); _view.IdentifyMode = false; }
             UpdateClipPanel();
             RefreshMenuChecks();
-        }
-
-        /// <summary>The floating toolbar shown over the raster while the profile tool is active.</summary>
-        private Border BuildProfileBar()
-        {
-            var cancelBtn = new Button { Content = "Cancel" };
-            cancelBtn.Click += (_, _) => SetProfileToolActive(false);
-            _profileShowBtn.Click += async (_, _) => await ShowProfileAsync();
-
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-            row.Children.Add(_profileTitleText);
-            row.Children.Add(_profileInfoText);
-            row.Children.Add(_profileShowBtn);
-            row.Children.Add(cancelBtn);
-            _profileBar.Child = row;
-            return _profileBar;
         }
 
         /// <summary>The dimming overlay + centred message shown over the view while a heavy computation runs.</summary>
@@ -413,63 +365,11 @@ namespace RasterField
         /// can be started, and no control's state can drift out from under an in-flight one)
         /// while <paramref name="busy"/> is <see langword="true"/>.
         /// </summary>
-        private void SetBusy(bool busy, string message = "Working…")
+        private void SetBusy(bool busy, string? message = null)
         {
-            _busyText.Text = message;
+            _busyText.Text = message ?? T("Working…");
             _busyOverlay.IsVisible = busy;
             IsEnabled = !busy;
-        }
-
-        private void SetProfileToolActive(bool active)
-        {
-            _view.LineToolMode = active;
-            _profileBar.IsVisible = active;
-            if (active) { SetClipToolActive(false); _view.IdentifyMode = false; }
-            UpdateProfilePanel();
-            RefreshMenuChecks();
-        }
-
-        private void UpdateProfilePanel()
-        {
-            var line = _view.CurrentLine;
-            if (line == null)
-            {
-                _profileInfoText.Text = "drag a line on the raster to sample a cross-section";
-                _profileShowBtn.IsEnabled = false;
-                return;
-            }
-
-            _profileShowBtn.IsEnabled = true;
-            double lengthPx = Math.Sqrt(Math.Pow(line.Value.X1 - line.Value.X0, 2) + Math.Pow(line.Value.Y1 - line.Value.Y0, 2));
-            _profileInfoText.Text = $"line drawn ({lengthPx:0} px) — drag either end to adjust, then Show profile";
-        }
-
-        private async Task ShowProfileAsync()
-        {
-            var line = _view.CurrentLine;
-            var doc = _view.Document;
-            if (line == null || doc == null) return;
-
-            if (_view.Raster == null)
-            {
-                await MessageAsync("Profile tool",
-                    _view.IsStreaming
-                        ? "This dataset is large and is shown in streaming mode, so it is never fully loaded into memory. " +
-                          "Clip a smaller region first (Tools ▸ Clip tool), open the clipped result, then profile that."
-                        : "The raster is not loaded.");
-                return;
-            }
-
-            var (x0, y0, x1, y1) = line.Value;
-            var (wx0, wy0) = doc.GeoReference.PixelToWorld(x0, y0);
-            var (wx1, wy1) = doc.GeoReference.PixelToWorld(x1, y1);
-
-            int sampleCount = Math.Max(2, (int)Math.Round(Math.Sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0))) + 1);
-            var samples = RasterProfiler.SampleWorld(_view.Raster, doc.GeoReference, wx0, wy0, wx1, wy1, sampleCount);
-
-            string unit = doc.Header.CoordinateSpace.EffectiveUnits;
-            var window = new ProfileWindow(samples, unit, UnitLabel());
-            window.Show(this);
         }
 
         private void UpdateClipPanel()
@@ -477,7 +377,7 @@ namespace RasterField
             var rect = _view.CurrentSelection;
             if (rect == null)
             {
-                _clipInfoText.Text = "drag a rectangle on the raster to mark the area to keep";
+                _clipInfoText.Text = T("drag a rectangle on the raster to mark the area to keep");
                 _clipCropBtn.IsEnabled = false;
                 return;
             }
@@ -501,7 +401,7 @@ namespace RasterField
             if (rect == null || _view.Document == null) return;
             var doc = _view.Document;
 
-            SetBusy(true, "Cropping…");
+            SetBusy(true, T("Cropping…"));
             try
             {
                 var clip = await Task.Run(() => doc.Clip(rect.Value.X, rect.Value.Y, rect.Value.Width, rect.Value.Height));
@@ -509,74 +409,7 @@ namespace RasterField
                 await PerformClipAndSaveAsync(clip);
                 SetClipToolActive(false);
             }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Clip failed", ex.Message); }
-        }
-
-        private Border BuildSidePanel()
-        {
-            TextBlock Header(string t) => new TextBlock { Text = t, FontWeight = FontWeight.Bold, Margin = new Thickness(0, 8, 0, 2) };
-
-            var stack = new StackPanel { Spacing = 4, Margin = new Thickness(10) };
-
-            var addLayerBtn = new Button { Content = "+ Add layer…", HorizontalAlignment = HorizontalAlignment.Stretch };
-            addLayerBtn.Click += async (_, _) => await AddLayerDialogAsync();
-            stack.Children.Add(Header("Layers (top = drawn in front)"));
-            stack.Children.Add(_layersPanel);
-            stack.Children.Add(addLayerBtn);
-
-            var bandStack = new StackPanel { Spacing = 4 };
-            bandStack.Children.Add(Header("Band"));
-            bandStack.Children.Add(_bandBox);
-            bandStack.Children.Add(_rgbCompositeBox);
-            _bandGroup.Child = bandStack;
-            _bandGroup.IsVisible = false;
-            stack.Children.Add(_bandGroup);
-
-            stack.Children.Add(Header("Palette"));
-            stack.Children.Add(_paletteBox);
-            stack.Children.Add(_reverseBox);
-            stack.Children.Add(Header("Palette mode"));
-            stack.Children.Add(_modeBox);
-            stack.Children.Add(Header("Stretch"));
-            stack.Children.Add(_stretchBox);
-
-            var minMax = new Grid { ColumnDefinitions = new ColumnDefinitions("*,8,*") };
-            var minWrap = new StackPanel();
-            minWrap.Children.Add(new TextBlock { Text = "Min", Opacity = 0.8 });
-            minWrap.Children.Add(_minBox);
-            var maxWrap = new StackPanel();
-            maxWrap.Children.Add(new TextBlock { Text = "Max", Opacity = 0.8 });
-            maxWrap.Children.Add(_maxBox);
-            Grid.SetColumn(minWrap, 0);
-            Grid.SetColumn(maxWrap, 2);
-            minMax.Children.Add(minWrap);
-            minMax.Children.Add(maxWrap);
-            stack.Children.Add(minMax);
-
-            stack.Children.Add(Header("Gamma"));
-            stack.Children.Add(_gammaSlider);
-
-            stack.Children.Add(Header("Save / export format"));
-            stack.Children.Add(new TextBlock { Text = "Output cell type", Opacity = 0.8 });
-            stack.Children.Add(_outTypeBox);
-            stack.Children.Add(new TextBlock { Text = "Output byte order", Opacity = 0.8 });
-            stack.Children.Add(_outOrderBox);
-
-            var scroll = new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-
-            var legendGroup = new DockPanel { Margin = new Thickness(6) };
-            DockPanel.SetDock(scroll, Dock.Top);
-            var legendLabel = new TextBlock { Text = "Legend", FontWeight = FontWeight.Bold, Margin = new Thickness(4, 6, 0, 2) };
-            DockPanel.SetDock(legendLabel, Dock.Top);
-            legendGroup.Children.Add(scroll);
-            legendGroup.Children.Add(legendLabel);
-            legendGroup.Children.Add(_legend);
-
-            return new Border
-            {
-                Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x29)),
-                Child = legendGroup,
-            };
+            catch (Exception ex) { SetBusy(false); await MessageAsync(T("Clip failed"), ex.Message); }
         }
 
         // ---- populate & wire -------------------------------------------------------
@@ -588,21 +421,21 @@ namespace RasterField
             _paletteBox.ItemsSource = _palettes.Names.ToList();
             _paletteBox.SelectedItem = _palettes.Names.Contains("Elevation") ? "Elevation" : _palettes.Names.FirstOrDefault();
 
-            _stretchBox.ItemsSource = new[] { "Full min / max", "Mean ± 2σ", "2 – 98 %", "Manual" };
+            _stretchBox.ItemsSource = new[] { T("Full min / max"), T("Mean ± 2σ"), T("2 – 98 %"), T("Manual") };
             _stretchBox.SelectedIndex = 2;
 
-            _modeBox.ItemsSource = new[] { "Continuous", "Discrete (8)", "Discrete (16)", "Nearest" };
+            _modeBox.ItemsSource = new[] { T("Continuous"), T("Discrete (8)"), T("Discrete (16)"), T("Nearest") };
             _modeBox.SelectedIndex = 0;
 
             _outTypeBox.ItemsSource = new[]
             {
-                "Keep current",
+                T("Keep current"),
                 "IEEE4ByteReal", "IEEE8ByteReal",
                 "Unsigned8BitInteger", "Signed16BitInteger", "Unsigned16BitInteger", "Signed32BitInteger",
             };
             _outTypeBox.SelectedIndex = 0;
 
-            _outOrderBox.ItemsSource = new[] { "Keep current", "LSBFirst (little-endian)", "MSBFirst (big-endian)" };
+            _outOrderBox.ItemsSource = new[] { T("Keep current"), T("LSBFirst (little-endian)"), T("MSBFirst (big-endian)") };
             _outOrderBox.SelectedIndex = 0;
 
             _syncing = false;
@@ -622,7 +455,9 @@ namespace RasterField
             _view.LayersChanged += (_, _) => QueueRebuildLayersPanel();
             _view.ViewChanged += (_, _) => UpdateScaleText();
             _view.SelectionChanged += (_, _) => UpdateClipPanel();
-            _view.LineChanged += (_, _) => UpdateProfilePanel();
+            _view.PathChanged += (_, _) => OnPathChanged();
+            _view.PathFinished += (_, _) => OnPathChanged();
+            _view.HistoryChanged += (_, _) => RefreshMenuChecks();
             _view.IdentifyRequested += OnIdentifyRequested;
 
             _bandBox.SelectionChanged += (_, _) => { if (!_syncing) _view.SetActiveBand(_bandBox.SelectedIndex); };
@@ -645,6 +480,17 @@ namespace RasterField
 
         // ---- open ----------------------------------------------------------------
 
+        private async void OpenRecent(string path)
+        {
+            try
+            {
+                if (path.EndsWith(".rfproj", StringComparison.OrdinalIgnoreCase)) { if (await ConfirmDiscardAsync(T("Open project"))) await LoadProjectAsync(path); }
+                else if (IsVectorFile(path)) AddVectorFromFile(path);
+                else OpenDataset(path);
+            }
+            catch (Exception ex) { await MessageAsync(T("Could not open"), ex.Message); }
+        }
+
         /// <summary>Opens a dataset from a path (also used for the command-line argument).</summary>
         public async void OpenDataset(string path)
         {
@@ -658,7 +504,7 @@ namespace RasterField
             }
             catch (Exception ex)
             {
-                await MessageAsync("Could not open dataset", ex.Message);
+                await MessageAsync(T("Could not open dataset"), ex.Message);
             }
         }
 
@@ -675,7 +521,7 @@ namespace RasterField
             }
             catch (Exception ex)
             {
-                await MessageAsync("Could not add layer", ex.Message);
+                await MessageAsync(T("Could not add layer"), ex.Message);
             }
         }
 
@@ -684,7 +530,7 @@ namespace RasterField
         {
             try
             {
-                _view.AddVectorLayerFromPath(path);
+                AddVectorFromFile(path);
                 _settings.AddRecentFile(Path.GetFullPath(path));
                 _settings.LastOpenDirectory = Path.GetDirectoryName(Path.GetFullPath(path));
                 _settings.Save();
@@ -692,7 +538,7 @@ namespace RasterField
             }
             catch (Exception ex)
             {
-                await MessageAsync("Could not add vector layer", ex.Message);
+                await MessageAsync(T("Could not add vector layer"), ex.Message);
             }
         }
 
@@ -704,7 +550,7 @@ namespace RasterField
 
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "Open ER Mapper raster header",
+                Title = T("Open ER Mapper raster header"),
                 AllowMultiple = false,
                 SuggestedStartLocation = startLocation,
                 FileTypeFilter = ErsOpenFileTypeFilter,
@@ -714,23 +560,33 @@ namespace RasterField
             if (!string.IsNullOrEmpty(path)) OpenDataset(path!);
         }
 
-        private void OnDrop(object? sender, DragEventArgs e)
+        private async void OnDrop(object? sender, DragEventArgs e)
         {
-            var file = e.Data.GetFiles()?.FirstOrDefault();
-            var path = file?.TryGetLocalPath();
-            if (string.IsNullOrEmpty(path)) return;
-
-            if (path!.EndsWith(".erv", StringComparison.OrdinalIgnoreCase))
+            var paths = (e.Data.GetFiles() ?? Enumerable.Empty<IStorageItem>()).Select(f => f.TryGetLocalPath()).Where(p => !string.IsNullOrEmpty(p)).Select(p => p!).ToList();
+            foreach (var path in paths)
             {
-                try { _view.AddVectorLayerFromPath(path); _settings.AddRecentFile(Path.GetFullPath(path)); _settings.Save(); RebuildRecentMenu(); }
-                catch (Exception ex) { _ = MessageAsync("Add vector layer failed", ex.Message); }
-                return;
+                try
+                {
+                    if (path.EndsWith(".rfproj", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (await ConfirmDiscardAsync(T("Open project"))) await LoadProjectAsync(path);
+                        return;
+                    }
+                    if (IsVectorFile(path)) AddVectorFromFile(path);
+                    else if (path.EndsWith(".ers", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Layers already loaded: add this one alongside them rather than replacing everything.
+                        if (_view.DrawOrder.Count == 0) OpenDataset(path);
+                        else AddLayer(path);
+                        continue;
+                    }
+                    else continue;
+                    _settings.AddRecentFile(Path.GetFullPath(path));
+                    _settings.Save();
+                    RebuildRecentMenu();
+                }
+                catch (Exception ex) { await MessageAsync(T("Add layer failed"), $"{Path.GetFileName(path)}: {ex.Message}"); }
             }
-            if (!path.EndsWith(".ers", StringComparison.OrdinalIgnoreCase)) return;
-
-            // Layers already loaded: add this one alongside them rather than replacing everything.
-            if (_view.Layers.Count == 0) OpenDataset(path);
-            else AddLayer(path);
         }
 
         // ---- layers --------------------------------------------------------------
@@ -743,7 +599,7 @@ namespace RasterField
 
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "Add layer(s) — raster (.ers) or vector (.erv)",
+                Title = T("Add layer(s) — raster (.ers) or vector (.erv, .geojson, .csv)"),
                 AllowMultiple = true,
                 SuggestedStartLocation = startLocation,
                 FileTypeFilter = LayerOpenFileTypeFilter,
@@ -757,14 +613,14 @@ namespace RasterField
                 if (string.IsNullOrEmpty(path)) continue;
                 try
                 {
-                    if (path!.EndsWith(".erv", StringComparison.OrdinalIgnoreCase))
-                        _view.AddVectorLayerFromPath(path);
+                    if (IsVectorFile(path!))
+                        AddVectorFromFile(path!);
                     else
-                        _view.AddLayerFromPath(path, CurrentPalette());
+                        _view.AddLayerFromPath(path!, CurrentPalette());
                     _settings.AddRecentFile(Path.GetFullPath(path));
                     lastDir = Path.GetDirectoryName(Path.GetFullPath(path));
                 }
-                catch (Exception ex) { await MessageAsync("Add layer failed", $"{Path.GetFileName(path)}: {ex.Message}"); }
+                catch (Exception ex) { await MessageAsync(T("Add layer failed"), $"{Path.GetFileName(path)}: {ex.Message}"); }
             }
 
             if (lastDir != null) _settings.LastOpenDirectory = lastDir;
@@ -803,266 +659,7 @@ namespace RasterField
         private void RunLayerActionSafely(Action action)
         {
             try { action(); }
-            catch (Exception ex) { _ = MessageAsync("Layer action failed", ex.Message); }
-        }
-
-        private void RebuildLayersPanel()
-        {
-            _layersPanel.Children.Clear();
-            var drawOrder = _view.DrawOrder;
-
-            if (drawOrder.Count == 0)
-            {
-                _layersPanel.Children.Add(new TextBlock { Text = "No layers loaded.", Opacity = 0.6, FontStyle = FontStyle.Italic, Margin = new Thickness(2, 4) });
-                return;
-            }
-
-            // The panel reads from the exact shared draw stack, top to bottom. A vector can be
-            // moved across a raster layer, so it must not live in a separate fixed section.
-            for (int i = drawOrder.Count - 1; i >= 0; i--)
-            {
-                switch (drawOrder[i])
-                {
-                    case VectorLayer vectorLayer:
-                        AddVectorLayerCard(vectorLayer);
-                        break;
-                    case RasterLayer rasterLayer:
-                        AddRasterLayerCard(rasterLayer);
-                        break;
-                }
-            }
-        }
-
-        private void AddVectorLayerCard(VectorLayer layer)
-        {
-                var visBox = new CheckBox { IsChecked = layer.IsVisible, VerticalAlignment = VerticalAlignment.Center };
-                visBox.IsCheckedChanged += (_, _) => RunLayerActionSafely(() => _view.SetVectorLayerVisible(layer, visBox.IsChecked == true));
-
-                var nameText = new TextBlock
-                {
-                    Text = (layer.Lineage != null ? "↳▤ " : "▤ ") + layer.Name + (layer.IsUnsaved ? " ●" : ""),
-                    VerticalAlignment = VerticalAlignment.Center,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                };
-                ToolTip.SetTip(nameText, LayerTip(layer.Name, layer.Lineage, layer.IsUnsaved));
-                var upBtn = CircleIconButton("▲");
-                upBtn.IsEnabled = _view.CanMoveLayerUp(layer);
-                upBtn.Click += (_, _) => RunLayerActionSafely(() => _view.MoveVectorLayerUp(layer));
-                var downBtn = CircleIconButton("▼");
-                downBtn.IsEnabled = _view.CanMoveLayerDown(layer);
-                downBtn.Click += (_, _) => RunLayerActionSafely(() => _view.MoveVectorLayerDown(layer));
-                var removeBtn = CircleIconButton("✕", AppTheme.Danger);
-                removeBtn.Click += (_, _) => RunLayerActionSafely(() => _view.RemoveVectorLayer(layer));
-
-                var styleRow = BuildVectorStyleRow(layer);
-                if (layer.IsUnsaved)
-                {
-                    var saveBtn = CircleIconButton("⤓");
-                    ToolTip.SetTip(saveBtn, "Save this derived layer as .erv");
-                    saveBtn.Click += async (_, _) => await SaveVectorLayerAsync(layer);
-                    styleRow.Children.Add(saveBtn);
-                }
-                _layersPanel.Children.Add(BuildLayerCard(visBox, nameText, upBtn, downBtn, removeBtn, isActive: false, styleRow));
-        }
-
-        private void AddRasterLayerCard(RasterLayer layer)
-        {
-                bool isActive = ReferenceEquals(layer, _view.ActiveLayer);
-
-                var visBox = new CheckBox { IsChecked = layer.IsVisible, VerticalAlignment = VerticalAlignment.Center };
-                // Bind every action to the layer object, rather than to its momentary list
-                // position.  The panel is rebuilt asynchronously after a move, so an index
-                // captured by an old card can otherwise point at a different file.
-                visBox.IsCheckedChanged += (_, _) => RunLayerActionSafely(() => _view.SetLayerVisible(layer, visBox.IsChecked == true));
-
-                var nameBtn = new Button
-                {
-                    // A TextBlock, not a plain string: a string Content treats "_" as an access-key
-                    // marker, which silently swallowed the underscore in names like "P_00_01".
-                    Content = new TextBlock
-                    {
-                        Text = (layer.Lineage != null ? "↳ " : "") + layer.Name + (layer.IsUnsaved ? " ●" : ""),
-                        TextTrimming = TextTrimming.CharacterEllipsis,
-                    },
-                    HorizontalContentAlignment = HorizontalAlignment.Left,
-                    VerticalContentAlignment = VerticalAlignment.Center,
-                    FontWeight = isActive ? FontWeight.Bold : FontWeight.Normal,
-                    Background = Brushes.Transparent, // the card itself conveys "active" — no double highlight
-                    BorderThickness = new Thickness(0),
-                    Padding = new Thickness(2, 0),
-                };
-                nameBtn.Click += (_, _) => RunLayerActionSafely(() => _view.SetActiveLayer(layer));
-                ToolTip.SetTip(nameBtn, LayerTip(layer.Name, layer.Lineage, layer.IsUnsaved, layer.IsStreaming));
-
-                var upBtn = CircleIconButton("▲");
-                upBtn.IsEnabled = _view.CanMoveLayerUp(layer);
-                upBtn.Click += (_, _) => RunLayerActionSafely(() => _view.MoveLayerUp(layer));
-                var downBtn = CircleIconButton("▼");
-                downBtn.IsEnabled = _view.CanMoveLayerDown(layer);
-                downBtn.Click += (_, _) => RunLayerActionSafely(() => _view.MoveLayerDown(layer));
-                var removeBtn = CircleIconButton("✕", AppTheme.Danger);
-                removeBtn.Click += (_, _) => RunLayerActionSafely(() => _view.RemoveLayer(layer));
-
-                // Raster display options live in one place: the right-side panel. Its controls
-                // always target ActiveLayer, so selecting this card first makes it unambiguous
-                // which file's palette, stretch, band and gamma are being changed.
-                _layersPanel.Children.Add(BuildLayerCard(visBox, nameBtn, upBtn, downBtn, removeBtn, isActive, BuildRasterLayerRow(layer)));
-        }
-
-        /// <summary>A raster card's second row: opacity slider, and a save button while the layer only exists in memory.</summary>
-        private StackPanel BuildRasterLayerRow(RasterLayer layer)
-        {
-            var opacity = new Slider { Minimum = 0, Maximum = 100, Value = layer.Opacity * 100, Width = 120, VerticalAlignment = VerticalAlignment.Center };
-            var percent = new TextBlock { Text = $"{layer.Opacity * 100:0} %", VerticalAlignment = VerticalAlignment.Center, Width = 40, Opacity = 0.8 };
-            ToolTip.SetTip(opacity, "Layer opacity");
-            opacity.PropertyChanged += (_, e) =>
-            {
-                if (e.Property != RangeBase.ValueProperty) return;
-                _view.SetLayerOpacity(layer, opacity.Value / 100.0);
-                percent.Text = $"{opacity.Value:0} %";
-            };
-
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(26, 0, 0, 0) };
-            row.Children.Add(opacity);
-            row.Children.Add(percent);
-            if (layer.IsStreaming) row.Children.Add(new TextBlock { Text = "⇶ streaming", Opacity = 0.7, VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
-            if (layer.IsUnsaved)
-            {
-                var saveBtn = CircleIconButton("⤓");
-                ToolTip.SetTip(saveBtn, "Save this derived layer (.ers + data)");
-                saveBtn.Click += async (_, _) => await SaveRasterLayerAsync(layer);
-                row.Children.Add(saveBtn);
-            }
-            return row;
-        }
-
-        private static string LayerTip(string name, string? lineage, bool unsaved, bool streaming = false)
-        {
-            string tip = name;
-            if (lineage != null) tip += "\nMade from: " + lineage;
-            if (unsaved) tip += "\n● In memory only — not saved yet";
-            if (streaming) tip += "\n⇶ Large dataset, streamed from disk";
-            return tip;
-        }
-
-        /// <summary>A vector layer's inline style row: a hex-colour swatch/box and a line-width stepper, both scoped to THIS layer.</summary>
-        private StackPanel BuildVectorStyleRow(VectorLayer layer)
-        {
-            var swatch = new Border
-            {
-                Width = 20,
-                Height = 20,
-                CornerRadius = new CornerRadius(4),
-                Background = new SolidColorBrush(layer.Color),
-                BorderBrush = AppTheme.Border,
-                BorderThickness = new Thickness(1),
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-
-            var hexBox = new TextBox
-            {
-                Text = FormatHex(layer.Color),
-                Width = 84,
-                VerticalContentAlignment = VerticalAlignment.Center,
-                Watermark = "#RRGGBB",
-            };
-            void ApplyHex()
-            {
-                RunLayerActionSafely(() =>
-                {
-                    var color = Color.Parse(hexBox.Text ?? string.Empty);
-                    _view.SetVectorLayerColor(layer, color);
-                    swatch.Background = new SolidColorBrush(color);
-                    hexBox.Text = FormatHex(color);
-                });
-            }
-            hexBox.LostFocus += (_, _) => ApplyHex();
-            hexBox.KeyDown += (_, e) => { if (e.Key == Key.Enter) ApplyHex(); };
-
-            var widthBox = new NumericUpDown
-            {
-                Value = (decimal)layer.LineWidth,
-                Minimum = 0.5m,
-                Maximum = 20m,
-                Increment = 0.5m,
-                FormatString = "0.#",
-                Width = 96,
-                HorizontalAlignment = HorizontalAlignment.Left,
-            };
-            widthBox.ValueChanged += (_, e) =>
-            {
-                if (e.NewValue is decimal v) RunLayerActionSafely(() => _view.SetVectorLayerLineWidth(layer, (double)v));
-            };
-
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 2, 0, 0) };
-            row.Children.Add(swatch);
-            row.Children.Add(hexBox);
-            row.Children.Add(widthBox);
-            return row;
-        }
-
-        private static string FormatHex(Color c) => string.Create(CultureInfo.InvariantCulture, $"#{c.R:X2}{c.G:X2}{c.B:X2}");
-
-        /// <summary>A small, circular icon button — a clear, comfortably-clickable target, instead of a cramped default-sized square one.</summary>
-        private static Button CircleIconButton(string glyph, IBrush? foreground = null)
-        {
-            return new Button
-            {
-                Content = glyph,
-                Width = 26,
-                Height = 26,
-                CornerRadius = new CornerRadius(13),
-                Padding = new Thickness(0),
-                FontSize = 11,
-                HorizontalContentAlignment = HorizontalAlignment.Center,
-                VerticalContentAlignment = VerticalAlignment.Center,
-                Background = AppTheme.BarBackground,
-                BorderBrush = AppTheme.Border,
-                BorderThickness = new Thickness(1),
-                Foreground = foreground ?? AppTheme.TextPrimary,
-            };
-        }
-
-        /// <summary>
-        /// Wraps one layer's row controls in a rounded card — the active raster layer gets an
-        /// accent-coloured border and a tinted background, so which layer is "current" (the one
-        /// the side panel's palette/band controls, the pointer readout and every tool target) is
-        /// obvious at a glance, and so a reorder is visibly a card moving, not just numbers
-        /// changing behind an otherwise identical-looking row.
-        /// </summary>
-        private static Border BuildLayerCard(Control visBox, Control name, Control upBtn, Control downBtn, Control removeBtn, bool isActive, Control? styleRow = null)
-        {
-            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto,Auto"), ColumnSpacing = 4 };
-            Grid.SetColumn(visBox, 0);
-            Grid.SetColumn(name, 1);
-            Grid.SetColumn(upBtn, 2);
-            Grid.SetColumn(downBtn, 3);
-            Grid.SetColumn(removeBtn, 4);
-            row.Children.Add(visBox);
-            row.Children.Add(name);
-            row.Children.Add(upBtn);
-            row.Children.Add(downBtn);
-            row.Children.Add(removeBtn);
-
-            Control content = row;
-            if (styleRow != null)
-            {
-                var stack = new StackPanel { Spacing = 0 };
-                stack.Children.Add(row);
-                stack.Children.Add(styleRow);
-                content = stack;
-            }
-
-            return new Border
-            {
-                Child = content,
-                CornerRadius = new CornerRadius(10),
-                Background = isActive ? AppTheme.ActiveHighlight : AppTheme.BarBackground,
-                BorderBrush = isActive ? AppTheme.Accent : AppTheme.Border,
-                BorderThickness = new Thickness(isActive ? 2 : 1),
-                Padding = new Thickness(6, 4),
-                Margin = new Thickness(0, 3),
-            };
+            catch (Exception ex) { _ = MessageAsync(T("Layer action failed"), ex.Message); }
         }
 
         // ---- save --------------------------------------------------------------
@@ -1072,7 +669,7 @@ namespace RasterField
             if (_view.Document == null) return;
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Save ER Mapper header",
+                Title = T("Save ER Mapper header"),
                 DefaultExtension = "ers",
                 SuggestedFileName = SuggestName() + ".ers",
                 FileTypeChoices = ErsSaveFileTypeChoices,
@@ -1083,9 +680,9 @@ namespace RasterField
             try
             {
                 _view.Document.SaveHeader(path!);
-                Flash($"Header written: {Path.GetFileName(path)}");
+                Flash(L.F("Header written: {0}", Path.GetFileName(path)));
             }
-            catch (Exception ex) { await MessageAsync("Save failed", ex.Message); }
+            catch (Exception ex) { await MessageAsync(T("Save failed"), ex.Message); }
         }
 
         private async Task SaveDatasetAsAsync()
@@ -1093,7 +690,7 @@ namespace RasterField
             if (_view.Document == null) return;
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Save ER Mapper dataset (writes .ers + binary data file)",
+                Title = T("Save ER Mapper dataset (writes .ers + binary data file)"),
                 DefaultExtension = "ers",
                 SuggestedFileName = SuggestName() + "_out.ers",
                 FileTypeChoices = ErsSaveFileTypeChoices,
@@ -1110,9 +707,9 @@ namespace RasterField
                 };
                 _view.Document.Save(path!, options);
                 if (_view.ActiveLayer is { IsUnsaved: true } saved) _view.MarkSaved(saved, path!);
-                Flash($"Dataset written: {Path.GetFileName(path)} (+ data file)");
+                Flash(L.F("Dataset written: {0} (+ data file)", Path.GetFileName(path)));
             }
-            catch (Exception ex) { await MessageAsync("Save failed", ex.Message); }
+            catch (Exception ex) { await MessageAsync(T("Save failed"), ex.Message); }
         }
 
         private async Task ExportPngAsync()
@@ -1122,7 +719,7 @@ namespace RasterField
 
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Export coloured raster as PNG",
+                Title = T("Export coloured raster as PNG"),
                 DefaultExtension = "png",
                 SuggestedFileName = SuggestName() + ".png",
                 FileTypeChoices = PngFileTypeChoices,
@@ -1133,9 +730,9 @@ namespace RasterField
             try
             {
                 SaveImageAsPng(image, path!);
-                Flash($"PNG written: {Path.GetFileName(path)}");
+                Flash(L.F("PNG written: {0}", Path.GetFileName(path)));
             }
-            catch (Exception ex) { await MessageAsync("Export failed", ex.Message); }
+            catch (Exception ex) { await MessageAsync(T("Export failed"), ex.Message); }
         }
 
         private ErsCellType? SelectedOutputCellType() => (_outTypeBox.SelectedItem as string) switch
@@ -1215,49 +812,6 @@ namespace RasterField
             }
         }
 
-        private void OnRasterLoaded()
-        {
-            if (_view.ActiveLayer == null)
-            {
-                // The last layer was just removed: nothing to show.
-                SetControlsEnabled(false);
-                _bandGroup.IsVisible = false;
-                _infoText.Text = "No layers loaded.";
-                _legend.SetColorizer(null);
-                _coordText.Text = _cellText.Text = _valueText.Text = _scaleText.Text = "—";
-                return;
-            }
-
-            SetControlsEnabled(true);
-
-            var c = _view.Colorizer!;
-            _syncing = true;
-            _minBox.Value = (decimal)c.Minimum;
-            _maxBox.Value = (decimal)c.Maximum;
-            _syncing = false;
-
-            var header = _view.Document!.Header;
-            UpdateBandSelector(header);
-            var stats = _view.CurrentStatistics;
-            string crs = header.CoordinateSpace.Projection ?? "RAW";
-            if (header.CoordinateSpace.TryGetEpsg(out int epsg)) crs += $" (EPSG:{epsg})";
-            string statsText = stats == null
-                ? "—"
-                : string.Format(CultureInfo.InvariantCulture, "data {0:g4} … {1:g4}  (µ {2:g4}, σ {3:g4}){4}",
-                    stats.Minimum, stats.Maximum, stats.Mean, stats.StandardDeviation,
-                    _view.IsStreaming ? ", approx." : "");
-            _infoText.Text = string.Format(CultureInfo.InvariantCulture,
-                "{0}×{1}  {2}  {3}  |  {4}  |  {5}{6}",
-                header.RasterInfo.NrOfCellsPerLine, header.RasterInfo.NrOfLines,
-                header.RasterInfo.CellType, crs, statsText,
-                header.ByteOrder, _view.IsStreaming ? "  |  streaming (large dataset)" : "");
-
-            ApplyMode();
-            _legend.SetColorizer(c, UnitLabel());
-            UpdateScaleText();
-            UpdatePaletteControlsEnabled(); // must come last: overrides the legend/enabled-state above when in RGB composite mode
-        }
-
         private void UpdateBandSelector(ErsHeader header)
         {
             if (_view.BandCount <= 1)
@@ -1271,8 +825,8 @@ namespace RasterField
             for (int i = 0; i < _view.BandCount; i++)
             {
                 string label = bandInfos != null && i < bandInfos.Count && !string.IsNullOrWhiteSpace(bandInfos[i].Value)
-                    ? $"Band {i + 1} — {bandInfos[i].Value}"
-                    : $"Band {i + 1}";
+                    ? L.F("Band {0} — {1}", i + 1, bandInfos[i].Value)
+                    : L.F("Band {0}", i + 1);
                 names.Add(label);
             }
 
@@ -1288,7 +842,7 @@ namespace RasterField
         private void UpdateScaleText()
         {
             double? gsd = _view.GroundSampleDistance;
-            if (gsd == null) { _scaleText.Text = "—"; return; }
+            if (gsd == null) { _scaleText.Text = T("—"); return; }
 
             string unit = _view.Document?.Header.CoordinateSpace.EffectiveUnits ?? "m";
             double dpi = (TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0) * 96.0;
@@ -1302,26 +856,6 @@ namespace RasterField
         {
             var bands = _view.Document?.Header.RasterInfo.Bands;
             return bands != null && bands.Count > 0 ? bands[0].Units : null;
-        }
-
-        private void UpdateStatus(RasterReadoutEventArgs r)
-        {
-            if (_view.Document == null)
-            {
-                _coordText.Text = _cellText.Text = _valueText.Text = "—";
-                return;
-            }
-            _coordText.Text = string.Format(CultureInfo.InvariantCulture, "E {0:0.###}   N {1:0.###}", r.WorldX, r.WorldY);
-            _cellText.Text = r.InsideRaster ? $"cell [{r.Column}, {r.Row}]" : "cell —";
-            _valueText.Text = r.Value.HasValue
-                ? "value " + r.Value.Value.ToString("g6", CultureInfo.InvariantCulture)
-                : (r.InsideRaster ? "value (no-data)" : "value —");
-        }
-
-        private void SetControlsEnabled(bool on)
-        {
-            foreach (var c in new Control[] { _bandBox, _paletteBox, _reverseBox, _stretchBox, _modeBox, _minBox, _maxBox, _gammaSlider, _outTypeBox, _outOrderBox })
-                c.IsEnabled = on;
         }
 
         /// <summary>
@@ -1353,7 +887,7 @@ namespace RasterField
                     saved = true;
                     _paletteBox.ItemsSource = _palettes.Names.ToList();
                     _paletteBox.SelectedItem = p.Name;
-                    Flash($"Palette saved: {p.Name}");
+                    Flash(L.F("Palette saved: {0}", p.Name));
                 });
 
             editor.Closed += (_, _) =>
@@ -1371,16 +905,15 @@ namespace RasterField
         {
             if (_view.Document == null)
             {
-                await MessageAsync("Fill no-data gaps", "Open a dataset first.");
+                await MessageAsync(T("Fill no-data gaps"), T("Open a dataset first."));
                 return;
             }
             if (_view.Raster == null)
             {
-                await MessageAsync("Fill no-data gaps",
+                await MessageAsync(T("Fill no-data gaps"),
                     _view.IsStreaming
-                        ? "This dataset is large and is shown in streaming mode, so it is never fully loaded into memory. " +
-                          "Clip a smaller region first (Tools ▸ Clip tool), open the clipped result, then fill that."
-                        : "The raster is not loaded.");
+                        ? T("This dataset is large and is shown in streaming mode, so it is never fully loaded into memory. Clip a smaller region first (Tools ▸ Clip tool), then run this on the clipped layer.")
+                        : T("The raster is not loaded."));
                 return;
             }
 
@@ -1390,7 +923,7 @@ namespace RasterField
             long gaps = NoDataFiller.CountNoDataWithinHull(_view.Raster);
             if (gaps == 0)
             {
-                await MessageAsync("Fill no-data gaps", "This band has no no-data gaps within its data footprint to fill.");
+                await MessageAsync(T("Fill no-data gaps"), T("This band has no no-data gaps within its data footprint to fill."));
                 return;
             }
 
@@ -1398,7 +931,7 @@ namespace RasterField
             if (choice == null) return;
 
             var raster = _view.Raster;
-            SetBusy(true, "Filling no-data gaps…");
+            SetBusy(true, T("Filling no-data gaps…"));
             Raster filled = await Task.Run(() => choice.Value.Method == FillMethod.Nearest
                 ? NoDataFiller.FillNearest(raster)
                 : NoDataFiller.FillInverseDistanceWeighted(raster, choice.Value.MaxSearchDistance, choice.Value.SmoothingIterations));
@@ -1410,7 +943,7 @@ namespace RasterField
 
             // Every in-hull gap is now guaranteed filled (see NoDataFiller's remarks) — anything
             // still no-data afterwards is, by construction, outside the data's footprint.
-            Flash($"Filled all {gaps:N0} gap cell(s) within the data's footprint.");
+            Flash(L.F("Filled all {0:N0} gap cell(s) within the data's footprint.", gaps));
         }
 
         private async Task<(FillMethod Method, int MaxSearchDistance, int SmoothingIterations)?> ShowFillNoDataDialogAsync(long gapCount)
@@ -1419,7 +952,7 @@ namespace RasterField
 
             var methodBox = new ComboBox
             {
-                ItemsSource = new[] { "Inverse-distance weighted (recommended)", "Nearest neighbour (fast)" },
+                ItemsSource = new[] { T("Inverse-distance weighted (recommended)"), T("Nearest neighbour (fast)") },
                 SelectedIndex = 0,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
             };
@@ -1428,15 +961,15 @@ namespace RasterField
 
             var dialog = new Window
             {
-                Title = "Fill no-data gaps",
+                Title = T("Fill no-data gaps"),
                 Width = 380,
                 SizeToContent = SizeToContent.Height,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 CanResize = false,
             };
 
-            var okBtn = new Button { Content = "Fill", MinWidth = 80 };
-            var cancelBtn = new Button { Content = "Cancel", MinWidth = 80 };
+            var okBtn = new Button { Content = T("Fill"), MinWidth = 80 };
+            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
             okBtn.Click += (_, _) =>
             {
                 tcs.TrySetResult((methodBox.SelectedIndex == 0 ? FillMethod.InverseDistanceWeighted : FillMethod.Nearest,
@@ -1455,16 +988,16 @@ namespace RasterField
                 Spacing = 8,
                 Children =
                 {
-                    new TextBlock { Text = $"{gapCount:N0} gap cell(s) found within the data's footprint.", TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = L.F("{0:N0} gap cell(s) found within the data's footprint.", gapCount), TextWrapping = TextWrapping.Wrap },
                     new TextBlock
                     {
-                        Text = "Only gaps inside the convex hull of the valid data are ever touched — the no-data margin outside the data's actual footprint (a rotated scene's background corners, a mosaic's missing corner, …) is left exactly as it is. Every in-hull gap is guaranteed to be filled. IDW searches outward along several directions for the nearest valid pixels and takes their inverse-distance-weighted average (the method behind GDAL's FillNodata); Nearest just copies the closest valid cell.",
+                        Text = T("Only gaps inside the convex hull of the valid data are ever touched — the no-data margin outside the data's actual footprint (a rotated scene's background corners, a mosaic's missing corner, …) is left exactly as it is. Every in-hull gap is guaranteed to be filled. IDW searches outward along several directions for the nearest valid pixels and takes their inverse-distance-weighted average (the method behind GDAL's FillNodata); Nearest just copies the closest valid cell."),
                         TextWrapping = TextWrapping.Wrap, Opacity = 0.85, FontSize = 11,
                     },
                     methodBox,
-                    new TextBlock { Text = "Max search distance (cells, IDW only)" },
+                    new TextBlock { Text = T("Max search distance (cells, IDW only)") },
                     distBox,
-                    new TextBlock { Text = "Smoothing passes (IDW only)" },
+                    new TextBlock { Text = T("Smoothing passes (IDW only)") },
                     smoothBox,
                     buttons,
                 },
@@ -1480,7 +1013,7 @@ namespace RasterField
         {
             if (_view.Document == null)
             {
-                await MessageAsync("Clip by extent", "Open a dataset first.");
+                await MessageAsync(T("Clip by extent"), T("Open a dataset first."));
                 return;
             }
 
@@ -1489,14 +1022,14 @@ namespace RasterField
             if (extent == null) return;
 
             var doc = _view.Document;
-            SetBusy(true, "Cropping…");
+            SetBusy(true, T("Cropping…"));
             try
             {
                 var clip = await Task.Run(() => doc.ClipToWorldExtent(extent.Value.MinX, extent.Value.MinY, extent.Value.MaxX, extent.Value.MaxY));
                 SetBusy(false);
                 await PerformClipAndSaveAsync(clip);
             }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Clip failed", ex.Message); }
+            catch (Exception ex) { SetBusy(false); await MessageAsync(T("Clip failed"), ex.Message); }
         }
 
         private async Task<(double MinX, double MinY, double MaxX, double MaxY)?> ShowClipExtentDialogAsync(
@@ -1512,15 +1045,15 @@ namespace RasterField
 
             var dialog = new Window
             {
-                Title = "Clip by extent",
+                Title = T("Clip by extent"),
                 Width = 360,
                 SizeToContent = SizeToContent.Height,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 CanResize = false,
             };
 
-            var okBtn = new Button { Content = "Clip…", MinWidth = 80 };
-            var cancelBtn = new Button { Content = "Cancel", MinWidth = 80 };
+            var okBtn = new Button { Content = T("Clip…"), MinWidth = 80 };
+            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
             okBtn.Click += (_, _) =>
             {
                 tcs.TrySetResult(((double)(minXBox.Value ?? 0), (double)(minYBox.Value ?? 0),
@@ -1540,11 +1073,11 @@ namespace RasterField
                 Spacing = 6,
                 Children =
                 {
-                    new TextBlock { Text = "World-coordinate extent to keep (pre-filled with the full raster bounds):", TextWrapping = TextWrapping.Wrap },
-                    Label("Min E (west)"), minXBox,
-                    Label("Max E (east)"), maxXBox,
-                    Label("Min N (south)"), minYBox,
-                    Label("Max N (north)"), maxYBox,
+                    new TextBlock { Text = T("World-coordinate extent to keep (pre-filled with the full raster bounds):"), TextWrapping = TextWrapping.Wrap },
+                    Label(T("Min E (west)")), minXBox,
+                    Label(T("Max E (east)")), maxXBox,
+                    Label(T("Min N (south)")), minYBox,
+                    Label(T("Max N (north)")), maxYBox,
                     buttons,
                 },
             };
@@ -1557,7 +1090,7 @@ namespace RasterField
 
         /// <summary>
         /// Adds a computed result (a clip, a terrain/band-math/mosaic raster, …) as a new derived
-        /// layer in memory — nothing is written until the user saves it (the layer card's 💾, or
+        /// layer in memory — nothing is written until the user saves it (the layer card's ⤓, or
         /// Layer ▸ Save active layer).
         /// </summary>
         private Task PerformDerivedSaveAsync(ErsDocument result, string suggestedSuffix, string label)
@@ -1573,9 +1106,9 @@ namespace RasterField
         /// new document sharing the current dataset's georeference (origin, cell size, rotation
         /// dropped — these outputs are never rotated) and coordinate system.
         /// </summary>
-        private ErsDocument BuildDerivedDocument(Raster result)
+        private ErsDocument BuildDerivedDocument(Raster result, ErsDocument? source = null)
         {
-            var doc = _view.Document ?? throw new InvalidOperationException("No dataset is open.");
+            var doc = source ?? _view.Document ?? throw new InvalidOperationException("No dataset is open.");
             var (originX, originY) = doc.GeoReference.PixelToWorld(0, 0);
             var (_, b, c, _, e, f) = doc.GeoReference.GeoTransform;
             double cellSizeX = Math.Sqrt(b * b + e * e);
@@ -1593,18 +1126,17 @@ namespace RasterField
         /// </summary>
         private async Task<(Raster Raster, double CellSizeX, double CellSizeY)?> TryGetLoadedRasterAsync(string toolName)
         {
-            if (_view.Document == null)
+            if (_view.Document == null || _view.ActiveLayer?.IsFrame == true)
             {
-                await MessageAsync(toolName, "Open a dataset first.");
+                await MessageAsync(toolName, T("Open a raster dataset first."));
                 return null;
             }
             if (_view.Raster == null)
             {
                 await MessageAsync(toolName,
                     _view.IsStreaming
-                        ? "This dataset is large and is shown in streaming mode, so it is never fully loaded into memory. " +
-                          "Clip a smaller region first (Tools ▸ Clip tool), open the clipped result, then run this on that."
-                        : "The raster is not loaded.");
+                        ? T("This dataset is large and is shown in streaming mode, so it is never fully loaded into memory. Clip a smaller region first (Tools ▸ Clip tool), then run this on the clipped layer.")
+                        : T("The raster is not loaded."));
                 return null;
             }
 
@@ -1620,48 +1152,22 @@ namespace RasterField
 
         private async Task ComputeTerrainAsync(TerrainProduct product)
         {
-            var loaded = await TryGetLoadedRasterAsync(product.ToString());
+            var loaded = await TryGetLoadedRasterAsync(T(product.ToString()));
             if (loaded == null) return;
-            var (raster, cellSizeX, cellSizeY) = loaded.Value;
-
-            SetBusy(true, $"Computing {product}…");
-            try
-            {
-                Raster result = await Task.Run(() => product switch
-                {
-                    TerrainProduct.Slope => TerrainAnalysis.Slope(raster, cellSizeX, cellSizeY),
-                    TerrainProduct.Aspect => TerrainAnalysis.Aspect(raster, cellSizeX, cellSizeY),
-                    _ => TerrainAnalysis.Hillshade(raster, cellSizeX, cellSizeY),
-                });
-                SetBusy(false);
-
-                var doc = BuildDerivedDocument(result);
-                await PerformDerivedSaveAsync(doc, "_" + product.ToString().ToLowerInvariant(), product.ToString());
-            }
-            catch (Exception ex) { SetBusy(false); await MessageAsync($"{product} failed", ex.Message); }
+            string op = product.ToString().ToLowerInvariant();
+            await CreateDerivedAsync(new LayerRecipe(op, _view.ActiveLayer!), L.F("Computing {0}…", T(product.ToString())));
         }
 
         // ---- curvature -------------------------------------------------------------
 
         private async Task ComputeCurvatureAsync()
         {
-            var loaded = await TryGetLoadedRasterAsync("Curvature");
+            var loaded = await TryGetLoadedRasterAsync(T("Curvature"));
             if (loaded == null) return;
-            var (raster, cellSizeX, cellSizeY) = loaded.Value;
-
             var type = await ShowCurvatureDialogAsync();
             if (type == null) return;
-
-            SetBusy(true, $"Computing {type} curvature…");
-            try
-            {
-                Raster result = await Task.Run(() => TerrainAnalysis.Curvature(raster, cellSizeX, cellSizeY, type.Value));
-                SetBusy(false);
-
-                var doc = BuildDerivedDocument(result);
-                await PerformDerivedSaveAsync(doc, "_curvature_" + type.Value.ToString().ToLowerInvariant(), type.Value + " curvature");
-            }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Curvature failed", ex.Message); }
+            await CreateDerivedAsync(new LayerRecipe("curvature", _view.ActiveLayer!, new Dictionary<string, string> { ["type"] = type.Value.ToString() }),
+                L.F("Computing {0} curvature…", T(type.Value.ToString())));
         }
 
         private async Task<CurvatureType?> ShowCurvatureDialogAsync()
@@ -1670,22 +1176,22 @@ namespace RasterField
 
             var typeBox = new ComboBox
             {
-                ItemsSource = new[] { "General (convex/concave overall shape)", "Profile (along the slope — affects flow speed)", "Plan (across the slope — affects flow convergence)" },
+                ItemsSource = new[] { T("General (convex/concave overall shape)"), T("Profile (along the slope — affects flow speed)"), T("Plan (across the slope — affects flow convergence)") },
                 SelectedIndex = 0,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
             };
 
             var dialog = new Window
             {
-                Title = "Curvature",
+                Title = T("Curvature"),
                 Width = 380,
                 SizeToContent = SizeToContent.Height,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 CanResize = false,
             };
 
-            var okBtn = new Button { Content = "Compute", MinWidth = 80 };
-            var cancelBtn = new Button { Content = "Cancel", MinWidth = 80 };
+            var okBtn = new Button { Content = T("Compute"), MinWidth = 80 };
+            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
             okBtn.Click += (_, _) =>
             {
                 var type = typeBox.SelectedIndex switch
@@ -1709,7 +1215,7 @@ namespace RasterField
                 Spacing = 8,
                 Children =
                 {
-                    new TextBlock { Text = "Positive = convex (dome/ridge); negative = concave (bowl/valley); zero = planar.", TextWrapping = TextWrapping.Wrap, Opacity = 0.85, FontSize = 11 },
+                    new TextBlock { Text = T("Positive = convex (dome/ridge); negative = concave (bowl/valley); zero = planar."), TextWrapping = TextWrapping.Wrap, Opacity = 0.85, FontSize = 11 },
                     typeBox,
                     buttons,
                 },
@@ -1723,56 +1229,30 @@ namespace RasterField
 
         private async Task ComputeFlowDirectionAsync()
         {
-            var loaded = await TryGetLoadedRasterAsync("Flow direction");
+            var loaded = await TryGetLoadedRasterAsync(T("Flow direction"));
             if (loaded == null) return;
-            var (raster, cellSizeX, cellSizeY) = loaded.Value;
-
-            SetBusy(true, "Computing flow direction…");
-            try
-            {
-                Raster result = await Task.Run(() => HydrologyAnalysis.FlowDirection(raster, cellSizeX, cellSizeY));
-                SetBusy(false);
-
-                var doc = BuildDerivedDocument(result);
-                await PerformDerivedSaveAsync(doc, "_flowdir", "Flow direction");
-            }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Flow direction failed", ex.Message); }
+            await CreateDerivedAsync(new LayerRecipe("flowdir", _view.ActiveLayer!), T("Computing flow direction…"));
         }
 
         private async Task ComputeFlowAccumulationAsync()
         {
-            var loaded = await TryGetLoadedRasterAsync("Flow accumulation");
+            var loaded = await TryGetLoadedRasterAsync(T("Flow accumulation"));
             if (loaded == null) return;
-            var (raster, cellSizeX, cellSizeY) = loaded.Value;
-
-            SetBusy(true, "Computing flow accumulation…");
-            try
-            {
-                Raster result = await Task.Run(() =>
-                {
-                    Raster direction = HydrologyAnalysis.FlowDirection(raster, cellSizeX, cellSizeY);
-                    return HydrologyAnalysis.FlowAccumulation(direction);
-                });
-                SetBusy(false);
-
-                var doc = BuildDerivedDocument(result);
-                await PerformDerivedSaveAsync(doc, "_flowacc", "Flow accumulation");
-            }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Flow accumulation failed", ex.Message); }
+            await CreateDerivedAsync(new LayerRecipe("flowacc", _view.ActiveLayer!), T("Computing flow accumulation…"));
         }
 
         // ---- viewshed ----------------------------------------------------------------
 
         private async Task ComputeViewshedAsync()
         {
-            var loaded = await TryGetLoadedRasterAsync("Viewshed");
+            var loaded = await TryGetLoadedRasterAsync(T("Viewshed"));
             if (loaded == null) return;
             var (raster, _, _) = loaded.Value;
 
             var options = await ShowViewshedDialogAsync(raster.Width, raster.Height);
             if (options == null) return;
 
-            SetBusy(true, "Computing viewshed…");
+            SetBusy(true, T("Computing viewshed…"));
             try
             {
                 Raster result = await Task.Run(() => ViewshedAnalysis.Compute(
@@ -1783,7 +1263,7 @@ namespace RasterField
                 var doc = BuildDerivedDocument(result);
                 await PerformDerivedSaveAsync(doc, "_viewshed", "Viewshed");
             }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Viewshed failed", ex.Message); }
+            catch (Exception ex) { SetBusy(false); await MessageAsync(T("Viewshed failed"), ex.Message); }
         }
 
         private async Task<(int ObserverCol, int ObserverRow, double ObserverHeight, double TargetHeight, int? MaxDistanceCells)?> ShowViewshedDialogAsync(int width, int height)
@@ -1798,15 +1278,15 @@ namespace RasterField
 
             var dialog = new Window
             {
-                Title = "Viewshed",
+                Title = T("Viewshed"),
                 Width = 360,
                 SizeToContent = SizeToContent.Height,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 CanResize = false,
             };
 
-            var okBtn = new Button { Content = "Compute…", MinWidth = 80 };
-            var cancelBtn = new Button { Content = "Cancel", MinWidth = 80 };
+            var okBtn = new Button { Content = T("Compute…"), MinWidth = 80 };
+            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
             okBtn.Click += (_, _) =>
             {
                 int maxDist = (int)(maxDistBox.Value ?? 0);
@@ -1828,12 +1308,12 @@ namespace RasterField
                 Spacing = 6,
                 Children =
                 {
-                    new TextBlock { Text = "Observer location (raster cell — column/row, 0-based):", TextWrapping = TextWrapping.Wrap },
-                    new TextBlock { Text = "Column" }, colBox,
-                    new TextBlock { Text = "Row" }, rowBox,
-                    new TextBlock { Text = "Observer eye height above ground" }, observerHeightBox,
-                    new TextBlock { Text = "Target height above ground" }, targetHeightBox,
-                    new TextBlock { Text = "Max distance in cells (0 = unlimited)" }, maxDistBox,
+                    new TextBlock { Text = T("Observer location (raster cell — column/row, 0-based):"), TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = T("Column") }, colBox,
+                    new TextBlock { Text = T("Row") }, rowBox,
+                    new TextBlock { Text = T("Observer eye height above ground") }, observerHeightBox,
+                    new TextBlock { Text = T("Target height above ground") }, targetHeightBox,
+                    new TextBlock { Text = T("Max distance in cells (0 = unlimited)") }, maxDistBox,
                     buttons,
                 },
             };
@@ -1857,22 +1337,22 @@ namespace RasterField
 
         private async Task ExportSwissReliefAsync()
         {
-            var loaded = await TryGetLoadedRasterAsync("Swiss-style relief");
+            var loaded = await TryGetLoadedRasterAsync(T("Swiss-style relief"));
             if (loaded == null) return;
             var (raster, cellSizeX, cellSizeY) = loaded.Value;
 
-            SetBusy(true, "Rendering Swiss-style relief…");
+            SetBusy(true, T("Rendering Swiss-style relief…"));
             RasterImage image;
             try
             {
                 image = await Task.Run(() => ReliefShader.RenderSwissStyle(raster, cellSizeX, cellSizeY));
             }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Swiss-style relief failed", ex.Message); return; }
+            catch (Exception ex) { SetBusy(false); await MessageAsync(T("Swiss-style relief failed"), ex.Message); return; }
             SetBusy(false);
 
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Export Swiss-style relief",
+                Title = T("Export Swiss-style relief"),
                 DefaultExtension = "ers",
                 SuggestedFileName = SuggestName() + "_relief.ers",
                 FileTypeChoices = ReliefFileTypeChoices,
@@ -1885,17 +1365,17 @@ namespace RasterField
                 if (path!.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
                 {
                     SaveImageAsPng(image, path);
-                    Flash($"Relief image written: {Path.GetFileName(path)}");
+                    Flash(L.F("Relief image written: {0}", Path.GetFileName(path)));
                 }
                 else
                 {
                     var doc = BuildRgbDocument(image);
                     doc.Save(path);
-                    Flash($"Relief dataset written: {Path.GetFileName(path)} (3-band true colour)");
+                    Flash(L.F("Relief dataset written: {0} (3-band true colour)", Path.GetFileName(path)));
                     OpenDataset(path);
                 }
             }
-            catch (Exception ex) { await MessageAsync("Export failed", ex.Message); }
+            catch (Exception ex) { await MessageAsync(T("Export failed"), ex.Message); }
         }
 
         /// <summary>
@@ -1971,57 +1451,37 @@ namespace RasterField
 
         private async Task BandMathAsync()
         {
-            var doc = _view.Document;
-            if (doc == null) { await MessageAsync("Band math", "Open a dataset first."); return; }
+            var layer = _view.ActiveLayer;
+            var doc = layer?.Document;
+            if (layer == null || layer.IsFrame || doc == null) { await MessageAsync(T("Band math"), T("Open a raster dataset first.")); return; }
             if (doc.Bands.Count == 0)
             {
-                await MessageAsync("Band math",
-                    _view.IsStreaming
-                        ? "This dataset is large and is shown in streaming mode, so its bands are never fully loaded into memory."
-                        : "The raster is not loaded.");
+                await MessageAsync(T("Band math"), T("This dataset is large and is shown in streaming mode, so its bands are never fully loaded into memory."));
                 return;
             }
-
-            var bandNames = new List<string>();
-            var bands = new Dictionary<string, Raster>();
-            for (int i = 0; i < doc.Bands.Count; i++)
-            {
-                string name = $"b{i + 1}";
-                bandNames.Add(name);
-                bands[name] = doc.Bands[i];
-            }
-
+            var bandNames = Enumerable.Range(1, doc.Bands.Count).Select(i => $"b{i}").ToList();
             var expr = await ShowBandMathDialogAsync(bandNames);
             if (string.IsNullOrWhiteSpace(expr)) return;
-
-            SetBusy(true, "Evaluating expression…");
-            try
-            {
-                Raster result = await Task.Run(() => RasterAlgebra.Evaluate(expr!, bands));
-                SetBusy(false);
-                var newDoc = BuildDerivedDocument(result);
-                await PerformDerivedSaveAsync(newDoc, "_bandmath", "Band math result");
-            }
-            catch (RasterAlgebraException ex) { SetBusy(false); await MessageAsync("Band math failed", ex.Message); }
+            await CreateDerivedAsync(new LayerRecipe("bandmath", layer, new Dictionary<string, string> { ["expr"] = expr! }), T("Evaluating expression…"));
         }
 
-        private async Task<string?> ShowBandMathDialogAsync(IReadOnlyList<string> bandNames)
+        private async Task<string?> ShowBandMathDialogAsync(IReadOnlyList<string> bandNames, string initial = "")
         {
             var tcs = new TaskCompletionSource<string?>();
 
-            var exprBox = new TextBox { Watermark = "e.g. (b1 - b2) / (b1 + b2)" };
+            var exprBox = new TextBox { Watermark = T("e.g. (b1 - b2) / (b1 + b2)"), Text = initial };
 
             var dialog = new Window
             {
-                Title = "Band math",
+                Title = T("Band math"),
                 Width = 440,
                 SizeToContent = SizeToContent.Height,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 CanResize = false,
             };
 
-            var okBtn = new Button { Content = "Compute", MinWidth = 80 };
-            var cancelBtn = new Button { Content = "Cancel", MinWidth = 80 };
+            var okBtn = new Button { Content = T("Compute"), MinWidth = 80 };
+            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
             okBtn.Click += (_, _) => { tcs.TrySetResult(exprBox.Text); dialog.Close(); };
             cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
 
@@ -2035,10 +1495,10 @@ namespace RasterField
                 Spacing = 8,
                 Children =
                 {
-                    new TextBlock { Text = $"Available bands: {string.Join(", ", bandNames)}", TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = L.F("Available bands: {0}", string.Join(", ", bandNames)), TextWrapping = TextWrapping.Wrap },
                     new TextBlock
                     {
-                        Text = "Operators + - * / and comparisons (> >= < <= == !=); functions abs, sqrt, exp, log, log10, min, max, pow, iif(cond, a, b); constants pi, e. A cell is no-data in the output if any band it references is no-data there.",
+                        Text = T("Operators + - * / and comparisons (> >= < <= == !=); functions abs, sqrt, exp, log, log10, min, max, pow, iif(cond, a, b); constants pi, e. A cell is no-data in the output if any band it references is no-data there."),
                         TextWrapping = TextWrapping.Wrap, Opacity = 0.85, FontSize = 11,
                     },
                     exprBox,
@@ -2056,7 +1516,7 @@ namespace RasterField
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "Select rasters to mosaic (2 or more)",
+                Title = T("Select rasters to mosaic (2 or more)"),
                 AllowMultiple = true,
                 FileTypeFilter = ErsOpenFileTypeFilter,
             });
@@ -2064,14 +1524,14 @@ namespace RasterField
             var paths = files.Select(f => f.TryGetLocalPath()).Where(p => !string.IsNullOrEmpty(p)).Select(p => p!).ToList();
             if (paths.Count < 2)
             {
-                if (paths.Count == 1) await MessageAsync("Mosaic rasters", "Select at least two datasets to mosaic.");
+                if (paths.Count == 1) await MessageAsync(T("Mosaic rasters"), T("Select at least two datasets to mosaic."));
                 return;
             }
 
             List<ErsDocument> docs;
-            SetBusy(true, "Loading rasters…");
+            SetBusy(true, T("Loading rasters…"));
             try { docs = await Task.Run(() => paths.Select(ErsDocument.Load).ToList()); }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Mosaic rasters", $"Could not load one of the selected files: {ex.Message}"); return; }
+            catch (Exception ex) { SetBusy(false); await MessageAsync(T("Mosaic rasters"), $"Could not load one of the selected files: {ex.Message}"); return; }
             SetBusy(false);
 
             var (_, b, c, _, e, f) = docs[0].GeoReference.GeoTransform;
@@ -2080,14 +1540,14 @@ namespace RasterField
             var options = await ShowMosaicOptionsDialogAsync(docs.Count, defaultCellX, defaultCellY);
             if (options == null) return;
 
-            SetBusy(true, "Merging rasters…");
+            SetBusy(true, T("Merging rasters…"));
             try
             {
                 var mosaic = await Task.Run(() => ErsDocument.Mosaic(docs, options.Value.CellSizeX, options.Value.CellSizeY, options.Value.OverlapMode));
                 SetBusy(false);
                 await PerformDerivedSaveAsync(mosaic, "_mosaic", "Mosaic");
             }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Mosaic failed", ex.Message); }
+            catch (Exception ex) { SetBusy(false); await MessageAsync(T("Mosaic failed"), ex.Message); }
         }
 
         private async Task<(double CellSizeX, double CellSizeY, MosaicOverlapMode OverlapMode)?> ShowMosaicOptionsDialogAsync(
@@ -2099,22 +1559,22 @@ namespace RasterField
             var cellYBox = new NumericUpDown { Value = (decimal)defaultCellY, FormatString = "0.####", Increment = 1, Width = 130, HorizontalAlignment = HorizontalAlignment.Left };
             var overlapBox = new ComboBox
             {
-                ItemsSource = new[] { "Last wins (later files overwrite)", "First wins (earlier files kept)", "Average" },
+                ItemsSource = new[] { T("Last wins (later files overwrite)"), T("First wins (earlier files kept)"), T("Average") },
                 SelectedIndex = 0,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
             };
 
             var dialog = new Window
             {
-                Title = "Mosaic rasters",
+                Title = T("Mosaic rasters"),
                 Width = 380,
                 SizeToContent = SizeToContent.Height,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 CanResize = false,
             };
 
-            var okBtn = new Button { Content = "Mosaic…", MinWidth = 80 };
-            var cancelBtn = new Button { Content = "Cancel", MinWidth = 80 };
+            var okBtn = new Button { Content = T("Mosaic…"), MinWidth = 80 };
+            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
             okBtn.Click += (_, _) =>
             {
                 var mode = overlapBox.SelectedIndex switch
@@ -2138,10 +1598,10 @@ namespace RasterField
                 Spacing = 8,
                 Children =
                 {
-                    new TextBlock { Text = $"{fileCount} datasets selected. Output cell size:", TextWrapping = TextWrapping.Wrap },
-                    new TextBlock { Text = "Cell size X" }, cellXBox,
-                    new TextBlock { Text = "Cell size Y" }, cellYBox,
-                    new TextBlock { Text = "Where datasets overlap" }, overlapBox,
+                    new TextBlock { Text = L.F("{0} datasets selected. Output cell size:", fileCount), TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = T("Cell size X") }, cellXBox,
+                    new TextBlock { Text = T("Cell size Y") }, cellYBox,
+                    new TextBlock { Text = T("Where datasets overlap") }, overlapBox,
                     buttons,
                 },
             };
@@ -2154,36 +1614,18 @@ namespace RasterField
 
         private void OnWindowKeyDown(object? sender, KeyEventArgs e)
         {
-            if (HandleToolKey(e)) { e.Handled = true; return; }
-
-            if (e.KeyModifiers == (KeyModifiers.Control | KeyModifiers.Shift))
-            {
-                if (e.Key == Key.O) { _ = AddLayerDialogAsync(); e.Handled = true; }
-                return;
-            }
-
-            if (e.KeyModifiers == KeyModifiers.Control)
-            {
-                switch (e.Key)
-                {
-                    case Key.O: _ = OpenDialogAsync(); e.Handled = true; break;
-                    case Key.S: _ = SaveDatasetAsAsync(); e.Handled = true; break;
-                    case Key.B: _ = BezierSubdivisionAsync(); e.Handled = true; break;
-                    case Key.D0: _view.ZoomToFit(); e.Handled = true; break;
-                    case Key.OemPlus: _view.ZoomBy(1.25); e.Handled = true; break;
-                    case Key.OemMinus: _view.ZoomBy(0.8); e.Handled = true; break;
-                }
-            }
+            if (e.Handled) return;
+            if (HandleToolKey(e) || HandleMenuGesture(e)) e.Handled = true;
         }
 
         private void Flash(string message) => _infoText.Text = message;
 
-        private async Task ShowAboutAsync() => await MessageAsync("About RasterField",
+        private async Task ShowAboutAsync() => await MessageAsync(T("About RasterField"), T(
             "RasterField — a cross-platform pan/zoom viewer for the ERDAS ER Mapper raster format\n" +
             "(.ers header + Band-Interleaved-by-Line data file).\n\n" +
             "Built with Avalonia and the RasterField library: robust .ers parser and writer,\n" +
             "BIL reader/writer with byte-order handling, georeferencing and palette colourisation.\n\n" +
-            "Drag to pan · wheel to zoom · arrows / +/- · 0 or F to fit.");
+            "Drag to pan · wheel to zoom · arrows / +/- · 0 or F to fit."));
 
         private async Task MessageAsync(string title, string message)
         {
@@ -2195,7 +1637,7 @@ namespace RasterField
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 CanResize = false,
             };
-            var ok = new Button { Content = "OK", HorizontalAlignment = HorizontalAlignment.Right, MinWidth = 80 };
+            var ok = new Button { Content = T("OK"), HorizontalAlignment = HorizontalAlignment.Right, MinWidth = 80 };
             ok.Click += (_, _) => dialog.Close();
             dialog.Content = new StackPanel
             {

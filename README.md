@@ -26,7 +26,7 @@ and *Vector Datasets and Header Files (.erv)*).
 Source/
   RasterField.Core/     class library   (netstandard2.0 ; net10.0)   assembly RasterField.Core, namespace RasterField.*
   RasterField/          Avalonia app     (net10.0, win/linux/osx)
-  RasterField.Tests/    xUnit suite      (214 tests)
+  RasterField.Tests/    xUnit suite      (224 tests)
 RasterField.slnx        solution
 P_00_01.ers / P_00_01.dat   sample dataset (640×450 IEEE4, EOV)
 ```
@@ -68,6 +68,7 @@ Robustness: LF/CRLF, UTF‑8 BOM, missing optional blocks, `NrOfBands` absent �
 | `RasterMosaic` / `ErsDocument.Mosaic(...)` | Merges several rasters (each with its own georeference — differing rotation/registration all honoured) over their combined world extent, at a chosen output cell size. `MosaicOverlapMode`: `FirstWins`, `LastWins`, or `Average` where sources overlap. |
 | `ContourGenerator` | Traces lines of constant value through a raster (marching squares), with the standard centre-average disambiguation at saddle cells; `TraceLevels` does many levels in one pass. Returns world-coordinate polylines (vertices on the cell-centre grid, where the values actually sit) — a natural fit for `.erv` export. `Trace(raster, geo, ContourOptions)` adds index (major) contours every *n*-th level (`ContourLine.IsIndex`), Chaikin corner-cutting smoothing that keeps open lines' endpoints and closed rings closed, and a minimum-length filter; `BuildLevels` lists the whole multiples of an interval in a range. |
 | `BezierPatchInterpolator` / `ErsDocument.Subdivide(...)` | Bicubic **Bézier-patch** interpolation of a gridded surface and **subdivision** to a *k*× finer cell size. Each patch spans four neighbouring cell centres; its 16 control points come from the node values and central-difference (Catmull-Rom) derivatives via the Hermite → Bézier conversion, so the surface is C¹-continuous across patches and reproduces a plane exactly. `Tension` blends from Catmull-Rom (1) to exact bilinear (0); `Monotone` limits tangents (Fritsch–Carlson style) and clamps to the patch's corner range so sharp steps don't overshoot; `NoData` chooses a bilinear fallback or strict no-data next to gaps. The image border is extended by point reflection. `ErsDocument.Subdivide` works on every band (loaded or streamed), for the whole dataset or a cell window, keeping extent/origin/rotation and dividing the cell size by *k*. |
+| `ZonalStatistics` / `Measurement` | Statistics of the cells whose centre lies inside a polygon (scanline, works under rotation); polyline length, polygon perimeter/area, and terrain-following surface length. `RasterProfiler.SamplePolylineWorld` samples a multi-vertex path with a pluggable interpolator (bilinear or Bézier). |
 | `StreamNetwork` | Vector stream network from D8 flow direction + accumulation: cells at or above a threshold are chained downstream into segments that break at confluences, each with its **Strahler order** and outlet accumulation. |
 
 ### Large datasets — streaming instead of loading everything
@@ -113,6 +114,15 @@ var made = ErvDocument.Create(projection: "BMG:EOV", datum: "EPSG:6237");
 made.Objects.Add(new VectorPoint { Attribute = "peak", X = 650000, Y = 240000, R = 255 });
 made.Save("peaks.erv"); // Extents computed automatically
 ```
+
+### GeoJSON, CSV and projects
+
+`GeoJsonFormat` reads and writes FeatureCollections (points, lines, polygons — inner rings become
+separate polygons, since the ER Mapper format has no holes; boxes/ovals are written as polygons).
+`CsvPointFormat` reads point lists with separator, header, column-name and decimal-comma
+detection. `RasterField.Projects.ProjectDocument` is the `.rfproj` model the app saves: layers
+with display settings and recipes, the view and bookmarks, with paths stored relative to the
+project file. None of them reproject coordinates.
 
 ### Colourisation — `RasterField.Rendering`
 
@@ -163,39 +173,52 @@ made.Save("new.ers");
   whatever raster is loaded (page-relative map-composition objects are skipped —
   this is a data viewer, not a print-layout renderer). Needs at least one raster
   layer loaded first, to give the view a coordinate frame.
-* **Derived layers (mini-GIS workflow)** — every analysis result (Bézier subdivision,
-  contours, stream network, slope/aspect/hillshade/curvature, flow direction/accumulation,
-  viewshed, band math, clip) becomes a **new layer in memory** on top of the stack instead of
-  forcing a save dialog. Its card is marked `↳` (derived) and `●` (not saved yet), its tooltip
-  says what it was made from and with which parameters, and a `⤓` button (or *Layer ▸ Save
-  active layer…*) writes it as `.ers` + data or `.erv`. Raster cards also carry an **opacity**
-  slider, so a hillshade or a derived surface can be blended over another layer.
+* **Mini-GIS layout** — three columns: *Layers* and *Analysis* (Identify / Profile / Measure &
+  zone tabs) on the left, the map in the middle, the active layer's *Properties* (band, palette,
+  stretch with an **interactive histogram** — drag its two handles —, gamma, opacity, **blend
+  mode**, derivation, metadata, full ERS header) and the legend on the right. `F9` / `F10` / `F11`
+  toggle the side panels / map only. **Command palette** (`Ctrl+K`) searches every menu command,
+  accent-insensitively. Hungarian and English UI (*View ▸ Language*).
+* **Derived layers with recipes** — every analysis result (Bézier subdivision, contours, stream
+  network, slope/aspect/hillshade/curvature, flow direction/accumulation, band math, viewshed,
+  clip, mosaic) becomes a **new layer in memory**, marked `↳` (derived) and `●` (not saved yet);
+  its tooltip says what it was made from. Layers made by a recipe can be **recomputed with new
+  parameters** in place (*Parameters…* in the properties panel, `↻` on the card, or the card's `⋮`
+  menu). `⤓` saves a layer as `.ers` + data or `.erv`.
+* **Blend modes & opacity** — Normal, Multiply (hillshade over a DEM), Screen, Overlay, Darken,
+  Lighten, Soft light, plus an opacity slider per raster layer.
+* **Projects** (*File ▸ New / Open / Save project*, `Ctrl+S`) — a `.rfproj` JSON file with the layer
+  stack, display settings, blend modes, view and bookmarks, paths relative to the project;
+  unsaved derived layers are stored as **recipes** and recomputed on open.
+* **Undo / redo** (`Ctrl+Z` / `Ctrl+Y`) for layer add/remove/reorder/visibility, display and style
+  changes and recomputes; slider drags coalesce into one step. Closing, *New project* and *Open
+  project* warn about layers that exist only in memory.
+* **Bookmarks & navigation** — `Ctrl+Shift+D` adds a bookmark, `Ctrl+1…9` jumps to one;
+  *View ▸ Go to coordinate…*.
+* **Vector formats** — `.erv`, **GeoJSON** and **CSV points** (separator, header and decimal-comma
+  detection) can be added as layers (dialog, drag-and-drop, command line) and exported from a
+  vector card's `⋮` menu. Vector layers can be the **first layer**: an invisible frame provides the
+  coordinate system until a raster arrives.
+* **Path tools** — **Profile** (`P`): a multi-point path with a live chart in the Analysis panel
+  (every visible raster layer plus the Bézier-interpolated curve), a larger window and CSV export;
+  or along a vector line (card menu). **Measure** (`M`): length, terrain-following surface length,
+  perimeter and area. **Zone** (`Z`): zonal statistics of every visible raster inside a drawn
+  polygon; *Raster ▸ Zonal statistics by polygon layer…* does it per polygon of a vector layer,
+  with CSV export. Click adds a point, drag moves it, double-click / Enter finishes, Backspace
+  removes the last point.
 * **Bézier-patch subdivision** (*Interpolation ▸ Bézier-patch subdivision…*, `Ctrl+B`) —
-  pick ×2/×3/×4/×8 (or a custom factor), whole layer or just the current view, tension,
-  monotone (no overshoot) and no-data behaviour; the dialog shows the resulting cell size,
-  dimensions and memory estimate, and a live side-by-side preview (original vs. Bézier) of
-  the view's centre in the layer's own colours. The result keeps the source layer's palette
-  and stretch.
-* **Bézier display smoothing** (*View ▸ Magnification ▸ Bézier patch*, or `B`) — besides
-  nearest (crisp cells) and bilinear, magnified cells of the active layer can be drawn as a
-  smooth Bézier surface computed for the visible window only (display only; the data is not
-  changed). Settings under *Interpolation ▸ Bézier display settings…*.
-* **Contours as a layer** (*Vector ▸ Generate contours…*) — min/max/interval (a “nice”
-  interval is pre-filled), index contours every *n*-th level drawn thicker and **labelled
-  along the line**, and under *Advanced* the source surface (original grid or a Bézier ×2/×4
-  surface for stair-free lines on coarse grids), Chaikin smoothing and a minimum line length.
-* **Stream network** (*Vector ▸ Stream network…*) — D8 flow direction + accumulation +
-  threshold → a vector layer whose line widths grow with Strahler order.
-* **Identify** (*Tools ▸ Identify*, `I`) — click the map to list, for every visible layer,
-  the cell value (all bands), the bilinear and the Bézier-interpolated value, and for vector
-  layers the nearest object's attribute.
-* **Statistics & histogram** (*Raster ▸ Statistics & histogram…*) — min/max/mean/σ, valid and
-  no-data counts (and how many gaps lie inside the data footprint), lineage, and a log-scale
-  histogram drawn in the layer's palette.
-* **Menus & shortcuts** — the menu is organised GIS-style (*File · View · Layer · Raster ·
-  Interpolation · Vector · Terrain · Tools · Palette · Help*) from one shared model that also
-  drives the macOS system menu bar. Single-key tools: `I` identify, `P` profile, `C` clip,
-  `G` cell grid, `B` Bézier display smoothing, `Tab` (on the map) next raster layer.
+  ×2/×3/×4/×8 or custom, whole layer or current view, tension, monotone (no overshoot) and
+  no-data behaviour; resulting size and memory estimate and a side-by-side preview (original vs.
+  Bézier). The result keeps the source layer's palette and stretch.
+* **Bézier display smoothing** (*View ▸ Magnification ▸ Bézier patch*, or `B`) — magnified cells of
+  the active layer drawn as a smooth Bézier surface computed for the visible window only.
+* **Contours as a layer** (*Vector ▸ Generate contours…*) — index contours drawn thicker and
+  **labelled along the line**; source surface (original grid or a Bézier ×2/×4 surface),
+  Chaikin smoothing and a minimum line length under *Advanced*.
+* **Stream network** (*Vector ▸ Stream network…*) — line widths grow with Strahler order.
+* **Identify** (`I`) — click the map: every visible layer's value (all bands, bilinear and
+  Bézier-interpolated), and the nearest vector object, in the Analysis panel.
+* **Statistics & histogram** (*Raster ▸ Statistics & histogram…*).
 * **Per-layer display settings** — select a raster layer in the Layers panel,
   then use the right-side panel to change that selected file's palette, stretch,
   gamma, band and RGB-composite settings. Every raster retains its own settings
@@ -274,10 +297,6 @@ made.Save("new.ers");
   `Escape` to clear it). *Raster ▸ Clip by extent (E/N)…* offers the same result
   from typed numeric bounds instead of dragging. Either way it writes a
   brand-new, correctly re‑anchored dataset as a derived layer (save it with its card's `⤓`).
-* **Profile tool** (*Tools ▸ Profile tool*, `P`) — drag a line across the raster (either
-  end stays adjustable, `Escape` clears it), then **Show profile…** opens a window
-  with a hand-drawn distance-vs-value chart (bilinearly sampled, gaps shown as
-  breaks in the line) and an **Export CSV…** button.
 * **Terrain** menu — **Slope**, **Aspect**, **Hillshade**, **Curvature** (General/Profile/Plan)
   from the loaded band, each added as a new derived layer (in memory until saved); **Flow
   direction** and **Flow accumulation** (D8 hydrology); **Viewshed** (pick an observer cell,

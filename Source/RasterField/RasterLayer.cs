@@ -21,8 +21,20 @@ namespace RasterField
             Name = name;
         }
 
-        /// <summary>The dataset this layer shows.</summary>
-        public ErsDocument Document { get; }
+        /// <summary>The dataset this layer shows (replaced in place when a derived layer is recomputed).</summary>
+        public ErsDocument Document { get; internal set; }
+
+        /// <summary>How this layer is composited onto the layers below it.</summary>
+        public LayerBlendMode BlendMode { get; internal set; }
+
+        /// <summary>How a derived layer can be recomputed (operation, source layer, parameters); null for a file layer.</summary>
+        public LayerRecipe? Recipe { get; internal set; }
+
+        /// <summary>
+        /// An invisible stand-in that only provides a coordinate frame when the view holds vector
+        /// layers but no raster; never listed in the layer panel, removed as soon as a real raster arrives.
+        /// </summary>
+        public bool IsFrame { get; internal set; }
 
         /// <summary>Display name in the layer list (defaults to the file name).</summary>
         public string Name { get; set; }

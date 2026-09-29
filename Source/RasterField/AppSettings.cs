@@ -35,6 +35,16 @@ namespace RasterField
         /// <summary>The user's theme preference; "System" (the default) follows the OS light/dark setting live.</summary>
         public ThemeMode Theme { get; set; } = ThemeMode.System;
 
+        /// <summary>UI language: <c>auto</c> (follow the OS), <c>en</c> or <c>hu</c>.</summary>
+        public string Language { get; set; } = "auto";
+
+        /// <summary>Left / right dock widths (0 = collapsed).</summary>
+        public double LeftDockWidth { get; set; } = 290;
+        public double RightDockWidth { get; set; } = 300;
+
+        /// <summary>The last project file opened or saved.</summary>
+        public string? LastProjectPath { get; set; }
+
         /// <summary>Path of the settings file, creating the containing folder if needed.</summary>
         public static string SettingsPath()
         {

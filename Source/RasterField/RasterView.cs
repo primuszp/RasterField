@@ -69,12 +69,14 @@ namespace RasterField
         private Point _dragStartScreen;
         private double _dragStartX0, _dragStartY0, _dragStartX1, _dragStartY1;
 
-        /// <summary>Which endpoint of the profile line a drag is currently manipulating.</summary>
-        private enum LineDrag { None, Create, Start, End }
-
-        private LineDrag _lineDrag = LineDrag.None;
-        private bool _hasLine;
-        private double _lineX0, _lineY0, _lineX1, _lineY1; // profile line, in cell (raster pixel) coordinates
+        // Path tool (profile / measure / zone): vertices in WORLD coordinates, so the path survives
+        // switching the active layer (whose cell space differs).
+        private PathTool _pathTool;
+        private readonly List<(double X, double Y)> _path = new List<(double X, double Y)>();
+        private bool _pathFinished;
+        private int _pathDragIndex = -1;
+        private bool _pathClickPending;
+        private Point _pathPressScreen;
 
         private const double MinScale = 1.0 / 4096.0;
         private const double MaxScale = 4096.0;
@@ -95,7 +97,12 @@ namespace RasterField
             base.OnPropertyChanged(change);
             if (change.Property == BoundsProperty)
             {
-                if (_needsFit) ZoomToFit();
+                if (_pendingView is { } pv && Bounds.Width > 0)
+                {
+                    _pendingView = null;
+                    SetViewState(pv.X, pv.Y, pv.Wpp);
+                }
+                else if (_needsFit) ZoomToFit();
                 else RefreshStreamingWindow();
             }
         }
@@ -137,11 +144,14 @@ namespace RasterField
         /// </summary>
         public event EventHandler? SelectionChanged;
 
-        /// <summary>
-        /// Raised whenever the profile line changes — while it is being drawn, an endpoint is
-        /// dragged, or it is cleared. Read <see cref="CurrentLine"/> for the current value.
-        /// </summary>
-        public event EventHandler? LineChanged;
+        /// <summary>Raised whenever the path tool's vertices change (added, moved, removed, cleared).</summary>
+        public event EventHandler? PathChanged;
+
+        /// <summary>Raised when the path is finished (double-click, right-click or Enter).</summary>
+        public event EventHandler? PathFinished;
+
+        /// <summary>Raised when the undo/redo history changes.</summary>
+        public event EventHandler? HistoryChanged;
 
         /// <summary>
         /// Raised on a left click while <see cref="IdentifyMode"/> is on, with the clicked world
@@ -187,6 +197,15 @@ namespace RasterField
         /// <summary>Adds <paramref name="document"/> as a brand-new layer on top of the stack, and makes it the active one.</summary>
         public RasterLayer AddLayer(ErsDocument document, string name, Palette? palette = null)
         {
+            RecordUndo("Add layer");
+            _undoSuppress++;
+            try { return AddLayerCore(document, name, palette); }
+            finally { _undoSuppress--; }
+        }
+
+        private RasterLayer AddLayerCore(ErsDocument document, string name, Palette? palette)
+        {
+            RasterLayer? frame = _layers.FirstOrDefault(l => l.IsFrame);
             var previousActive = ActiveLayer; // null when this is the very first layer
 
             var layer = CreateLayer(document, name);
@@ -201,6 +220,14 @@ namespace RasterField
             if (previousActive == null) { _needsFit = true; ZoomToFit(); }
             else RebaseViewport(previousActive, layer);
 
+            // A real raster now provides the coordinate frame: drop the vector-only stand-in.
+            if (frame != null)
+            {
+                _layers.Remove(frame);
+                frame.Dispose();
+                _activeLayerIndex = _layers.IndexOf(layer);
+            }
+
             RefreshStreamingWindow();
             InvalidateVisual();
             RasterLoaded?.Invoke(this, EventArgs.Empty);
@@ -212,6 +239,7 @@ namespace RasterField
         public void RemoveLayer(int index)
         {
             if ((uint)index >= (uint)_layers.Count) return;
+            if (!_layers[index].IsFrame) RecordUndo("Remove layer");
 
             var layer = _layers[index];
             _layers.RemoveAt(index);
@@ -224,6 +252,7 @@ namespace RasterField
                 if (index < _activeLayerIndex) _activeLayerIndex--;
                 _activeLayerIndex = Math.Clamp(_activeLayerIndex, 0, _layers.Count - 1);
             }
+            EnsureFrame(layer.IsFrame ? null : layer);
 
             InvalidateVisual();
             RasterLoaded?.Invoke(this, EventArgs.Empty);
@@ -257,7 +286,6 @@ namespace RasterField
             // projecting it (rarely worth the complexity for a still-being-drawn selection),
             // simply clear it — consistent with how switching datasets already behaved.
             _hasSelection = false; _selDrag = SelDrag.None;
-            _hasLine = false; _lineDrag = LineDrag.None;
             oldActive?.DisposeSmooth();
 
             RefreshStreamingWindow();
@@ -316,6 +344,7 @@ namespace RasterField
             int newIndex = index + delta;
             if (index < 0 || (uint)newIndex >= (uint)_drawOrder.Count) return;
 
+            RecordUndo("Reorder layers");
             (_drawOrder[index], _drawOrder[newIndex]) = (_drawOrder[newIndex], _drawOrder[index]);
 
             InvalidateVisual();
@@ -329,6 +358,7 @@ namespace RasterField
             var layer = _layers[index];
             if (layer.IsVisible == visible) return;
 
+            RecordUndo("Layer visibility");
             layer.IsVisible = visible;
             if (visible) RefreshStreamingWindow(); // a hidden streaming layer's window goes stale while skipped
             InvalidateVisual();
@@ -367,9 +397,11 @@ namespace RasterField
         public VectorLayer AddVectorLayer(ErvDocument document, string name)
         {
             ArgumentNullException.ThrowIfNull(document);
+            RecordUndo("Add vector layer");
             var layer = new VectorLayer(document, name);
             _vectorLayers.Add(layer);
             _drawOrder.Add(layer);
+            EnsureFrame(null);
             InvalidateVisual();
             LayersChanged?.Invoke(this, EventArgs.Empty);
             return layer;
@@ -380,8 +412,10 @@ namespace RasterField
         {
             if ((uint)index >= (uint)_vectorLayers.Count) return;
             var layer = _vectorLayers[index];
+            RecordUndo("Remove vector layer");
             _vectorLayers.RemoveAt(index);
             _drawOrder.Remove(layer);
+            EnsureFrame(null);
             InvalidateVisual();
             LayersChanged?.Invoke(this, EventArgs.Empty);
         }
@@ -400,6 +434,7 @@ namespace RasterField
             if ((uint)index >= (uint)_vectorLayers.Count) return;
             var layer = _vectorLayers[index];
             if (layer.IsVisible == visible) return;
+            RecordUndo("Layer visibility");
             layer.IsVisible = visible;
             InvalidateVisual();
             LayersChanged?.Invoke(this, EventArgs.Empty);
@@ -415,7 +450,8 @@ namespace RasterField
         /// <summary>Sets the colour every object in the vector layer at <paramref name="index"/> is drawn with.</summary>
         public void SetVectorLayerColor(int index, Color color)
         {
-            if ((uint)index >= (uint)_vectorLayers.Count) return;
+            if ((uint)index >= (uint)_vectorLayers.Count || _vectorLayers[index].Color == color) return;
+            RecordUndo("Vector colour");
             _vectorLayers[index].Color = color;
             InvalidateVisual();
         }
@@ -431,6 +467,7 @@ namespace RasterField
         public void SetVectorLayerLineWidth(int index, double width)
         {
             if ((uint)index >= (uint)_vectorLayers.Count || !(width > 0)) return;
+            RecordUndo("Line width", "width:" + index);
             _vectorLayers[index].LineWidth = width;
             InvalidateVisual();
         }
@@ -448,6 +485,7 @@ namespace RasterField
             if ((uint)index >= (uint)_layers.Count || palette == null) return;
             var layer = _layers[index];
             if (layer.Colorizer == null) return;
+            RecordUndo("Palette");
             layer.Colorizer.Palette = palette;
             RebuildLayerBitmap(layer);
             if (index == _activeLayerIndex) LayersChanged?.Invoke(this, EventArgs.Empty);
@@ -578,6 +616,7 @@ namespace RasterField
         {
             var layer = ActiveLayer;
             if (layer == null || index == layer.ActiveBand || index < 0 || index >= Math.Max(1, layer.BandCount)) return;
+            RecordUndo("Band");
             layer.ActiveBand = index;
 
             Palette palette = layer.Colorizer?.Palette ?? BuiltInPalettes.Elevation;
@@ -619,6 +658,7 @@ namespace RasterField
                 if (layer == null) return;
                 bool v = value && layer.CanShowRgbComposite;
                 if (layer.ShowRgbComposite == v) return;
+                RecordUndo("RGB composite");
                 layer.ShowRgbComposite = v;
 
                 if (layer.Source != null)
@@ -691,39 +731,89 @@ namespace RasterField
         private void RaiseSelectionChanged() => SelectionChanged?.Invoke(this, EventArgs.Empty);
 
         /// <summary>
-        /// When <see langword="true"/>, left-drag draws a two-point profile line instead of
-        /// panning (mirrors <see cref="SelectionMode"/>). Once drawn, drag either endpoint to
-        /// adjust it, or click elsewhere to start a new line; <c>Escape</c> clears it. The line
-        /// lives in the active layer's cell space.
+        /// The active path tool. While one is on, a click adds a vertex (in world coordinates), a
+        /// drag on a vertex moves it, a drag elsewhere still pans; double-click, right-click or
+        /// <c>Enter</c> finishes the path, <c>Backspace</c> removes the last vertex, <c>Escape</c> clears it.
         /// </summary>
-        public bool LineToolMode
+        public PathTool PathToolMode
         {
-            get => _lineToolModeField;
+            get => _pathTool;
             set
             {
-                _lineToolModeField = value;
-                if (!value) { _hasLine = false; _lineDrag = LineDrag.None; }
-                Cursor = value ? new Cursor(StandardCursorType.Cross) : Cursor.Default;
-                RaiseLineChanged();
-                InvalidateVisual();
+                if (_pathTool == value) return;
+                _pathTool = value;
+                _path.Clear();
+                _pathFinished = false;
+                _pathDragIndex = -1;
+                Cursor = value != PathTool.None ? new Cursor(StandardCursorType.Cross) : Cursor.Default;
+                RaisePathChanged();
             }
         }
-        private bool _lineToolModeField;
 
-        /// <summary>The current profile line, in the active layer's cell coordinates, or <see langword="null"/> when there is none.</summary>
-        public (double X0, double Y0, double X1, double Y1)? CurrentLine =>
-            _hasLine ? (_lineX0, _lineY0, _lineX1, _lineY1) : null;
+        /// <summary>The path's vertices, in world coordinates.</summary>
+        public IReadOnlyList<(double X, double Y)> CurrentPath => _path;
 
-        /// <summary>Clears the profile line without changing <see cref="LineToolMode"/>.</summary>
-        public void ClearLine()
+        /// <summary><see langword="true"/> once the user finished the path (the next click starts a new one).</summary>
+        public bool IsPathFinished => _pathFinished;
+
+        /// <summary>Clears the path, keeping the tool on.</summary>
+        public void ClearPath()
         {
-            _hasLine = false;
-            _lineDrag = LineDrag.None;
-            RaiseLineChanged();
-            InvalidateVisual();
+            _path.Clear();
+            _pathFinished = false;
+            RaisePathChanged();
         }
 
-        private void RaiseLineChanged() => LineChanged?.Invoke(this, EventArgs.Empty);
+        /// <summary>Removes the last vertex.</summary>
+        public void RemoveLastPathVertex()
+        {
+            if (_path.Count == 0) return;
+            _path.RemoveAt(_path.Count - 1);
+            _pathFinished = false;
+            RaisePathChanged();
+        }
+
+        /// <summary>Finishes the path (raises <see cref="PathFinished"/>).</summary>
+        public void FinishPath()
+        {
+            if (_path.Count < 2 || _pathFinished) return;
+            _pathFinished = true;
+            InvalidateVisual();
+            PathFinished?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Replaces the path (e.g. to profile along an existing vector line).</summary>
+        public void SetPath(IEnumerable<(double X, double Y)> vertices, bool finished = true)
+        {
+            _path.Clear();
+            _path.AddRange(vertices);
+            _pathFinished = finished && _path.Count >= 2;
+            RaisePathChanged();
+            if (_pathFinished) PathFinished?.Invoke(this, EventArgs.Empty);
+        }
+
+        private void RaisePathChanged()
+        {
+            InvalidateVisual();
+            PathChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        private (double X, double Y)? ScreenToWorld(Point screen)
+        {
+            var layer = ActiveLayer;
+            if (layer == null) return null;
+            Point c = ScreenToCell(screen);
+            return layer.Document.GeoReference.PixelToWorld(c.X, c.Y);
+        }
+
+        private int HitTestPathVertex(Point screen)
+        {
+            var active = ActiveLayer;
+            if (active == null || !active.Document.GeoReference.IsInvertible) return -1;
+            for (int i = _path.Count - 1; i >= 0; i--)
+                if (Distance(WorldToScreen(active, _path[i].X, _path[i].Y), screen) <= 8) return i;
+            return -1;
+        }
 
         /// <summary>
         /// World units per screen pixel at the current zoom (the "ground sample distance" on
@@ -800,6 +890,7 @@ namespace RasterField
         public void SetLayerOpacity(RasterLayer layer, double opacity)
         {
             ArgumentNullException.ThrowIfNull(layer);
+            RecordUndo("Opacity", "opacity:" + _layers.IndexOf(layer));
             layer.Opacity = Math.Clamp(opacity, 0.0, 1.0);
             InvalidateVisual();
         }
@@ -856,6 +947,357 @@ namespace RasterField
             int x1 = (int)Math.Min(layer.DatasetWidth, Math.Ceiling(Math.Max(a.X, b.X)));
             int y1 = (int)Math.Min(layer.DatasetHeight, Math.Ceiling(Math.Max(a.Y, b.Y)));
             return x1 > x0 && y1 > y0 ? new PixelRect(x0, y0, x1 - x0, y1 - y0) : null;
+        }
+
+        // ---- undo / redo ---------------------------------------------------------------
+        //
+        // Snapshot-based: before every user-visible change the view records the layer stack and
+        // each layer's display state (and document reference). Undo restores that snapshot; a
+        // removed layer is kept alive (only its bitmap/streaming reader are released) so it can
+        // come back. Continuous controls (sliders) coalesce into one step.
+
+        private sealed class RasterState
+        {
+            public string Name = ""; public bool Visible; public double Opacity; public LayerBlendMode Blend;
+            public ErsDocument Document = null!; public int Band; public bool Rgb;
+            public Palette? Palette; public double Min, Max, Gamma; public PaletteRenderMode Mode; public int Classes;
+            public bool Unsaved; public string? Lineage; public LayerRecipe? Recipe;
+        }
+
+        private sealed class VectorState
+        {
+            public string Name = ""; public bool Visible; public Color Color; public double Width;
+            public ErvDocument Document = null!; public IReadOnlyList<double>? Widths; public IReadOnlyList<string?>? Labels;
+            public bool Unsaved; public string? Lineage; public LayerRecipe? Recipe;
+        }
+
+        private sealed class ViewSnapshot
+        {
+            public string Label = "";
+            public List<RasterLayer> Layers = new();
+            public List<VectorLayer> Vectors = new();
+            public List<object> DrawOrder = new();
+            public RasterLayer? Active;
+            public Dictionary<RasterLayer, RasterState> Rasters = new();
+            public Dictionary<VectorLayer, VectorState> VectorStates = new();
+        }
+
+        private const int MaxUndo = 100;
+        private readonly List<ViewSnapshot> _undo = new();
+        private readonly List<ViewSnapshot> _redo = new();
+        private int _undoSuppress;
+        private string? _lastCoalesceKey;
+        private DateTime _lastRecordTime;
+
+        /// <summary>Whether there is a step to undo.</summary>
+        public bool CanUndo => _undo.Count > 0;
+
+        /// <summary>Whether there is a step to redo.</summary>
+        public bool CanRedo => _redo.Count > 0;
+
+        /// <summary>Label of the next undo step (e.g. "Palette"), or null.</summary>
+        public string? UndoLabel => _undo.Count > 0 ? _undo[^1].Label : null;
+
+        /// <summary>Label of the next redo step, or null.</summary>
+        public string? RedoLabel => _redo.Count > 0 ? _redo[^1].Label : null;
+
+        /// <summary>
+        /// Records the current state as an undo step labelled <paramref name="label"/>. Calls with the
+        /// same <paramref name="coalesceKey"/> within a second merge into one step (slider drags).
+        /// </summary>
+        public void RecordUndo(string label, string? coalesceKey = null)
+        {
+            if (_undoSuppress > 0) return;
+            var now = DateTime.UtcNow;
+            if (coalesceKey != null && coalesceKey == _lastCoalesceKey && (now - _lastRecordTime).TotalSeconds < 1.0 && _undo.Count > 0)
+            {
+                _lastRecordTime = now;
+                return;
+            }
+            _lastCoalesceKey = coalesceKey;
+            _lastRecordTime = now;
+            _undo.Add(Capture(label));
+            if (_undo.Count > MaxUndo) _undo.RemoveAt(0);
+            _redo.Clear();
+            HistoryChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Forgets all undo/redo steps (e.g. after opening a project).</summary>
+        public void ClearHistory()
+        {
+            _undo.Clear();
+            _redo.Clear();
+            _lastCoalesceKey = null;
+            HistoryChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Undoes the last recorded step.</summary>
+        public void Undo()
+        {
+            if (_undo.Count == 0) return;
+            var target = _undo[^1];
+            _undo.RemoveAt(_undo.Count - 1);
+            _redo.Add(Capture(target.Label));
+            Restore(target);
+        }
+
+        /// <summary>Redoes the last undone step.</summary>
+        public void Redo()
+        {
+            if (_redo.Count == 0) return;
+            var target = _redo[^1];
+            _redo.RemoveAt(_redo.Count - 1);
+            _undo.Add(Capture(target.Label));
+            Restore(target);
+        }
+
+        private ViewSnapshot Capture(string label)
+        {
+            var snap = new ViewSnapshot
+            {
+                Label = label,
+                Layers = _layers.ToList(),
+                Vectors = _vectorLayers.ToList(),
+                DrawOrder = _drawOrder.ToList(),
+                Active = ActiveLayer,
+            };
+            foreach (var l in _layers)
+            {
+                var c = l.Colorizer;
+                snap.Rasters[l] = new RasterState
+                {
+                    Name = l.Name, Visible = l.IsVisible, Opacity = l.Opacity, Blend = l.BlendMode, Document = l.Document,
+                    Band = l.ActiveBand, Rgb = l.ShowRgbComposite,
+                    Palette = c?.Palette, Min = c?.Minimum ?? 0, Max = c?.Maximum ?? 1, Gamma = c?.Gamma ?? 1,
+                    Mode = c?.Mode ?? PaletteRenderMode.Continuous, Classes = c?.ClassCount ?? 8,
+                    Unsaved = l.IsUnsaved, Lineage = l.Lineage, Recipe = l.Recipe,
+                };
+            }
+            foreach (var v in _vectorLayers)
+            {
+                snap.VectorStates[v] = new VectorState
+                {
+                    Name = v.Name, Visible = v.IsVisible, Color = v.Color, Width = v.LineWidth, Document = v.Document,
+                    Widths = v.WidthFactors, Labels = v.Labels, Unsaved = v.IsUnsaved, Lineage = v.Lineage, Recipe = v.Recipe,
+                };
+            }
+            return snap;
+        }
+
+        private void Restore(ViewSnapshot snap)
+        {
+            _undoSuppress++;
+            try
+            {
+                var previousActive = ActiveLayer;
+                foreach (var l in _layers)
+                    if (!snap.Layers.Contains(l)) l.Dispose(); // releases bitmap/reader only; the document stays for redo
+
+                _layers.Clear(); _layers.AddRange(snap.Layers);
+                _vectorLayers.Clear(); _vectorLayers.AddRange(snap.Vectors);
+                _drawOrder.Clear(); _drawOrder.AddRange(snap.DrawOrder);
+
+                foreach (var (layer, st) in snap.Rasters)
+                {
+                    bool docChanged = !ReferenceEquals(layer.Document, st.Document);
+                    if (docChanged) { layer.DisposeSource(); layer.Document = st.Document; }
+                    layer.Name = st.Name; layer.IsVisible = st.Visible; layer.Opacity = st.Opacity; layer.BlendMode = st.Blend;
+                    layer.IsUnsaved = st.Unsaved; layer.Lineage = st.Lineage; layer.Recipe = st.Recipe;
+                    bool bandChanged = layer.ActiveBand != st.Band || layer.ShowRgbComposite != st.Rgb;
+                    layer.ActiveBand = st.Band; layer.ShowRgbComposite = st.Rgb;
+
+                    if (layer.Source == null && layer.Document.Bands.Count == 0 && layer.Document.IsLargeDataset)
+                        layer.Source = layer.Document.OpenSource();
+                    if (layer.Source != null) { if (bandChanged || docChanged || layer.Bitmap == null) { layer.WindowRaster = null; layer.WindowRasterG = null; layer.WindowRasterB = null; } }
+                    else if (layer.Document.Bands.Count > 0) layer.Raster = layer.Document.Bands[Math.Min(st.Band, layer.Document.Bands.Count - 1)];
+
+                    if (st.Palette != null)
+                    {
+                        layer.Colorizer ??= new RasterColorizer(st.Palette, st.Min, st.Max) { NoDataColor = ColorRgba.Transparent };
+                        layer.Colorizer.Palette = st.Palette;
+                        layer.Colorizer.Minimum = st.Min; layer.Colorizer.Maximum = st.Max; layer.Colorizer.Gamma = st.Gamma;
+                        layer.Colorizer.Mode = st.Mode; layer.Colorizer.ClassCount = st.Classes;
+                    }
+                    if (layer.Source == null) RebuildLayerBitmap(layer);
+                }
+                foreach (var (v, st) in snap.VectorStates)
+                {
+                    if (!ReferenceEquals(v.Document, st.Document)) v.ReplaceDocument(st.Document, st.Widths, st.Labels);
+                    else v.SetObjectStyles(st.Widths, st.Labels);
+                    v.Name = st.Name; v.IsVisible = st.Visible; v.Color = st.Color; v.LineWidth = st.Width;
+                    v.IsUnsaved = st.Unsaved; v.Lineage = st.Lineage; v.Recipe = st.Recipe;
+                }
+
+                _activeLayerIndex = snap.Active != null ? _layers.IndexOf(snap.Active) : (_layers.Count > 0 ? 0 : -1);
+                var active = ActiveLayer;
+                if (previousActive != null && active != null && !ReferenceEquals(previousActive, active) && _layers.Contains(previousActive))
+                    RebaseViewport(previousActive, active);
+                else if (previousActive == null || !_layers.Contains(previousActive)) { _needsFit = true; ZoomToFit(); }
+                RefreshStreamingWindow();
+            }
+            finally { _undoSuppress--; }
+
+            _lastCoalesceKey = null;
+            InvalidateVisual();
+            RasterLoaded?.Invoke(this, EventArgs.Empty);
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+            HistoryChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        // ---- vector-only coordinate frame -------------------------------------------------
+
+        /// <summary><see langword="true"/> when at least one real (non-frame) raster layer is loaded.</summary>
+        public bool HasRasterLayers => _layers.Any(l => !l.IsFrame);
+
+        /// <summary>
+        /// Keeps the invisible frame layer in sync: created when vectors are shown without any real
+        /// raster (so vector-only viewing works), removed when a raster exists or no vectors are left.
+        /// </summary>
+        private void EnsureFrame(RasterLayer? justRemoved)
+        {
+            var frame = _layers.FirstOrDefault(l => l.IsFrame);
+            bool needFrame = !HasRasterLayers && _vectorLayers.Count > 0;
+            if (needFrame && frame == null)
+            {
+                var created = CreateFrameLayer(justRemoved);
+                if (created == null) return;
+                _layers.Add(created);
+                _activeLayerIndex = _layers.Count - 1;
+                if (justRemoved == null) { _needsFit = true; ZoomToFit(); }
+            }
+            else if (!needFrame && frame != null && !HasRasterLayers)
+            {
+                _layers.Remove(frame);
+                frame.Dispose();
+                _activeLayerIndex = -1;
+            }
+        }
+
+        private RasterLayer? CreateFrameLayer(RasterLayer? previous)
+        {
+            // Extent of all vectors (or keep the last raster's frame, so the view doesn't jump).
+            double minX, minY, maxX, maxY;
+            string? projection = null, datum = null;
+            if (previous != null)
+            {
+                (minX, minY, maxX, maxY) = previous.Document.GeoReference.WorldBounds();
+                projection = previous.Document.Header.CoordinateSpace.Projection;
+                datum = previous.Document.Header.CoordinateSpace.Datum;
+            }
+            else
+            {
+                var extents = _vectorLayers.Select(v => v.Extent()).Where(e => e != null).Select(e => e!.Value).ToList();
+                if (extents.Count == 0) return null;
+                minX = extents.Min(e => e.MinX); minY = extents.Min(e => e.MinY);
+                maxX = extents.Max(e => e.MaxX); maxY = extents.Max(e => e.MaxY);
+                projection = _vectorLayers[0].Document.Header.CoordinateSpace.Projection;
+                datum = _vectorLayers[0].Document.Header.CoordinateSpace.Datum;
+            }
+            double w = Math.Max(maxX - minX, 1e-6), h = Math.Max(maxY - minY, 1e-6);
+            double margin = Math.Max(w, h) * 0.05;
+            minX -= margin; maxX += margin; minY -= margin; maxY += margin;
+            double cell = Math.Max(maxX - minX, maxY - minY) / 1000.0;
+            int cols = Math.Max(1, (int)Math.Ceiling((maxX - minX) / cell));
+            int rows = Math.Max(1, (int)Math.Ceiling((maxY - minY) / cell));
+            var band = new Raster(cols, rows);
+            Array.Fill(band.Samples, float.NaN);
+            var doc = ErsDocument.Create(band, minX, maxY, cell, cell, projection: projection == "RAW" ? null : projection, datum: datum == "RAW" ? null : datum);
+            var layer = new RasterLayer(doc, "(frame)") { IsFrame = true };
+            layer.Raster = band;
+            layer.Colorizer = new RasterColorizer(BuiltInPalettes.Grayscale, 0, 1) { NoDataColor = ColorRgba.Transparent };
+            RebuildLayerBitmap(layer);
+            return layer;
+        }
+
+        // ---- derived layer recompute / view state --------------------------------------------
+
+        /// <summary>Replaces a raster layer's content in place (a recomputed derived layer), keeping its display settings.</summary>
+        public void ReplaceLayerDocument(RasterLayer layer, ErsDocument document, string? lineage = null, LayerRecipe? recipe = null)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            ArgumentNullException.ThrowIfNull(document);
+            RecordUndo("Recompute layer");
+            layer.DisposeSource();
+            layer.DisposeSmooth();
+            layer.Document = document;
+            if (document.Bands.Count == 0)
+            {
+                if (document.IsLargeDataset) layer.Source = document.OpenSource();
+                else document.LoadRaster();
+            }
+            layer.ActiveBand = Math.Min(layer.ActiveBand, Math.Max(0, layer.BandCount - 1));
+            if (layer.Source == null) layer.Raster = document.Bands[layer.ActiveBand];
+            if (lineage != null) layer.Lineage = lineage;
+            if (recipe != null) layer.Recipe = recipe;
+            layer.IsUnsaved = true;
+            if (layer.Source != null) RefreshStreamingWindow(); else RebuildLayerBitmap(layer);
+            if (ReferenceEquals(layer, ActiveLayer)) RasterLoaded?.Invoke(this, EventArgs.Empty);
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Replaces a vector layer's content in place (a recomputed derived layer).</summary>
+        public void ReplaceVectorDocument(VectorLayer layer, ErvDocument document, IReadOnlyList<double>? widths, IReadOnlyList<string?>? labels,
+            string? lineage = null, LayerRecipe? recipe = null)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            RecordUndo("Recompute layer");
+            layer.ReplaceDocument(document, widths, labels);
+            if (lineage != null) layer.Lineage = lineage;
+            if (recipe != null) layer.Recipe = recipe;
+            layer.IsUnsaved = true;
+            InvalidateVisual();
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>The world coordinate at the centre of the view and the world units per screen pixel.</summary>
+        public (double X, double Y, double WorldPerPixel)? GetViewState()
+        {
+            var layer = ActiveLayer;
+            if (layer == null || Bounds.Width <= 0) return null;
+            Point c = ScreenToCell(new Point(Bounds.Width / 2, Bounds.Height / 2));
+            var (x, y) = layer.Document.GeoReference.PixelToWorld(c.X, c.Y);
+            return (x, y, AverageWorldPerCell(layer.Document.GeoReference) / _scale);
+        }
+
+        /// <summary>Centres the view on a world coordinate at the given scale.</summary>
+        public void SetViewState(double x, double y, double worldPerPixel)
+        {
+            var layer = ActiveLayer;
+            if (layer == null || !(worldPerPixel > 0) || !layer.Document.GeoReference.IsInvertible) return;
+            if (Bounds.Width <= 0) { _pendingView = (x, y, worldPerPixel); return; }
+            _scale = Clamp(AverageWorldPerCell(layer.Document.GeoReference) / worldPerPixel, MinScale, MaxScale);
+            var (col, row) = layer.Document.GeoReference.WorldToPixel(x, y);
+            _offsetX = Bounds.Width / 2 - col * _scale;
+            _offsetY = Bounds.Height / 2 - row * _scale;
+            _needsFit = false;
+            RaiseViewChanged();
+        }
+
+        private (double X, double Y, double Wpp)? _pendingView;
+
+        /// <summary>Fits a world-coordinate rectangle into the view (with a small margin).</summary>
+        public void ZoomToWorld(double minX, double minY, double maxX, double maxY)
+        {
+            double vw = Bounds.Width > 0 ? Bounds.Width : 800, vh = Bounds.Height > 0 ? Bounds.Height : 600;
+            double w = Math.Max(maxX - minX, 1e-9), h = Math.Max(maxY - minY, 1e-9);
+            SetViewState((minX + maxX) / 2, (minY + maxY) / 2, Math.Max(w / vw, h / vh) * 1.06);
+        }
+
+        /// <summary>Removes every layer and forgets the history (a new, empty project).</summary>
+        public void ClearAll()
+        {
+            foreach (var l in _layers) l.Dispose();
+            _layers.Clear();
+            _vectorLayers.Clear();
+            _drawOrder.Clear();
+            _activeLayerIndex = -1;
+            _path.Clear();
+            _hasSelection = false;
+            ClearHistory();
+            _needsFit = true;
+            InvalidateVisual();
+            RasterLoaded?.Invoke(this, EventArgs.Empty);
+            LayersChanged?.Invoke(this, EventArgs.Empty);
         }
 
         // ---- Bézier display overlay -------------------------------------------------
@@ -920,6 +1362,28 @@ namespace RasterField
             InvalidateVisual();
         }
 
+        private static BitmapBlendingMode ToAvalonia(LayerBlendMode mode) => mode switch
+        {
+            LayerBlendMode.Multiply => BitmapBlendingMode.Multiply,
+            LayerBlendMode.Screen => BitmapBlendingMode.Screen,
+            LayerBlendMode.Overlay => BitmapBlendingMode.Overlay,
+            LayerBlendMode.Darken => BitmapBlendingMode.Darken,
+            LayerBlendMode.Lighten => BitmapBlendingMode.Lighten,
+            LayerBlendMode.SoftLight => BitmapBlendingMode.SoftLight,
+            _ => BitmapBlendingMode.SourceOver,
+        };
+
+        /// <summary>Sets how a raster layer is composited onto the layers below it.</summary>
+        public void SetLayerBlendMode(RasterLayer layer, LayerBlendMode mode)
+        {
+            ArgumentNullException.ThrowIfNull(layer);
+            if (layer.BlendMode == mode) return;
+            RecordUndo("Blend mode");
+            layer.BlendMode = mode;
+            InvalidateVisual();
+            LayersChanged?.Invoke(this, EventArgs.Empty);
+        }
+
         /// <summary>Copies a rendered BGRA image into a new Avalonia bitmap.</summary>
         internal static WriteableBitmap ToBitmap(RasterImage image)
         {
@@ -963,6 +1427,7 @@ namespace RasterField
 
         private void SetDocumentCore(ErsDocument document, Palette? palette, string? name)
         {
+            ClearHistory();
             foreach (var l in _layers) l.Dispose();
             _layers.Clear();
             _drawOrder.Clear();
@@ -988,6 +1453,8 @@ namespace RasterField
         {
             var layer = ActiveLayer;
             if (layer?.Colorizer == null || palette == null) return;
+            if (ReferenceEquals(layer.Colorizer.Palette, palette)) return;
+            RecordUndo("Palette");
             layer.Colorizer.Palette = palette;
             RebuildLayerBitmap(layer);
         }
@@ -996,6 +1463,8 @@ namespace RasterField
         {
             var layer = ActiveLayer;
             if (layer?.Colorizer == null || !(max > min)) return;
+            if (layer.Colorizer.Minimum == min && layer.Colorizer.Maximum == max) return;
+            RecordUndo("Stretch", "range");
             layer.Colorizer.Minimum = min;
             layer.Colorizer.Maximum = max;
             RebuildLayerBitmap(layer);
@@ -1019,6 +1488,7 @@ namespace RasterField
         {
             var layer = ActiveLayer;
             if (layer?.Colorizer == null) return;
+            RecordUndo("Gamma", "gamma");
             layer.Colorizer.Gamma = gamma <= 0 ? 1.0 : gamma;
             RebuildLayerBitmap(layer);
         }
@@ -1027,6 +1497,8 @@ namespace RasterField
         {
             var layer = ActiveLayer;
             if (layer?.Colorizer == null) return;
+            if (layer.Colorizer.Mode == mode && layer.Colorizer.ClassCount == Math.Max(2, classCount)) return;
+            RecordUndo("Palette mode");
             layer.Colorizer.Mode = mode;
             layer.Colorizer.ClassCount = Math.Max(2, classCount);
             RebuildLayerBitmap(layer);
@@ -1296,7 +1768,7 @@ namespace RasterField
             var active = ActiveLayer;
             if (active == null || !_layers.Any(l => l.IsVisible && l.Bitmap != null))
             {
-                var text = new FormattedText("No raster loaded — File ▸ Open .ers…",
+                var text = new FormattedText(L.T("Drop .ers / .erv / .geojson / .csv / .rfproj files here, or File ▸ Open…"),
                     System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
                     Typeface.Default, 14, Brushes.Gainsboro);
                 context.DrawText(text, new Point((Bounds.Width - text.Width) / 2, (Bounds.Height - text.Height) / 2));
@@ -1310,6 +1782,7 @@ namespace RasterField
                 {
                     case RasterLayer rasterLayer when rasterLayer.IsVisible && rasterLayer.Bitmap != null && rasterLayer.Opacity > 0:
                         using (context.PushOpacity(rasterLayer.Opacity))
+                        using (context.PushRenderOptions(new RenderOptions { BitmapBlendingMode = ToAvalonia(rasterLayer.BlendMode) }))
                             DrawLayer(context, rasterLayer, active, activeInvertible);
                         break;
                     case VectorLayer vectorLayer when vectorLayer.IsVisible && activeInvertible:
@@ -1324,8 +1797,8 @@ namespace RasterField
             if (_hasSelection)
                 DrawSelection(context);
 
-            if (_hasLine)
-                DrawLine(context);
+            if (_path.Count > 0 && activeInvertible)
+                DrawPath(context, active);
 
             string hintText = $"zoom {_scale:0.###}×  ·  {_layers.Count} layer{(_layers.Count == 1 ? "" : "s")}";
             if (_vectorLayers.Count > 0) hintText += $" + {_vectorLayers.Count} vector";
@@ -1542,7 +2015,7 @@ namespace RasterField
             Point b = WorldToScreen(active, pts[mid].X, pts[mid].Y);
             Point first = WorldToScreen(active, pts[0].X, pts[0].Y), last = WorldToScreen(active, pts[pts.Count - 1].X, pts[pts.Count - 1].Y);
             var ft = new FormattedText(label, System.Globalization.CultureInfo.InvariantCulture,
-                FlowDirection.LeftToRight, new Typeface(Typeface.Default.FontFamily, FontStyle.Normal, FontWeight.SemiBold), 11, brush);
+                FlowDirection.LeftToRight, new Typeface(Typeface.Default.FontFamily, FontStyle.Normal, FontWeight.Bold), 11, brush);
             if (Distance(first, last) < ft.Width * 1.5 && pts.Count < 8) return; // too small on screen
 
             double angle = Math.Atan2(b.Y - a.Y, b.X - a.X);
@@ -1651,35 +2124,49 @@ namespace RasterField
             context.DrawText(text, new Point(lx, ly));
         }
 
-        private void DrawLine(DrawingContext context)
+        private void DrawPath(DrawingContext context, RasterLayer active)
         {
-            Point p0 = new Point(_offsetX + _lineX0 * _scale, _offsetY + _lineY0 * _scale);
-            Point p1 = new Point(_offsetX + _lineX1 * _scale, _offsetY + _lineY1 * _scale);
-
-            var brush = new SolidColorBrush(Color.FromArgb(255, 80, 200, 255));
-            context.DrawLine(new Pen(brush, 2), p0, p1);
-
-            const double hs = 5;
-            var handleOutline = new Pen(Brushes.Black, 1);
-            context.DrawEllipse(brush, handleOutline, p0, hs, hs);
-            context.DrawEllipse(brush, handleOutline, p1, hs, hs);
-
-            string label = $"{Math.Round(Distance(new Point(_lineX0, _lineY0), new Point(_lineX1, _lineY1)), 1)} px";
-            if (Document != null)
+            Color color = _pathTool switch
             {
-                var (wx0, wy0) = Document.GeoReference.PixelToWorld(_lineX0, _lineY0);
-                var (wx1, wy1) = Document.GeoReference.PixelToWorld(_lineX1, _lineY1);
-                double worldDist = Distance(new Point(wx0, wy0), new Point(wx1, wy1));
-                string unit = Document.Header.CoordinateSpace.EffectiveUnits;
-                label = $"{FormatDistance(worldDist)} {unit}";
+                PathTool.Measure => Color.FromRgb(255, 210, 0),
+                PathTool.Zone => Color.FromRgb(255, 90, 200),
+                _ => Color.FromRgb(80, 200, 255),
+            };
+            var brush = new SolidColorBrush(color);
+            var pts = _path.Select(p => WorldToScreen(active, p.X, p.Y)).ToList();
+
+            bool polygon = _pathTool == PathTool.Zone || (_pathTool == PathTool.Measure && _pathFinished);
+            if (pts.Count >= 2)
+            {
+                var geometry = new StreamGeometry();
+                using (var gc = geometry.Open())
+                {
+                    gc.BeginFigure(pts[0], polygon && pts.Count >= 3);
+                    for (int i = 1; i < pts.Count; i++) gc.LineTo(pts[i]);
+                    gc.EndFigure(polygon && pts.Count >= 3);
+                }
+                IBrush? fill = polygon && pts.Count >= 3 ? new SolidColorBrush(color, 0.18) : null;
+                context.DrawGeometry(fill, new Pen(new SolidColorBrush(Colors.Black, 0.6), 4), geometry);
+                context.DrawGeometry(fill, new Pen(brush, 2), geometry);
+                if (_pathTool == PathTool.Measure && !_pathFinished && pts.Count >= 3)
+                    context.DrawLine(new Pen(brush, 1, new DashStyle(new double[] { 4, 3 }, 0)), pts[pts.Count - 1], pts[0]);
             }
 
-            var text = new FormattedText(label, System.Globalization.CultureInfo.InvariantCulture,
-                FlowDirection.LeftToRight, Typeface.Default, 11, Brushes.Black);
-            Point mid = new Point((p0.X + p1.X) / 2, (p0.Y + p1.Y) / 2 - text.Height - 6);
-            context.FillRectangle(new SolidColorBrush(Color.FromArgb(235, 80, 200, 255)),
-                new Rect(mid.X - 2, mid.Y - 1, text.Width + 4, text.Height + 2));
-            context.DrawText(text, mid);
+            var outline = new Pen(Brushes.Black, 1);
+            foreach (var pt in pts) context.DrawEllipse(brush, outline, pt, 4.5, 4.5);
+
+            if (pts.Count >= 2)
+            {
+                string unit = active.Document.Header.CoordinateSpace.EffectiveUnits;
+                string label = FormatDistance(Measurement.Length(_path)) + " " + unit;
+                if (polygon && _path.Count >= 3)
+                    label += "   ·   " + FormatDistance(Measurement.Area(_path)) + " " + unit + "²";
+                var text = new FormattedText(label, System.Globalization.CultureInfo.InvariantCulture,
+                    FlowDirection.LeftToRight, Typeface.Default, 11, Brushes.Black);
+                Point at = new Point(pts[pts.Count - 1].X + 10, pts[pts.Count - 1].Y - text.Height - 6);
+                context.FillRectangle(new SolidColorBrush(color, 0.92), new Rect(at.X - 3, at.Y - 1, text.Width + 6, text.Height + 2), 3);
+                context.DrawText(text, at);
+            }
         }
 
         private SelDrag HitTestHandle(Point screen)
@@ -1782,27 +2269,27 @@ namespace RasterField
                 return;
             }
 
-            if (LineToolMode && p.Properties.IsLeftButtonPressed && Document != null)
+            if (_pathTool != PathTool.None && Document != null)
             {
-                LineDrag hit = _hasLine ? HitTestLineHandle(p.Position) : LineDrag.None;
-
-                if (hit == LineDrag.None)
+                if (p.Properties.IsRightButtonPressed) { FinishPath(); e.Handled = true; return; }
+                if (p.Properties.IsLeftButtonPressed)
                 {
-                    Point c = ScreenToCell(p.Position);
-                    _lineX0 = _lineX1 = Clamp(c.X, 0, DatasetWidth);
-                    _lineY0 = _lineY1 = Clamp(c.Y, 0, DatasetHeight);
-                    _hasLine = true;
-                    _lineDrag = LineDrag.Create;
+                    if (e.ClickCount >= 2) { FinishPath(); e.Handled = true; return; }
+                    int hit = HitTestPathVertex(p.Position);
+                    if (hit >= 0)
+                    {
+                        _pathDragIndex = hit;
+                        e.Pointer.Capture(this);
+                        return;
+                    }
+                    // Might be a click (adds a vertex on release) or the start of a pan.
+                    _pathClickPending = true;
+                    _pathPressScreen = p.Position;
+                    _panning = true;
+                    _panLast = p.Position;
+                    e.Pointer.Capture(this);
+                    return;
                 }
-                else
-                {
-                    _lineDrag = hit;
-                }
-
-                e.Pointer.Capture(this);
-                RaiseLineChanged();
-                InvalidateVisual();
-                return;
             }
 
             if (IdentifyMode && p.Properties.IsLeftButtonPressed && Document != null)
@@ -1841,13 +2328,26 @@ namespace RasterField
                 return;
             }
 
-            if (_lineDrag != LineDrag.None)
+            if (_pathDragIndex >= 0)
             {
-                _lineDrag = LineDrag.None;
+                _pathDragIndex = -1;
                 e.Pointer.Capture(null);
-                NormalizeAndClampLine();
-                RaiseLineChanged();
-                InvalidateVisual();
+                RaisePathChanged();
+                return;
+            }
+
+            if (_pathClickPending)
+            {
+                _pathClickPending = false;
+                _panning = false;
+                e.Pointer.Capture(null);
+                var world = ScreenToWorld(e.GetPosition(this));
+                if (world != null)
+                {
+                    if (_pathFinished) { _path.Clear(); _pathFinished = false; }
+                    _path.Add(world.Value);
+                    RaisePathChanged();
+                }
                 return;
             }
 
@@ -1855,7 +2355,7 @@ namespace RasterField
             {
                 _panning = false;
                 e.Pointer.Capture(null);
-                Cursor = SelectionMode ? new Cursor(StandardCursorType.Cross)
+                Cursor = SelectionMode || _pathTool != PathTool.None ? new Cursor(StandardCursorType.Cross)
                     : IdentifyMode ? new Cursor(StandardCursorType.Help) : Cursor.Default;
             }
         }
@@ -1871,14 +2371,14 @@ namespace RasterField
                 RaiseSelectionChanged();
                 InvalidateVisual();
             }
-            else if (_lineDrag != LineDrag.None)
+            else if (_pathDragIndex >= 0)
             {
-                UpdateLineDrag(pos);
-                RaiseLineChanged();
-                InvalidateVisual();
+                var world = ScreenToWorld(pos);
+                if (world != null && _pathDragIndex < _path.Count) { _path[_pathDragIndex] = world.Value; RaisePathChanged(); }
             }
             else if (_panning)
             {
+                if (_pathClickPending && Distance(pos, _pathPressScreen) > 4) _pathClickPending = false; // it's a pan after all
                 _offsetX += pos.X - _panLast.X;
                 _offsetY += pos.Y - _panLast.Y;
                 _panLast = pos;
@@ -1889,59 +2389,18 @@ namespace RasterField
                 var hover = HitTestHandle(pos);
                 Cursor = hover != SelDrag.None ? new Cursor(StandardCursorType.SizeAll) : new Cursor(StandardCursorType.Cross);
             }
-            else if (LineToolMode)
+            else if (_pathTool != PathTool.None)
             {
-                var hover = HitTestLineHandle(pos);
-                Cursor = hover != LineDrag.None ? new Cursor(StandardCursorType.SizeAll) : new Cursor(StandardCursorType.Cross);
+                Cursor = HitTestPathVertex(pos) >= 0 ? new Cursor(StandardCursorType.SizeAll) : new Cursor(StandardCursorType.Cross);
             }
 
             RaiseReadout(pos);
-        }
-
-        private void UpdateLineDrag(Point screenPos)
-        {
-            double maxW = DatasetWidth, maxH = DatasetHeight;
-            Point cur = ScreenToCell(screenPos);
-            double cx = Clamp(cur.X, 0, maxW), cy = Clamp(cur.Y, 0, maxH);
-
-            switch (_lineDrag)
-            {
-                case LineDrag.Create: _lineX1 = cx; _lineY1 = cy; break;
-                case LineDrag.Start: _lineX0 = cx; _lineY0 = cy; break;
-                case LineDrag.End: _lineX1 = cx; _lineY1 = cy; break;
-            }
-        }
-
-        private LineDrag HitTestLineHandle(Point screen)
-        {
-            if (!_hasLine) return LineDrag.None;
-            const double tol = 8;
-
-            Point p0 = new Point(_offsetX + _lineX0 * _scale, _offsetY + _lineY0 * _scale);
-            Point p1 = new Point(_offsetX + _lineX1 * _scale, _offsetY + _lineY1 * _scale);
-
-            if (Distance(p0, screen) <= tol) return LineDrag.Start;
-            if (Distance(p1, screen) <= tol) return LineDrag.End;
-            return LineDrag.None;
         }
 
         private static double Distance(Point a, Point b)
         {
             double dx = a.X - b.X, dy = a.Y - b.Y;
             return Math.Sqrt(dx * dx + dy * dy);
-        }
-
-        private void NormalizeAndClampLine()
-        {
-            if (Document == null) { _hasLine = false; return; }
-
-            double x0 = Clamp(_lineX0, 0, DatasetWidth);
-            double y0 = Clamp(_lineY0, 0, DatasetHeight);
-            double x1 = Clamp(_lineX1, 0, DatasetWidth);
-            double y1 = Clamp(_lineY1, 0, DatasetHeight);
-
-            if (Distance(new Point(x0, y0), new Point(x1, y1)) < 0.5) { _hasLine = false; return; }
-            _lineX0 = x0; _lineY0 = y0; _lineX1 = x1; _lineY1 = y1;
         }
 
         private void UpdateSelectionDrag(Point screenPos)
@@ -2006,9 +2465,11 @@ namespace RasterField
                 case Key.Down: _offsetY -= step; RaiseViewChanged(); break;
                 case Key.Escape:
                     if (_hasSelection) ClearSelection();
-                    else if (_hasLine) ClearLine();
+                    else if (_path.Count > 0) ClearPath();
                     else return;
                     break;
+                case Key.Back when _pathTool != PathTool.None: RemoveLastPathVertex(); break;
+                case Key.Enter when _pathTool != PathTool.None: FinishPath(); break;
                 default: return;
             }
             e.Handled = true;
@@ -2062,6 +2523,34 @@ namespace RasterField
         }
 
         private static double Clamp(double v, double lo, double hi) => v < lo ? lo : v > hi ? hi : v;
+    }
+
+    /// <summary>The interactive path tools of <see cref="RasterView"/>.</summary>
+    public enum PathTool
+    {
+        /// <summary>No path tool.</summary>
+        None,
+
+        /// <summary>A multi-point profile line.</summary>
+        Profile,
+
+        /// <summary>Distance (and, once finished, area) measurement.</summary>
+        Measure,
+
+        /// <summary>A polygon zone for zonal statistics.</summary>
+        Zone,
+    }
+
+    /// <summary>How a raster layer is composited onto what is below it.</summary>
+    public enum LayerBlendMode
+    {
+        Normal,
+        Multiply,
+        Screen,
+        Overlay,
+        Darken,
+        Lighten,
+        SoftLight,
     }
 
     /// <summary>How <see cref="RasterView"/> draws cells when magnified.</summary>

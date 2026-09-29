@@ -16,6 +16,7 @@ using Avalonia.Platform.Storage;
 using RasterField.Rasters;
 using RasterField.Rendering;
 using RasterField.Vectors;
+using static RasterField.L;
 
 namespace RasterField
 {
@@ -58,42 +59,74 @@ namespace RasterField
         private List<Cmd> BuildMenuModel()
         {
             var file = new Cmd("_File").Add(
+                new Cmd("_New project", () => _ = NewProjectAsync()),
+                new Cmd("Open _project…", () => _ = OpenProjectDialogAsync()),
+                new Cmd("_Save project", () => _ = SaveProjectAsync(false), Ctrl(Key.S)),
+                new Cmd("Save project _as…", () => _ = SaveProjectAsync(true)),
+                null,
                 new Cmd("_Open .ers…", () => _ = OpenDialogAsync(), Ctrl(Key.O)),
-                new Cmd("_Add layer(s)…", () => _ = AddLayerDialogAsync(), Ctrl(Key.O, shift: true)),
+                new Cmd("_Add layer(s)… (.ers, .erv, .geojson, .csv)", () => _ = AddLayerDialogAsync(), Ctrl(Key.O, shift: true)),
                 new Cmd("Open _recent"), // filled by RebuildRecentMenu
                 null,
                 new Cmd("Save active _layer…", () => _ = SaveActiveLayerAsync()),
-                new Cmd("Save _dataset as… (.ers + data)", () => _ = SaveDatasetAsAsync(), Ctrl(Key.S)),
+                new Cmd("Save _dataset as… (.ers + data)", () => _ = SaveDatasetAsAsync(), Ctrl(Key.S, shift: true)),
                 new Cmd("Save _header as .ers…", () => _ = SaveHeaderAsAsync()),
                 new Cmd("_Export view as PNG…", () => _ = ExportPngAsync()),
                 null,
                 new Cmd("E_xit", Close));
+
+            var edit = new Cmd("_Edit").Add(
+                new Cmd("_Undo", Undo, Ctrl(Key.Z)),
+                new Cmd("_Redo", Redo, Ctrl(Key.Y)),
+                null,
+                new Cmd("_Command palette…", () => _ = ShowCommandPaletteAsync(), Ctrl(Key.K)));
 
             var magnification = new Cmd("_Magnification").Add(
                 new Cmd("_Nearest (crisp cells)", () => SetDisplayResampling(DisplayResampling.Nearest), isChecked: () => _view.DisplayResampling == DisplayResampling.Nearest, radio: true),
                 new Cmd("_Bilinear", () => SetDisplayResampling(DisplayResampling.Bilinear), isChecked: () => _view.DisplayResampling == DisplayResampling.Bilinear, radio: true),
                 new Cmd("Bé_zier patch (smooth surface)", () => SetDisplayResampling(DisplayResampling.Bezier), isChecked: () => _view.DisplayResampling == DisplayResampling.Bezier, radio: true));
 
+            var bookmarks = new Cmd("_Bookmarks").Add(new Cmd("_Add bookmark…", () => _ = AddBookmarkAsync(), Ctrl(Key.D, shift: true)));
+            for (int b = 0; b < _bookmarks.Count && b < 9; b++)
+            {
+                var bm = _bookmarks[b];
+                bookmarks.Add(new Cmd(string.Format(CultureInfo.InvariantCulture, "{0}  {1}", b + 1, bm.Name), () => GoToBookmark(bm), Ctrl(Key.D1 + b)));
+            }
+            if (_bookmarks.Count > 0) bookmarks.Add(null, new Cmd("_Clear bookmarks", () => { _bookmarks.Clear(); RebuildMenus(); }));
+
             var view = new Cmd("_View").Add(
                 new Cmd("Zoom to _fit", () => _view.ZoomToFit(), Ctrl(Key.D0)),
                 new Cmd("Zoom _in", () => _view.ZoomBy(1.25), Ctrl(Key.OemPlus)),
                 new Cmd("Zoom _out", () => _view.ZoomBy(0.8), Ctrl(Key.OemMinus)),
+                new Cmd("_Go to coordinate…", () => _ = GoToCoordinateAsync()),
+                bookmarks,
                 null,
                 magnification,
                 new Cmd("Show cell _grid", () => { _view.ShowGrid = !_view.ShowGrid; _view.InvalidateVisual(); RefreshMenuChecks(); }, isChecked: () => _view.ShowGrid),
                 null,
+                new Cmd("_Layers && analysis panel", ToggleLeftDock, new KeyGesture(Key.F9), isChecked: () => _leftDockVisible),
+                new Cmd("_Properties panel", ToggleRightDock, new KeyGesture(Key.F10), isChecked: () => _rightDockVisible),
+                new Cmd("_Map only", ToggleMapOnly, new KeyGesture(Key.F11), isChecked: () => !_leftDockVisible && !_rightDockVisible),
+                null,
                 new Cmd("_Theme").Add(
                     new Cmd("_System", () => SetThemeMode(ThemeMode.System)),
                     new Cmd("_Light", () => SetThemeMode(ThemeMode.Light)),
-                    new Cmd("_Dark", () => SetThemeMode(ThemeMode.Dark))));
+                    new Cmd("_Dark", () => SetThemeMode(ThemeMode.Dark))),
+                new Cmd("_Language").Add(
+                    new Cmd("_Automatic (system)", () => SetLanguage("auto"), isChecked: () => _settings.Language == "auto", radio: true),
+                    new Cmd("_English", () => SetLanguage("en"), isChecked: () => _settings.Language == "en", radio: true),
+                    new Cmd("_Magyar", () => SetLanguage("hu"), isChecked: () => _settings.Language == "hu", radio: true)));
 
             var layer = new Cmd("_Layer").Add(
                 new Cmd("_Zoom to active layer", () => _view.ZoomToFit()),
+                new Cmd("_Next raster layer", CycleActiveLayer),
+                new Cmd("Parameters / _recompute…", () => { if (_view.ActiveLayer != null) _ = EditRecipeAsync(_view.ActiveLayer); }),
                 new Cmd("_Save active layer…", () => _ = SaveActiveLayerAsync()),
-                new Cmd("_Remove active layer", () => { if (_view.ActiveLayer != null) _view.RemoveLayer(_view.ActiveLayer); }));
+                new Cmd("Re_move active layer", () => { if (_view.ActiveLayer is { IsFrame: false } a) _view.RemoveLayer(a); }));
 
             var raster = new Cmd("_Raster").Add(
                 new Cmd("_Statistics && histogram…", () => _ = ShowStatisticsAsync()),
+                new Cmd("_Zonal statistics by polygon layer…", () => _ = ZonalByLayerAsync(null)),
                 new Cmd("_Band math…", () => _ = BandMathAsync()),
                 new Cmd("Fill _no-data gaps…", () => _ = FillNoDataAsync()),
                 null,
@@ -108,7 +141,9 @@ namespace RasterField
 
             var vector = new Cmd("Vec_tor").Add(
                 new Cmd("Generate _contours…", () => _ = GenerateContoursAsync()),
-                new Cmd("_Stream network…", () => _ = GenerateStreamNetworkAsync()));
+                new Cmd("_Stream network…", () => _ = GenerateStreamNetworkAsync()),
+                null,
+                new Cmd("_Import GeoJSON / CSV points…", () => _ = AddLayerDialogAsync()));
 
             var terrain = new Cmd("Te_rrain").Add(
                 new Cmd("_Slope", () => _ = ComputeTerrainAsync(TerrainProduct.Slope)),
@@ -125,7 +160,9 @@ namespace RasterField
 
             var tools = new Cmd("T_ools").Add(
                 new Cmd("_Identify (click the map)", () => SetIdentifyToolActive(!_view.IdentifyMode), isChecked: () => _view.IdentifyMode),
-                new Cmd("_Profile tool (drag a line)", () => SetProfileToolActive(!_view.LineToolMode), isChecked: () => _view.LineToolMode),
+                new Cmd("_Profile (multi-point path)", () => SetPathTool(_view.PathToolMode == PathTool.Profile ? PathTool.None : PathTool.Profile), isChecked: () => _view.PathToolMode == PathTool.Profile),
+                new Cmd("_Measure distance / area", () => SetPathTool(_view.PathToolMode == PathTool.Measure ? PathTool.None : PathTool.Measure), isChecked: () => _view.PathToolMode == PathTool.Measure),
+                new Cmd("_Zone (zonal statistics)", () => SetPathTool(_view.PathToolMode == PathTool.Zone ? PathTool.None : PathTool.Zone), isChecked: () => _view.PathToolMode == PathTool.Zone),
                 new Cmd("_Clip tool (drag a rectangle)", () => SetClipToolActive(!_view.SelectionMode), isChecked: () => _view.SelectionMode));
 
             var palette = new Cmd("_Palette").Add(
@@ -136,7 +173,52 @@ namespace RasterField
                 new Cmd("_Keyboard shortcuts…", () => _ = ShowShortcutsAsync()),
                 new Cmd("_About…", () => _ = ShowAboutAsync()));
 
-            return new List<Cmd> { file, view, layer, raster, interpolation, vector, terrain, tools, palette, help };
+            return new List<Cmd> { file, edit, view, layer, raster, interpolation, vector, terrain, tools, palette, help };
+        }
+
+        /// <summary>Rebuilds both menus (after a language change or a bookmark edit).</summary>
+        private void RebuildMenus()
+        {
+            _menuChecks.Clear();
+            _nativeMenuChecks.Clear();
+            if (OperatingSystem.IsMacOS())
+            {
+                NativeMenu.SetMenu(this, BuildNativeMenu());
+            }
+            else if (Content is DockPanel root && _menuHost != null)
+            {
+                int index = root.Children.IndexOf(_menuHost);
+                var menu = BuildMenu();
+                DockPanel.SetDock(menu, Dock.Top);
+                root.Children[index] = menu;
+                _menuHost = menu;
+            }
+            RebuildRecentMenu();
+        }
+
+        private void Undo()
+        {
+            if (!_view.CanUndo) { Flash(T("Nothing to undo.")); return; }
+            string? label = _view.UndoLabel;
+            _view.Undo();
+            Flash(L.F("Undone: {0}", T(label ?? "")));
+        }
+
+        private void Redo()
+        {
+            if (!_view.CanRedo) { Flash(T("Nothing to redo.")); return; }
+            string? label = _view.RedoLabel;
+            _view.Redo();
+            Flash(L.F("Redone: {0}", T(label ?? "")));
+        }
+
+        private async void SetLanguage(string code)
+        {
+            _settings.Language = code;
+            _settings.Save();
+            L.SetLanguage(code);
+            RebuildMenus();
+            await MessageAsync(T("Language"), T("The menus switch immediately; restart RasterField to switch every panel and dialog."));
         }
 
         private Menu BuildMenu()
@@ -148,7 +230,7 @@ namespace RasterField
 
         private MenuItem ToMenuItem(Cmd cmd)
         {
-            var mi = new MenuItem { Header = cmd.Header };
+            var mi = new MenuItem { Header = T(cmd.Header) };
             if (cmd.Header == "Open _recent") _recentMenu = mi;
             if (cmd.Gesture != null) mi.InputGesture = cmd.Gesture;
             if (cmd.IsChecked != null)
@@ -177,9 +259,9 @@ namespace RasterField
             var root = new NativeMenu();
 
             var app = new NativeMenuItem("RasterField") { Menu = new NativeMenu() };
-            var about = new NativeMenuItem("About RasterField…");
+            var about = new NativeMenuItem(T("About RasterField…"));
             about.Click += (_, _) => _ = ShowAboutAsync();
-            var quit = new NativeMenuItem("Quit RasterField") { Gesture = new KeyGesture(Key.Q, KeyModifiers.Meta) };
+            var quit = new NativeMenuItem(T("Quit RasterField")) { Gesture = new KeyGesture(Key.Q, KeyModifiers.Meta) };
             quit.Click += (_, _) => Close();
             app.Menu.Items.Add(about);
             app.Menu.Items.Add(new NativeMenuItemSeparator());
@@ -192,7 +274,7 @@ namespace RasterField
 
         private NativeMenuItem ToNativeMenuItem(Cmd cmd)
         {
-            string header = cmd.Header.Replace("_", string.Empty, StringComparison.Ordinal).Replace("&&", "&", StringComparison.Ordinal);
+            string header = T(cmd.Header).Replace("_", string.Empty, StringComparison.Ordinal).Replace("&&", "&", StringComparison.Ordinal);
             var mi = new NativeMenuItem(header);
             if (cmd.Gesture != null)
             {
@@ -236,7 +318,7 @@ namespace RasterField
         {
             _view.DisplayResampling = mode;
             if (mode == DisplayResampling.Bezier)
-                Flash("Bézier display smoothing on — zoom in past 1.5× to see the smooth surface (display only; data unchanged).");
+                Flash(T("Bézier display smoothing on — zoom in past 1.5× to see the smooth surface (display only; data unchanged)."));
             RefreshMenuChecks();
         }
 
@@ -246,15 +328,22 @@ namespace RasterField
         private bool HandleToolKey(KeyEventArgs e)
         {
             if (e.KeyModifiers != KeyModifiers.None) return false;
-            if (FocusManager?.GetFocusedElement() is TextBox or NumericUpDown) return false;
+            if (FocusManager?.GetFocusedElement() is TextBox or NumericUpDown or ComboBox) return false;
+            bool pathActive = _view.PathToolMode != PathTool.None;
             switch (e.Key)
             {
                 case Key.I: SetIdentifyToolActive(!_view.IdentifyMode); break;
-                case Key.P: SetProfileToolActive(!_view.LineToolMode); break;
+                case Key.P: SetPathTool(_view.PathToolMode == PathTool.Profile ? PathTool.None : PathTool.Profile); break;
+                case Key.M: SetPathTool(_view.PathToolMode == PathTool.Measure ? PathTool.None : PathTool.Measure); break;
+                case Key.Z: SetPathTool(_view.PathToolMode == PathTool.Zone ? PathTool.None : PathTool.Zone); break;
                 case Key.C: SetClipToolActive(!_view.SelectionMode); break;
                 case Key.G: _view.ShowGrid = !_view.ShowGrid; _view.InvalidateVisual(); break;
                 case Key.B: SetDisplayResampling(_view.DisplayResampling == DisplayResampling.Bezier ? DisplayResampling.Nearest : DisplayResampling.Bezier); break;
                 case Key.Tab when ReferenceEquals(FocusManager?.GetFocusedElement(), _view): CycleActiveLayer(); break;
+                case Key.Back when pathActive: _view.RemoveLastPathVertex(); break;
+                case Key.Enter when pathActive: _view.FinishPath(); break;
+                case Key.Escape when pathActive && _view.CurrentPath.Count > 0: _view.ClearPath(); break;
+                case Key.Escape when pathActive: SetPathTool(PathTool.None); break;
                 case Key.Escape when _view.IdentifyMode: SetIdentifyToolActive(false); break;
                 default: return false;
             }
@@ -262,17 +351,54 @@ namespace RasterField
             return true;
         }
 
-        private void CycleActiveLayer()
+        /// <summary>Runs the menu command whose shortcut matches (menu gestures are display-only in Avalonia).</summary>
+        private bool HandleMenuGesture(KeyEventArgs e)
         {
-            int n = _view.Layers.Count;
-            if (n > 1) _view.SetActiveLayerIndex((_view.ActiveLayerIndex + 1) % n);
+            if (e.KeyModifiers == KeyModifiers.None && e.Key is not (Key.F9 or Key.F10 or Key.F11)) return false;
+            if (e.KeyModifiers == KeyModifiers.Control && e.Key is Key.Z or Key.Y && FocusManager?.GetFocusedElement() is TextBox) return false;
+            foreach (var cmd in Flatten(BuildMenuModel()))
+            {
+                var g = cmd.Gesture;
+                if (g == null || cmd.Run == null) continue;
+                bool match = g.Key == e.Key && g.KeyModifiers == e.KeyModifiers
+                    || (e.Key == Key.Add && g.Key == Key.OemPlus && g.KeyModifiers == e.KeyModifiers)
+                    || (e.Key == Key.Subtract && g.Key == Key.OemMinus && g.KeyModifiers == e.KeyModifiers)
+                    || (OperatingSystem.IsMacOS() && g.KeyModifiers.HasFlag(KeyModifiers.Control) && g.Key == e.Key
+                        && e.KeyModifiers == ((g.KeyModifiers & ~KeyModifiers.Control) | KeyModifiers.Meta));
+                if (!match) continue;
+                cmd.Run();
+                RefreshMenuChecks();
+                return true;
+            }
+            return false;
         }
 
-        private async Task ShowShortcutsAsync() => await MessageAsync("Keyboard shortcuts",
-            "Ctrl+O  open · Ctrl+Shift+O  add layer · Ctrl+S  save dataset as · Ctrl+B  Bézier subdivision\n" +
+        private static IEnumerable<Cmd> Flatten(IEnumerable<Cmd?> cmds)
+        {
+            foreach (var c in cmds)
+            {
+                if (c == null) continue;
+                yield return c;
+                foreach (var child in Flatten(c.Children)) yield return child;
+            }
+        }
+
+        private void CycleActiveLayer()
+        {
+            var real = _view.Layers.Where(l => !l.IsFrame).ToList();
+            if (real.Count < 2) return;
+            int i = real.IndexOf(_view.ActiveLayer!);
+            _view.SetActiveLayer(real[(i + 1) % real.Count]);
+        }
+
+        private async Task ShowShortcutsAsync() => await MessageAsync(T("Keyboard shortcuts"), T(
+            "Ctrl+S  save project · Ctrl+O  open · Ctrl+Shift+O  add layer · Ctrl+Shift+S  save dataset as\n" +
+            "Ctrl+Z / Ctrl+Y  undo / redo · Ctrl+K  command palette · Ctrl+B  Bézier subdivision\n" +
+            "Ctrl+Shift+D  add bookmark · Ctrl+1…9  go to bookmark · F9 / F10 / F11  panels / map only\n" +
             "Ctrl+0 / F  zoom to fit · Ctrl+± / wheel  zoom · arrows  pan\n" +
-            "I  identify · P  profile · C  clip · G  cell grid · B  Bézier display smoothing on/off\n" +
-            "Tab  next raster layer · Esc  cancel the current tool");
+            "I  identify · P  profile · M  measure · Z  zone · C  clip · G  cell grid · B  Bézier display smoothing\n" +
+            "Path tools: click adds a point, drag moves it, double-click / Enter finishes, Backspace removes the last point, Esc clears\n" +
+            "Tab (on the map)  next raster layer"));
 
         // ---- derived (in-memory) layers ---------------------------------------------------
 
@@ -285,7 +411,7 @@ namespace RasterField
             var layer = _view.AddLayer(document, name, CurrentPalette());
             if (inheritDisplayFrom != null) _view.CopyDisplaySettings(inheritDisplayFrom, layer);
             _view.MarkDerived(layer, lineage);
-            Flash($"{name}: new layer (in memory, not saved yet — Layer ▸ Save active layer, or the 💾 on its card).");
+            Flash(L.F("{0}: new layer (in memory, not saved yet — Layer ▸ Save active layer, or the ⤓ on its card).", name));
             return layer;
         }
 
@@ -302,7 +428,7 @@ namespace RasterField
 
         private async Task SaveActiveLayerAsync()
         {
-            if (_view.ActiveLayer == null) { await MessageAsync("Save layer", "There is no active raster layer."); return; }
+            if (_view.ActiveLayer == null) { await MessageAsync(T("Save layer"), T("There is no active raster layer.")); return; }
             await SaveRasterLayerAsync(_view.ActiveLayer);
         }
 
@@ -310,7 +436,7 @@ namespace RasterField
         {
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = $"Save layer “{layer.Name}” (writes .ers + binary data file)",
+                Title = L.F("Save layer “{0}” (writes .ers + binary data file)", layer.Name),
                 DefaultExtension = "ers",
                 SuggestedFileName = SafeFileName(layer.Name) + ".ers",
                 FileTypeChoices = ErsSaveFileTypeChoices,
@@ -320,23 +446,23 @@ namespace RasterField
 
             try
             {
-                SetBusy(true, "Saving…");
+                SetBusy(true, T("Saving…"));
                 await Task.Run(() => layer.Document.Save(path!));
                 SetBusy(false);
                 _view.MarkSaved(layer, path!);
                 _settings.AddRecentFile(Path.GetFullPath(path!));
                 _settings.Save();
                 RebuildRecentMenu();
-                Flash($"Layer saved: {Path.GetFileName(path)} (+ data file)");
+                Flash(L.F("Layer saved: {0} (+ data file)", Path.GetFileName(path)));
             }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Save failed", ex.Message); }
+            catch (Exception ex) { SetBusy(false); await MessageAsync(T("Save failed"), ex.Message); }
         }
 
         private async Task SaveVectorLayerAsync(VectorLayer layer)
         {
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = $"Save vector layer “{layer.Name}”",
+                Title = L.F("Save vector layer “{0}”", layer.Name),
                 DefaultExtension = "erv",
                 SuggestedFileName = SafeFileName(layer.Name) + ".erv",
                 FileTypeChoices = ErvFileTypeChoices,
@@ -348,9 +474,9 @@ namespace RasterField
             {
                 layer.Document.Save(path!);
                 _view.MarkSaved(layer, path!);
-                Flash($"Vector layer saved: {Path.GetFileName(path)}");
+                Flash(L.F("Vector layer saved: {0}", Path.GetFileName(path)));
             }
-            catch (Exception ex) { await MessageAsync("Save failed", ex.Message); }
+            catch (Exception ex) { await MessageAsync(T("Save failed"), ex.Message); }
         }
 
         private static string SafeFileName(string name)
@@ -368,37 +494,12 @@ namespace RasterField
         private async Task BezierSubdivisionAsync()
         {
             var layer = _view.ActiveLayer;
-            if (layer == null) { await MessageAsync("Bézier subdivision", "Open a dataset first."); return; }
-
-            var choice = await ShowBezierDialogAsync(layer);
-            if (choice == null) return;
-
-            var options = new BezierPatchOptions
-            {
-                Factor = choice.Factor, Tension = choice.Tension, Monotone = choice.Monotone, NoData = choice.NoData,
-            };
-            var window = choice.ViewOnly ? _view.VisibleCellWindow() : null;
-            var doc = layer.Document;
-
-            SetBusy(true, $"Bézier ×{choice.Factor} subdivision…");
-            try
-            {
-                var result = await Task.Run(() => window is PixelRect w
-                    ? doc.Subdivide(w.X, w.Y, w.Width, w.Height, options)
-                    : doc.Subdivide(options));
-                SetBusy(false);
-
-                string lineage = string.Format(CultureInfo.InvariantCulture,
-                    "Bézier ×{0} of {1}{2} · τ {3:0.00}{4}{5}",
-                    choice.Factor, layer.Name, window is PixelRect r ? $" (window {r.Width}×{r.Height} at {r.X},{r.Y})" : "",
-                    choice.Tension, choice.Monotone ? " · monotone" : "",
-                    choice.NoData == BezierNoDataMode.NoData ? " · strict no-data" : "");
-                AddDerivedRasterLayer(result, $"{layer.Name} · Bézier ×{choice.Factor}", lineage, layer);
-            }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Bézier subdivision failed", ex.Message); }
+            if (layer == null || layer.IsFrame) { await MessageAsync(T("Bézier subdivision"), T("Open a raster dataset first.")); return; }
+            var recipe = await AskBezierRecipeAsync(layer, null);
+            if (recipe != null) await CreateDerivedAsync(recipe, L.F("Bézier ×{0} subdivision…", recipe.Get("factor", 4)));
         }
 
-        private async Task<BezierChoice?> ShowBezierDialogAsync(RasterLayer layer)
+        private async Task<BezierChoice?> ShowBezierDialogAsync(RasterLayer layer, BezierChoice? initial = null)
         {
             var tcs = new TaskCompletionSource<BezierChoice?>();
             int w = layer.DatasetWidth, h = layer.DatasetHeight;
@@ -406,19 +507,19 @@ namespace RasterField
             string unit = layer.Document.Header.CoordinateSpace.EffectiveUnits;
             var viewWindow = _view.VisibleCellWindow();
 
-            var factorBox = new ComboBox { ItemsSource = new[] { "×2", "×3", "×4", "×8" }, SelectedIndex = 2, Width = 90 };
+            var factorBox = new ComboBox { ItemsSource = new[] { T("×2"), T("×3"), T("×4"), T("×8") }, SelectedIndex = 2, Width = 90 };
             var customFactor = new NumericUpDown { Minimum = 1, Maximum = 32, Value = 4, Increment = 1, Width = 110, FormatString = "0" };
-            var customCheck = new CheckBox { Content = "custom" };
-            var areaFull = new RadioButton { Content = "Whole layer", IsChecked = true, GroupName = "bzArea" };
-            var areaView = new RadioButton { Content = "Current view only", GroupName = "bzArea", IsEnabled = viewWindow != null };
+            var customCheck = new CheckBox { Content = T("custom") };
+            var areaFull = new RadioButton { Content = T("Whole layer"), IsChecked = true, GroupName = "bzArea" };
+            var areaView = new RadioButton { Content = T("Current view only"), GroupName = "bzArea", IsEnabled = viewWindow != null };
             var tension = new Slider { Minimum = 0, Maximum = 1, Value = 1, Width = 200, TickFrequency = 0.05, IsSnapToTickEnabled = true };
             var tensionText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Width = 40 };
-            var monotone = new CheckBox { Content = "Monotone — no overshoot (for sharp edges: embankments, quarry walls)" };
-            var strict = new CheckBox { Content = "Leave no-data where the 4×4 neighbourhood is incomplete (instead of bilinear fallback)" };
+            var monotone = new CheckBox { Content = T("Monotone — no overshoot (for sharp edges: embankments, quarry walls)") };
+            var strict = new CheckBox { Content = T("Leave no-data where the 4×4 neighbourhood is incomplete (instead of bilinear fallback)") };
             var sizeText = new TextBlock { TextWrapping = TextWrapping.Wrap };
             var warnText = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = AppTheme.Danger };
-            var okBtn = new Button { Content = "Apply → new layer", MinWidth = 120 };
-            var cancelBtn = new Button { Content = "Cancel", MinWidth = 80 };
+            var okBtn = new Button { Content = T("Apply → new layer"), MinWidth = 120 };
+            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
 
             var originalImage = new Image { Width = 200, Height = 200, Stretch = Stretch.Fill };
             var bezierImage = new Image { Width = 200, Height = 200, Stretch = Stretch.Fill };
@@ -454,8 +555,8 @@ namespace RasterField
 
                 bool tooBig = cells > int.MaxValue || mb > 2048;
                 warnText.Text = tooBig
-                    ? "Too large for one in-memory layer — choose a smaller factor or “Current view only” (or clip first)."
-                    : layer.IsStreaming && !view ? "Large streaming dataset: the whole raster has to be read. Consider “Current view only”." : "";
+                    ? T("Too large for one in-memory layer — choose a smaller factor or “Current view only” (or clip first).")
+                    : layer.IsStreaming && !view ? T("Large streaming dataset: the whole raster has to be read. Consider “Current view only”.") : "";
                 okBtn.IsEnabled = !tooBig;
 
                 if (previewSource != null && layer.Colorizer != null)
@@ -479,7 +580,7 @@ namespace RasterField
 
             var dialog = new Window
             {
-                Title = "Bézier-patch subdivision",
+                Title = T("Bézier-patch subdivision"),
                 Width = 520,
                 SizeToContent = SizeToContent.Height,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -500,15 +601,15 @@ namespace RasterField
 
             var advanced = new Expander
             {
-                Header = "Advanced",
+                Header = T("Advanced"),
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 Content = new StackPanel
                 {
                     Spacing = 6,
                     Children =
                     {
-                        Row(new TextBlock { Text = "Tension τ", VerticalAlignment = VerticalAlignment.Center, Width = 70 }, tension, tensionText),
-                        new TextBlock { Text = "1 = Catmull-Rom tangents (smooth, C¹) · 0 = exactly bilinear", Opacity = 0.7, FontSize = 11 },
+                        Row(new TextBlock { Text = T("Tension τ"), VerticalAlignment = VerticalAlignment.Center, Width = 70 }, tension, tensionText),
+                        new TextBlock { Text = T("1 = Catmull-Rom tangents (smooth, C¹) · 0 = exactly bilinear"), Opacity = 0.7, FontSize = 11 },
                         monotone,
                         strict,
                     },
@@ -521,22 +622,33 @@ namespace RasterField
                 Spacing = 6,
                 Children =
                 {
-                    new TextBlock { Text = $"Source: {layer.Name}  ({w}×{h}, {Math.Max(1, layer.BandCount)} band(s))", TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = L.F("Source: {0}  ({1}×{2}, {3} band(s))", layer.Name, w, h, Math.Max(1, layer.BandCount)), TextWrapping = TextWrapping.Wrap },
                     H("Subdivision"),
                     Row(factorBox, customCheck, customFactor),
                     sizeText,
                     H("Area"),
                     Row(areaFull, areaView),
                     advanced,
-                    H("Preview (centre of the view, 16×16 cells)"),
+                    H(T("Preview (centre of the view, 16×16 cells)")),
                     previewSource == null
-                        ? new TextBlock { Text = "No preview for streaming or RGB layers.", Opacity = 0.7 }
+                        ? new TextBlock { Text = T("No preview for streaming or RGB layers."), Opacity = 0.7 }
                         : Row(Captioned("original", originalImage), Captioned("Bézier", bezierImage)),
-                    new TextBlock { Text = "ⓘ Interpolation smooths the surface — it does not add measured information.", Opacity = 0.75, FontSize = 11, TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = T("ⓘ Interpolation smooths the surface — it does not add measured information."), Opacity = 0.75, FontSize = 11, TextWrapping = TextWrapping.Wrap },
                     warnText,
                     new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { okBtn, cancelBtn } },
                 },
             };
+            if (initial != null)
+            {
+                int idx = initial.Factor switch { 2 => 0, 3 => 1, 4 => 2, 8 => 3, _ => -1 };
+                if (idx >= 0) factorBox.SelectedIndex = idx;
+                else { customCheck.IsChecked = true; customFactor.Value = initial.Factor; }
+                tension.Value = initial.Tension;
+                monotone.IsChecked = initial.Monotone;
+                strict.IsChecked = initial.NoData == BezierNoDataMode.NoData;
+                if (initial.ViewOnly) { areaView.IsEnabled = true; areaView.IsChecked = true; }
+                okBtn.Content = T("Recompute");
+            }
             Update();
             dialog.Closed += (_, _) => tcs.TrySetResult(null);
             await dialog.ShowDialog(this);
@@ -547,18 +659,18 @@ namespace RasterField
         {
             var o = _view.DisplayBezierOptions;
             var tension = new Slider { Minimum = 0, Maximum = 1, Value = o.Tension, Width = 220, TickFrequency = 0.05, IsSnapToTickEnabled = true };
-            var monotone = new CheckBox { Content = "Monotone (no overshoot)", IsChecked = o.Monotone };
-            var enable = new CheckBox { Content = "Use Bézier display smoothing now", IsChecked = _view.DisplayResampling == DisplayResampling.Bezier };
+            var monotone = new CheckBox { Content = T("Monotone (no overshoot)"), IsChecked = o.Monotone };
+            var enable = new CheckBox { Content = T("Use Bézier display smoothing now"), IsChecked = _view.DisplayResampling == DisplayResampling.Bezier };
 
             var dialog = new Window
             {
-                Title = "Bézier display smoothing",
+                Title = T("Bézier display smoothing"),
                 Width = 380,
                 SizeToContent = SizeToContent.Height,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 CanResize = false,
             };
-            var ok = new Button { Content = "OK", MinWidth = 80 };
+            var ok = new Button { Content = T("OK"), MinWidth = 80 };
             ok.Click += (_, _) =>
             {
                 o.Tension = tension.Value;
@@ -574,9 +686,9 @@ namespace RasterField
                 Spacing = 8,
                 Children =
                 {
-                    new TextBlock { Text = "When magnified, the active layer's visible window is drawn as a bicubic Bézier-patch surface. Display only — the data is not changed.", TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = T("When magnified, the active layer's visible window is drawn as a bicubic Bézier-patch surface. Display only — the data is not changed."), TextWrapping = TextWrapping.Wrap },
                     enable,
-                    new TextBlock { Text = "Tension τ (1 = smooth Catmull-Rom, 0 = bilinear)" },
+                    new TextBlock { Text = T("Tension τ (1 = smooth Catmull-Rom, 0 = bilinear)") },
                     tension,
                     monotone,
                     new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Children = { ok } },
@@ -591,60 +703,14 @@ namespace RasterField
 
         private async Task GenerateContoursAsync()
         {
-            var loaded = await TryGetLoadedRasterAsync("Generate contours");
+            var loaded = await TryGetLoadedRasterAsync(T("Generate contours"));
             if (loaded == null) return;
-            var (raster, _, _) = loaded.Value;
-            var layer = _view.ActiveLayer!;
-            var doc = layer.Document;
-
-            var stats = raster.Statistics;
-            var choice = await ShowContourDialogAsync(stats.Minimum, stats.Maximum);
-            if (choice == null) return;
-
-            SetBusy(true, choice.SourceFactor > 1 ? $"Bézier ×{choice.SourceFactor} surface + contours…" : "Tracing contours…");
-            try
-            {
-                var lines = await Task.Run(() =>
-                {
-                    var geo = doc.GeoReference;
-                    int k = choice.SourceFactor;
-                    if (k <= 1)
-                        return ContourGenerator.Trace(raster, geo, choice.Options);
-                    // Same extent and origin, k× finer cells: every pixel-axis coefficient divides by k.
-                    var fine = BezierPatchInterpolator.Subdivide(raster, new BezierPatchOptions { Factor = k });
-                    var (a, b, c, d, e2, f) = geo.GeoTransform;
-                    var fineGeo = new RasterGeoReference(fine.Width, fine.Height, a, b / k, c / k, d, e2 / k, f / k);
-                    return ContourGenerator.Trace(fine, fineGeo, choice.Options);
-                });
-                SetBusy(false);
-                if (lines.Count == 0) { await MessageAsync("Generate contours", "No contour lines were produced for these levels."); return; }
-
-                var erv = ErvDocument.Create(doc.Header.CoordinateSpace.Projection, doc.Header.CoordinateSpace.Datum);
-                var widths = new List<double>(lines.Count);
-                var labels = new List<string?>(lines.Count);
-                foreach (var line in lines)
-                {
-                    string level = line.Level.ToString("g6", CultureInfo.InvariantCulture);
-                    var poly = new VectorPolyline { Attribute = level };
-                    foreach (var p in line.Points) poly.Points.Add((p.X, p.Y));
-                    erv.Objects.Add(poly);
-                    widths.Add(line.IsIndex ? 2.2 : 1.0);
-                    labels.Add(line.IsIndex || choice.Options.IndexEvery == 0 ? level : null);
-                }
-
-                var o = choice.Options;
-                string lineage = string.Format(CultureInfo.InvariantCulture, "Contours of {0} · interval {1:g6}{2}{3}{4}",
-                    layer.Name, o.Interval, o.IndexEvery > 0 ? $" · index every {o.IndexEvery}" : "",
-                    choice.SourceFactor > 1 ? $" · Bézier ×{choice.SourceFactor} surface" : "",
-                    o.SmoothingIterations > 0 ? $" · Chaikin ×{o.SmoothingIterations}" : "");
-                AddDerivedVectorLayer(erv, $"{layer.Name} · contours {o.Interval:g4}", lineage,
-                    Color.FromRgb(0x8B, 0x4A, 0x1C), widths, labels, lineWidth: 1.0);
-                Flash($"Contours: {lines.Count} line(s) as a new vector layer (not saved yet — use 💾 on its card to write .erv).");
-            }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Contours failed", ex.Message); }
+            var recipe = await AskContourRecipeAsync(_view.ActiveLayer!, null);
+            if (recipe != null)
+                await CreateDerivedAsync(recipe, recipe.Get("factor", 1) > 1 ? L.F("Bézier ×{0} surface + contours…", recipe.Get("factor", 1)) : T("Tracing contours…"));
         }
 
-        private async Task<ContourChoice?> ShowContourDialogAsync(double dataMin, double dataMax)
+        private async Task<ContourChoice?> ShowContourDialogAsync(double dataMin, double dataMax, ContourChoice? initial = null)
         {
             var tcs = new TaskCompletionSource<ContourChoice?>();
 
@@ -658,8 +724,8 @@ namespace RasterField
             var maxBox = Num(Math.Ceiling(dataMax / niceInterval) * niceInterval);
             var intervalBox = Num(niceInterval, 1e-6);
             var indexBox = new NumericUpDown { Value = 5, Minimum = 0, Maximum = 100, Increment = 1, FormatString = "0", Width = 130, HorizontalAlignment = HorizontalAlignment.Left };
-            var sourceBox = new ComboBox { ItemsSource = new[] { "Original grid", "Bézier ×2 surface", "Bézier ×4 surface" }, SelectedIndex = 0, Width = 180 };
-            var smoothBox = new ComboBox { ItemsSource = new[] { "None", "Chaikin 1×", "Chaikin 2×", "Chaikin 3×" }, SelectedIndex = 0, Width = 180 };
+            var sourceBox = new ComboBox { ItemsSource = new[] { T("Original grid"), T("Bézier ×2 surface"), T("Bézier ×4 surface") }, SelectedIndex = 0, Width = 180 };
+            var smoothBox = new ComboBox { ItemsSource = new[] { T("None"), T("Chaikin 1×"), T("Chaikin 2×"), T("Chaikin 3×") }, SelectedIndex = 0, Width = 180 };
             var minLenBox = new NumericUpDown { Value = 0, Minimum = 0, Increment = 10, FormatString = "0.##", Width = 130, HorizontalAlignment = HorizontalAlignment.Left };
             var countText = new TextBlock { Opacity = 0.8 };
 
@@ -675,14 +741,14 @@ namespace RasterField
 
             var dialog = new Window
             {
-                Title = "Generate contours",
+                Title = T("Generate contours"),
                 Width = 420,
                 SizeToContent = SizeToContent.Height,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 CanResize = false,
             };
-            var okBtn = new Button { Content = "Apply → new layer", MinWidth = 120 };
-            var cancelBtn = new Button { Content = "Cancel", MinWidth = 80 };
+            var okBtn = new Button { Content = T("Apply → new layer"), MinWidth = 120 };
+            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
             okBtn.Click += (_, _) =>
             {
                 var options = new ContourOptions
@@ -696,7 +762,7 @@ namespace RasterField
                 };
                 if (!(options.Interval > 0) || ContourGenerator.BuildLevels(options.Minimum, options.Maximum, options.Interval).Count == 0)
                 {
-                    countText.Text = "⚠ no levels fall within this range/interval";
+                    countText.Text = T("⚠ no levels fall within this range/interval");
                     return;
                 }
                 tcs.TrySetResult(new ContourChoice(options, sourceBox.SelectedIndex switch { 1 => 2, 2 => 4, _ => 1 }));
@@ -723,19 +789,28 @@ namespace RasterField
                 Spacing = 8,
                 Children =
                 {
-                    new TextBlock { Text = string.Format(CultureInfo.InvariantCulture, "Data range: {0:g6} … {1:g6}", dataMin, dataMax) },
-                    Form(("Minimum level", minBox), ("Maximum level", maxBox), ("Interval", intervalBox), ("Index contour every", indexBox)),
+                    new TextBlock { Text = L.F("Data range: {0:g6} … {1:g6}", dataMin, dataMax) },
+                    Form((T("Minimum level"), minBox), (T("Maximum level"), maxBox), (T("Interval"), intervalBox), (T("Index contour every"), indexBox)),
                     countText,
                     new Expander
                     {
-                        Header = "Advanced",
+                        Header = T("Advanced"),
                         HorizontalAlignment = HorizontalAlignment.Stretch,
-                        Content = Form(("Source surface", sourceBox), ("Line smoothing", smoothBox), ("Min. line length", minLenBox)),
+                        Content = Form((T("Source surface"), sourceBox), (T("Line smoothing"), smoothBox), (T("Min. line length"), minLenBox)),
                     },
-                    new TextBlock { Text = "Tip: a Bézier surface gives stair-free contours on coarse grids.", Opacity = 0.7, FontSize = 11, TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = T("Tip: a Bézier surface gives stair-free contours on coarse grids."), Opacity = 0.7, FontSize = 11, TextWrapping = TextWrapping.Wrap },
                     new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { okBtn, cancelBtn } },
                 },
             };
+            if (initial != null)
+            {
+                var o0 = initial.Options;
+                minBox.Value = (decimal)o0.Minimum; maxBox.Value = (decimal)o0.Maximum; intervalBox.Value = (decimal)o0.Interval;
+                indexBox.Value = o0.IndexEvery; smoothBox.SelectedIndex = Math.Clamp(o0.SmoothingIterations, 0, 3);
+                minLenBox.Value = (decimal)o0.MinimumLength;
+                sourceBox.SelectedIndex = initial.SourceFactor switch { 2 => 1, 4 => 2, _ => 0 };
+                okBtn.Content = T("Recompute");
+            }
             UpdateCount();
             dialog.Closed += (_, _) => tcs.TrySetResult(null);
             await dialog.ShowDialog(this);
@@ -756,46 +831,10 @@ namespace RasterField
 
         private async Task GenerateStreamNetworkAsync()
         {
-            var loaded = await TryGetLoadedRasterAsync("Stream network");
+            var loaded = await TryGetLoadedRasterAsync(T("Stream network"));
             if (loaded == null) return;
-            var (raster, cellSizeX, cellSizeY) = loaded.Value;
-            var layer = _view.ActiveLayer!;
-            var doc = layer.Document;
-
-            long cells = raster.Statistics.ValidCount;
-            var threshold = await AskNumberAsync("Stream network",
-                "A cell becomes part of a stream when at least this many upstream cells drain through it (D8 flow accumulation). Smaller = denser network.",
-                "Threshold (cells)", Math.Max(10, Math.Round(cells / 200.0)), 1);
-            if (threshold == null) return;
-
-            SetBusy(true, "Flow direction, accumulation and stream network…");
-            try
-            {
-                var segments = await Task.Run(() =>
-                {
-                    var dir = HydrologyAnalysis.FlowDirection(raster, cellSizeX, cellSizeY);
-                    var acc = HydrologyAnalysis.FlowAccumulation(dir);
-                    return StreamNetwork.Extract(dir, acc, doc.GeoReference, threshold.Value);
-                });
-                SetBusy(false);
-                if (segments.Count == 0) { await MessageAsync("Stream network", "No cell reaches this threshold — try a smaller one."); return; }
-
-                var erv = ErvDocument.Create(doc.Header.CoordinateSpace.Projection, doc.Header.CoordinateSpace.Datum);
-                var widths = new List<double>(segments.Count);
-                foreach (var seg in segments)
-                {
-                    var poly = new VectorPolyline { Attribute = "order " + seg.Order.ToString(CultureInfo.InvariantCulture) };
-                    foreach (var p in seg.Points) poly.Points.Add((p.X, p.Y));
-                    erv.Objects.Add(poly);
-                    widths.Add(0.6 + 0.6 * seg.Order);
-                }
-                int maxOrder = segments.Max(s => s.Order);
-                AddDerivedVectorLayer(erv, $"{layer.Name} · streams ≥{threshold.Value:g6}",
-                    string.Format(CultureInfo.InvariantCulture, "Stream network of {0} · D8 · threshold {1:g6} cells · Strahler 1–{2}", layer.Name, threshold.Value, maxOrder),
-                    Color.FromRgb(0x1E, 0x7F, 0xFF), widths, null, lineWidth: 1.0);
-                Flash($"Stream network: {segments.Count} segment(s), Strahler order up to {maxOrder} — new vector layer (not saved yet).");
-            }
-            catch (Exception ex) { SetBusy(false); await MessageAsync("Stream network failed", ex.Message); }
+            var recipe = await AskStreamRecipeAsync(_view.ActiveLayer!, null);
+            if (recipe != null) await CreateDerivedAsync(recipe, T("Flow direction, accumulation and stream network…"));
         }
 
         private async Task<double?> AskNumberAsync(string title, string explanation, string label, double value, double minimum)
@@ -803,8 +842,8 @@ namespace RasterField
             var tcs = new TaskCompletionSource<double?>();
             var box = new NumericUpDown { Value = (decimal)value, Minimum = (decimal)minimum, FormatString = "0.###", Increment = 10, Width = 160, HorizontalAlignment = HorizontalAlignment.Left };
             var dialog = new Window { Title = title, Width = 380, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner, CanResize = false };
-            var ok = new Button { Content = "Apply → new layer", MinWidth = 120 };
-            var cancel = new Button { Content = "Cancel", MinWidth = 80 };
+            var ok = new Button { Content = T("Apply → new layer"), MinWidth = 120 };
+            var cancel = new Button { Content = T("Cancel"), MinWidth = 80 };
             ok.Click += (_, _) => { tcs.TrySetResult((double)(box.Value ?? (decimal)value)); dialog.Close(); };
             cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
             dialog.Content = new StackPanel
@@ -827,7 +866,7 @@ namespace RasterField
 
         private void SetIdentifyToolActive(bool active)
         {
-            if (active) { SetClipToolActive(false); SetProfileToolActive(false); }
+            if (active) { SetClipToolActive(false); SetPathTool(PathTool.None); _analysisTabs.SelectedIndex = 0; }
             _view.IdentifyMode = active;
             Flash(active ? "Identify: click the map to list every visible layer's value there (Esc to stop)." : "");
             RefreshMenuChecks();
@@ -843,7 +882,7 @@ namespace RasterField
             {
                 switch (item)
                 {
-                    case RasterLayer layer when layer.IsVisible:
+                    case RasterLayer layer when layer.IsVisible && !layer.IsFrame:
                         sb.AppendLine(DescribeRasterAt(layer, e.WorldX, e.WorldY));
                         break;
                     case VectorLayer v when v.IsVisible:
@@ -851,7 +890,10 @@ namespace RasterField
                         break;
                 }
             }
-            await MessageAsync("Identify", sb.ToString().TrimEnd());
+            _identifyText.Text = sb.ToString().TrimEnd();
+            _analysisTabs.SelectedIndex = 0;
+            if (!_leftDockVisible) { _leftDockVisible = true; ApplyDockVisibility(); }
+            await Task.CompletedTask;
         }
 
         private static string DescribeRasterAt(RasterLayer layer, double wx, double wy)
@@ -923,7 +965,7 @@ namespace RasterField
         {
             var layer = _view.ActiveLayer;
             var r = layer?.ActiveRaster;
-            if (layer == null || r == null) { await MessageAsync("Statistics", "Open a dataset first."); return; }
+            if (layer == null || r == null) { await MessageAsync(T("Statistics"), T("Open a dataset first.")); return; }
 
             var stats = r.Statistics;
             long total = (long)r.Width * r.Height;
@@ -953,8 +995,8 @@ namespace RasterField
                     layer.Lineage != null ? "\n\nMade from: " + layer.Lineage : ""),
             };
 
-            var dialog = new Window { Title = "Statistics & histogram", Width = 460, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-            var close = new Button { Content = "Close", MinWidth = 80, HorizontalAlignment = HorizontalAlignment.Right };
+            var dialog = new Window { Title = T("Statistics & histogram"), Width = 460, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+            var close = new Button { Content = T("Close"), MinWidth = 80, HorizontalAlignment = HorizontalAlignment.Right };
             close.Click += (_, _) => dialog.Close();
             dialog.Content = new StackPanel { Margin = new Thickness(16), Spacing = 6, Children = { info, chart, close } };
             await dialog.ShowDialog(this);

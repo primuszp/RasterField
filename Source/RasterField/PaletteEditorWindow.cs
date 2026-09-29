@@ -6,6 +6,8 @@ using Avalonia.Layout;
 using Avalonia.Platform.Storage;
 using RasterField.Rendering;
 
+using static RasterField.L;
+
 namespace RasterField
 {
     /// <summary>
@@ -20,7 +22,7 @@ namespace RasterField
             { new("DigiTerra palette (*.pal)") { Patterns = new[] { "*.pal" } } };
 
         private readonly PaletteEditorControl _editor = new PaletteEditorControl();
-        private readonly TextBox _nameBox = new TextBox { Watermark = "Palette name" };
+        private readonly TextBox _nameBox = new TextBox { Watermark = T("Palette name") };
         // Explicit widths: the FluentTheme NumericUpDown's spin-button chrome needs more room than
         // its natural content alone suggests — squeeze it into a too-narrow Grid column (as these
         // used to be, at 55-60px) and the digits get crowded out entirely while the buttons still
@@ -29,7 +31,7 @@ namespace RasterField
         private readonly NumericUpDown _rBox = new NumericUpDown { Minimum = 0, Maximum = 255, Increment = 1, Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
         private readonly NumericUpDown _gBox = new NumericUpDown { Minimum = 0, Maximum = 255, Increment = 1, Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
         private readonly NumericUpDown _bBox = new NumericUpDown { Minimum = 0, Maximum = 255, Increment = 1, Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
-        private readonly TextBox _hexBox = new TextBox { Watermark = "#RRGGBB", Width = 90 };
+        private readonly TextBox _hexBox = new TextBox { Watermark = T("#RRGGBB"), Width = 90 };
         private readonly ComboBox _startFromBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
 
         private readonly PaletteLibrary _library;
@@ -43,7 +45,7 @@ namespace RasterField
             _onPreview = onPreview;
             _onSavedToLibrary = onSavedToLibrary;
 
-            Title = "Palette editor";
+            Title = T("Palette editor");
             Width = 560;
             Height = 420;
             CanResize = true;
@@ -65,39 +67,39 @@ namespace RasterField
             var root = new StackPanel { Margin = new Avalonia.Thickness(12), Spacing = 8 };
 
             var startRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-            startRow.Children.Add(new TextBlock { Text = "Start from:", VerticalAlignment = VerticalAlignment.Center });
+            startRow.Children.Add(new TextBlock { Text = T("Start from:"), VerticalAlignment = VerticalAlignment.Center });
             startRow.Children.Add(_startFromBox);
-            var loadBtn = new Button { Content = "Load" };
+            var loadBtn = new Button { Content = T("Load") };
             loadBtn.Click += (_, _) => LoadSeed();
             startRow.Children.Add(loadBtn);
             root.Children.Add(startRow);
 
-            root.Children.Add(new TextBlock { Text = "Name" });
+            root.Children.Add(new TextBlock { Text = T("Name") });
             root.Children.Add(_nameBox);
 
-            root.Children.Add(new TextBlock { Text = "Gradient — click the bar to add a stop, drag a marker to move it, Delete to remove" });
+            root.Children.Add(new TextBlock { Text = T("Gradient — click the bar to add a stop, drag a marker to move it, Delete to remove") });
             root.Children.Add(_editor);
 
             var editRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,90,Auto,80,Auto,80,Auto,80,Auto,90"), Margin = new Avalonia.Thickness(0, 6) };
             void Col(Control c, int i) { Grid.SetColumn(c, i); editRow.Children.Add(c); }
-            Col(new TextBlock { Text = "Pos %", VerticalAlignment = VerticalAlignment.Center }, 0);
+            Col(new TextBlock { Text = T("Pos %"), VerticalAlignment = VerticalAlignment.Center }, 0);
             Col(_posBox, 1);
-            Col(new TextBlock { Text = "R", VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 2);
+            Col(new TextBlock { Text = T("R"), VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 2);
             Col(_rBox, 3);
-            Col(new TextBlock { Text = "G", VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 4);
+            Col(new TextBlock { Text = T("G"), VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 4);
             Col(_gBox, 5);
-            Col(new TextBlock { Text = "B", VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 6);
+            Col(new TextBlock { Text = T("B"), VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 6);
             Col(_bBox, 7);
-            Col(new TextBlock { Text = "Hex", VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 8);
+            Col(new TextBlock { Text = T("Hex"), VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 8);
             Col(_hexBox, 9);
             root.Children.Add(editRow);
 
             var toolRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-            var addBtn = new Button { Content = "Add stop" };
+            var addBtn = new Button { Content = T("Add stop") };
             addBtn.Click += (_, _) => _editor.AddStopAt(0.5);
-            var removeBtn = new Button { Content = "Remove stop" };
+            var removeBtn = new Button { Content = T("Remove stop") };
             removeBtn.Click += (_, _) => _editor.RemoveSelected();
-            var reverseBtn = new Button { Content = "Reverse" };
+            var reverseBtn = new Button { Content = T("Reverse") };
             reverseBtn.Click += (_, _) => _editor.Reverse();
             toolRow.Children.Add(addBtn);
             toolRow.Children.Add(removeBtn);
@@ -105,11 +107,11 @@ namespace RasterField
             root.Children.Add(toolRow);
 
             var bottomRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Avalonia.Thickness(0, 12, 0, 0) };
-            var saveLibBtn = new Button { Content = "Save to palette list" };
+            var saveLibBtn = new Button { Content = T("Save to palette list") };
             saveLibBtn.Click += (_, _) => SaveToLibrary();
-            var saveFileBtn = new Button { Content = "Save as .pal file…" };
+            var saveFileBtn = new Button { Content = T("Save as .pal file…") };
             saveFileBtn.Click += async (_, _) => await SaveAsFileAsync();
-            var closeBtn = new Button { Content = "Close" };
+            var closeBtn = new Button { Content = T("Close") };
             closeBtn.Click += (_, _) => Close();
             bottomRow.Children.Add(saveLibBtn);
             bottomRow.Children.Add(saveFileBtn);
@@ -180,7 +182,7 @@ namespace RasterField
             catch (FormatException) { /* leave the text box as typed; user is probably mid-edit */ }
         }
 
-        private string CurrentName() => string.IsNullOrWhiteSpace(_nameBox.Text) ? "Custom palette" : _nameBox.Text!.Trim();
+        private string CurrentName() => string.IsNullOrWhiteSpace(_nameBox.Text) ? T("Custom palette") : _nameBox.Text!.Trim();
 
         private void Preview() => _onPreview(_editor.Bake(CurrentName()));
 
@@ -196,7 +198,7 @@ namespace RasterField
         {
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Save palette",
+                Title = T("Save palette"),
                 DefaultExtension = "pal",
                 SuggestedFileName = CurrentName() + ".pal",
                 FileTypeChoices = PalFileTypes,

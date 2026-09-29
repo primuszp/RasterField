@@ -549,20 +549,28 @@ Minden fázis után: `dotnet build` figyelmeztetés nélkül (TreatWarningsAsErr
 
 ## 17. Megvalósítás állapota
 
+A terv minden pontja megvalósult; az alábbi táblázat azt is jelzi, ahol a megvalósítás eltér a tervtől.
+
 | Terület | Állapot | Megjegyzés |
 |---|---|---|
-| **Bézier‑patch interpoláció (Core)** | ✅ kész | `BezierPatchInterpolator` (Subdivide / SubdivideWindow / Sample), τ feszesség, monoton mód, no‑data módok, tükrözéses szegély; `ErsDocument.Subdivide` teljes rétegre vagy ablakra, georeferencia megtartásával. 13 egységteszt (sík reprodukció, identitás, C¹ folytonosság, túllövés, no‑data, ablak, georeferencia). |
-| **Bézier‑subdivision ablak** | ✅ kész | ×2/×3/×4/×8/egyedi, teljes réteg vagy aktuális nézet, haladó beállítások, méret‑ és memóriabecslés, egymás melletti előnézet (eredeti ↔ Bézier). Az osztott, húzható elválasztós nézet helyett két kép van egymás mellett. |
-| **Bézier megjelenítési simítás** | ✅ kész | *Nézet ▸ Nagyítás ▸ Bézier*; csak a látható ablakra, késleltetett újraszámolással; nem módosítja az adatot. |
-| **Származtatott rétegek** | ✅ kész | Minden elemzés eredménye memóriabeli réteg `↳` és `●` jelöléssel, a tooltipben a levezetéssel; mentés a kártyán vagy *Réteg* menüből. Receptből való újraszámolás még nincs. |
-| **Szintvonal** | ✅ kész | Alapköz, fővonal minden n‑edik szinten (vastagabb és vonal menti felirattal), Chaikin‑simítás, minimális hossz, Bézier ×2/×4 forrásfelszín. A szintvonalak most a cellaközéppontokon ülnek (korábban fél cellával ÉNy‑ra csúsztak). |
-| **Vízhálózat** | ✅ kész | D8 + küszöb → vektorréteg, Strahler‑rend szerinti vonalvastagság. |
-| **Pontazonosító** | ✅ kész | Minden látható réteg értéke (összes sáv, bilineáris és Bézier‑becslés), vektoroknál a legközelebbi objektum attribútuma. |
-| **Statisztika + hisztogram** | ✅ kész | Külön ablakban, a réteg palettájával színezett log‑skálás hisztogrammal. Az interaktív (húzható fogantyús) hisztogram a jobb panelen még nincs meg. |
-| **Réteg‑átlátszóság** | ✅ kész | Csúszka a raszterkártyán. Keverési módok (szorzás, képernyő, …) még nincsenek. |
-| **Menüszerkezet, gyorsbillentyűk** | ✅ kész | Egy közös menümodell az ablakmenühöz és a macOS rendszermenühöz; `I`, `P`, `C`, `G`, `B`, `Tab`, `Ctrl+B`. |
-| **Háromoszlopos dokkolt elrendezés, parancskereső** | ⏳ nyitott | A rétegpanel és a tulajdonságok továbbra is egy jobb oldali oszlopban vannak. |
-| **Magyar/angol felület** | ⏳ nyitott | A felület angol; erőforrás‑alapú fordítás még nincs. |
-| **Projektfájl (`.rfproj`), visszavonás** | ⏳ nyitott | — |
-| **GeoJSON / CSV import‑export, többpontos profil, mérés, zonális statisztika** | ⏳ nyitott | — |
-| **Vektor első rétegként** | ⏳ nyitott | Továbbra is kell legalább egy raszterréteg a koordináta‑kerethez. |
+| **Háromoszlopos dokkolt elrendezés** | ✅ | Bal: rétegek + elemzés (Azonosítás / Profil / Mérés‑zóna fülek), közép: térkép, jobb: az aktív réteg tulajdonságai + jelmagyarázat. `F9` / `F10` / `F11` ki‑be kapcsol; a dokkszélességek mentődnek. |
+| **Parancskereső** | ✅ | `Ctrl+K`; ékezet‑ és kisbetű‑független keresés a teljes menüben (pl. „szintv”, „bezier”). |
+| **Menü, gyorsbillentyűk** | ✅ | Egy közös menümodell az ablakmenühöz és a macOS rendszermenühöz; a menüben látható gyorsbillentyűk automatikusan működnek. |
+| **Rétegmodell** | ✅ | Raszter, RGB, vektor, származtatott (↳, ●), jobb‑klikk / ⋮ helyi menü a kártyákon. Csoportok helyett a sorrend + láthatóság + átlátszóság + keverés kezeli a rétegeket. |
+| **Keverési módok, átlátszóság** | ✅ | Normál, Szorzás (árnyékoláshoz), Képernyő, Átfedés, Sötétítés, Világosítás, Lágy fény; átlátszóság a kártyán és a jobb panelen. |
+| **Interaktív hisztogram** | ✅ | A jobb panelen, a paletta színeivel; a két fogantyú húzása állítja a széthúzást. |
+| **Metaadat, ERS fejléc** | ✅ | Információ szekció + „Teljes ERS fejléc…” ablak. |
+| **Levezetés receptből, újraszámolás** | ✅ | Bézier, szintvonal, vízhálózat, lejtő, kitettség, árnyékolás, görbület, lefolyás, sávszámítás: a „Paraméterek…” / ↻ újranyitja a párbeszédet kitöltve, és helyben újraszámol. Kivágás, mozaik, láthatóság, kitöltés recept nélküli. |
+| **Bézier‑patch interpoláció** | ✅ | Core + párbeszéd előnézettel + megjelenítési simítás + szintvonal‑forrás + profil‑görbe + pontazonosító. Húzható elválasztós osztott előnézet helyett két kép egymás mellett. |
+| **Szintvonal, vízhálózat** | ✅ | Fővonal + vonal menti felirat, Chaikin‑simítás, min. hossz, Bézier forrásfelszín; Strahler‑rend szerinti vonalvastagság. |
+| **Pontazonosító** | ✅ | Az eredmény az Elemzés panel „Azonosítás” fülén: minden látható réteg (összes sáv, bilineáris, Bézier), vektoroknál a legközelebbi objektum. |
+| **Többpontos profil** | ✅ | `P`; kattintás pontot ad, húzás mozgat, dupla kattintás / Enter lezár, Backspace visszavon. Élő diagram a dokkban, minden látható réteg + Bézier‑görbe, külön ablak és CSV‑export. Vektorvonal mentén is (⋮ ▸ Profil az első vonal mentén). |
+| **Mérés** | ✅ | `M`; hossz, terepkövető (3D) felszíni hossz, lezárva kerület és terület. |
+| **Zonális statisztika** | ✅ | `Z`: rajzolt sokszögben minden látható raszterre; illetve poligonrétegből soronként, CSV‑exporttal. |
+| **Vektor első rétegként** | ✅ | Láthatatlan „keret” réteg adja a koordinátarendszert, amíg nincs raszter; az első raszter érkezésekor eltűnik. |
+| **GeoJSON / CSV** | ✅ | Import (Réteg hozzáadása, fogd‑és‑vidd, parancssor) és export (⋮ menü). Átvetítés nincs: a koordináták a térkép rendszerében értendők. |
+| **Projektfájl (`.rfproj`)** | ✅ | Rétegek, megjelenítés, keverés, receptek, nézet, könyvjelzők; relatív útvonalak. A mentetlen származtatott rétegek receptként tárolódnak, és megnyitáskor újraszámolódnak. |
+| **Visszavonás / újra** | ✅ | `Ctrl+Z` / `Ctrl+Y`, 100 lépés; a csúszkák egy lépésbe vonódnak össze. Réteg hozzáadás/eltávolítás, sorrend, láthatóság, megjelenítés, stílus, újraszámolás. |
+| **Könyvjelzők, ugrás koordinátára** | ✅ | `Ctrl+Shift+D`, `Ctrl+1…9`; Nézet ▸ Ugrás koordinátára. |
+| **Mentetlen munka védelme** | ✅ | Bezáráskor, új projektnél és projekt megnyitásakor figyelmeztet a csak memóriában létező rétegekre. |
+| **Magyar / angol felület** | ✅ | Nézet ▸ Nyelv (automatikus / English / Magyar). A menük azonnal váltanak, a panelek és ablakok újraindítás után. |
