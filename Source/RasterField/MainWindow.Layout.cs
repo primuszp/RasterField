@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -50,6 +51,8 @@ namespace RasterField
         private readonly SelectableTextBlock _metaText = new SelectableTextBlock { TextWrapping = TextWrapping.Wrap, FontSize = AppTheme.FontCaption, LineHeight = 16 };
         private readonly StackPanel _rasterProps = new StackPanel { Spacing = 4 };
         private IReadOnlyList<ProfileSeries> _lastProfile = Array.Empty<ProfileSeries>();
+        private CancellationTokenSource? _profileCts;
+        private int _profileGeneration;
 
         private static readonly FilePickerFileType[] CsvTypes = { new("CSV (*.csv)") { Patterns = new[] { "*.csv" } } };
         private static readonly FilePickerFileType[] GeoJsonTypes = { new("GeoJSON (*.geojson)") { Patterns = new[] { "*.geojson", "*.json" } } };
@@ -435,55 +438,127 @@ namespace RasterField
             Color.FromRgb(240, 110, 200), Color.FromRgb(200, 200, 90),
         };
 
-        private void UpdateProfile()
+        private async void UpdateProfile()
         {
+            _profileCts?.Cancel();
+            _profileCts?.Dispose();
+            _profileCts = new CancellationTokenSource();
+            CancellationToken token = _profileCts.Token;
+            int generation = ++_profileGeneration;
+
             var path = _view.CurrentPath.ToList();
             var active = _view.ActiveLayer;
+            if (path.Count < 2 || active == null || active.IsFrame)
+            {
+                ApplyProfileCalculation(new ProfileCalculation(new List<ProfileSeries>(), null, null));
+                return;
+            }
+
+            // Bézier and bilinear agree at the cell centres and differ only between them, so
+            // sample at least 4 points per cell of the active layer (capped for responsiveness).
+            double length = Measurement.Length(path);
+            var (_, gb, gc, _, ge, gf) = active.Document.GeoReference.GeoTransform;
+            double cell = Math.Min(Math.Sqrt(gb * gb + ge * ge), Math.Sqrt(gc * gc + gf * gf));
+            double spacing = Math.Max(Math.Min(length / 600.0, cell / 4.0), Math.Max(length / 8000.0, 1e-9));
+            var layers = _profileAllLayersBox.IsChecked == true
+                ? _view.DrawOrder.OfType<RasterLayer>().Where(l => l.IsVisible && !l.IsFrame).Reverse().ToList()
+                : new List<RasterLayer> { active };
+            if (!layers.Contains(active)) layers.Insert(0, active);
+            layers.Remove(active);
+            layers.Insert(0, active);
+
+            var requests = new List<ProfileLayerRequest>();
+            int ci = 0;
+            foreach (var layer in layers)
+            {
+                if (layer.ShowRgbComposite) continue;
+                var geo = layer.Document.GeoReference;
+                if (!geo.IsInvertible || (layer.Raster == null && layer.Source == null)) continue;
+                requests.Add(new ProfileLayerRequest(layer.Name, layer.Raster, layer.Source,
+                    layer.SourceFactory, layer.ActiveBand, geo, ReferenceEquals(layer, active),
+                    SeriesColors[ci++ % SeriesColors.Length]));
+            }
+
+            try
+            {
+                bool includeBezier = _profileBezierBox.IsChecked == true;
+                Color bezierColor = AppTheme.IsDark ? Colors.White : Color.FromRgb(0x1F, 0x26, 0x30);
+                string bezierName = T("Bézier");
+                ProfileCalculation calculation = await Task.Run(
+                    () => CalculateProfile(requests, path, spacing, includeBezier, bezierName, bezierColor, token), token);
+                if (token.IsCancellationRequested || generation != _profileGeneration) return;
+                ApplyProfileCalculation(calculation);
+            }
+            catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) when (token.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.TraceError($"Profile calculation failed: {ex}");
+                if (generation == _profileGeneration)
+                    ApplyProfileCalculation(new ProfileCalculation(new List<ProfileSeries>(), null, null));
+            }
+        }
+
+        private static ProfileCalculation CalculateProfile(
+            IReadOnlyList<ProfileLayerRequest> requests, IReadOnlyList<(double X, double Y)> path,
+            double spacing, bool includeBezier, string bezierName, Color bezierColor, CancellationToken token)
+        {
             var series = new List<ProfileSeries>();
             IReadOnlyList<ProfileSample>? bilinear = null, bezier = null;
-            if (path.Count >= 2 && active != null && !active.IsFrame)
+            foreach (ProfileLayerRequest request in requests)
             {
-                // Bézier and bilinear agree at the cell centres and differ only between them, so
-                // sample at least 4 points per cell of the active layer (capped for responsiveness).
-                double length = Measurement.Length(path);
-                var (_, gb, gc, _, ge, gf) = active.Document.GeoReference.GeoTransform;
-                double cell = Math.Min(Math.Sqrt(gb * gb + ge * ge), Math.Sqrt(gc * gc + gf * gf));
-                double spacing = Math.Max(Math.Min(length / 600.0, cell / 4.0), Math.Max(length / 8000.0, 1e-9));
-                var layers = _profileAllLayersBox.IsChecked == true
-                    ? _view.DrawOrder.OfType<RasterLayer>().Where(l => l.IsVisible && !l.IsFrame).Reverse().ToList()
-                    : new List<RasterLayer> { active };
-                if (!layers.Contains(active)) layers.Insert(0, active);
-                layers.Remove(active);
-                layers.Insert(0, active);
-
-                int ci = 0;
-                foreach (var layer in layers)
+                token.ThrowIfCancellationRequested();
+                IReadOnlyList<ProfileSample> samples;
+                if (request.Raster != null)
                 {
-                    var raster = layer.Raster;
-                    if (raster == null || layer.ShowRgbComposite) continue; // streaming / RGB layers aren't profiled
-                    var geo = layer.Document.GeoReference;
-                    if (!geo.IsInvertible) continue;
-                    var samples = RasterProfiler.SamplePolylineWorld(raster, geo, path, spacing);
-                    series.Add(new ProfileSeries(layer.Name, samples, SeriesColors[ci++ % SeriesColors.Length]));
-                    if (ReferenceEquals(layer, active) && _profileBezierBox.IsChecked == true)
+                    samples = RasterProfiler.SamplePolylineWorld(request.Raster, request.GeoReference, path, spacing);
+                }
+                else
+                {
+                    IRasterSource? ownedSource = null;
+                    try
                     {
-                        var o = new BezierPatchOptions();
-                        bilinear = samples;
-                        bezier = RasterProfiler.SamplePolylineWorld(raster, geo, path, spacing, (r, c, row) => BezierPatchInterpolator.Sample(r, c, row, o));
-                        series.Add(new ProfileSeries(layer.Name + " · " + T("Bézier"), bezier,
-                            AppTheme.IsDark ? Colors.White : Color.FromRgb(0x1F, 0x26, 0x30), dashed: true));
+                        IRasterSource source = request.SourceFactory != null
+                            ? ownedSource = request.SourceFactory()
+                            : request.Source!;
+                        samples = RasterProfiler.SamplePolylineWorld(
+                            source, request.GeoReference, path, spacing, request.Band, cancellationToken: token);
+                    }
+                    finally
+                    {
+                        ownedSource?.Dispose();
                     }
                 }
-            }
-            _lastProfile = series; // CSV, the profile window and the PDF report always get the real profile
 
-            _profileDeltaBox.IsEnabled = _profileBezierBox.IsChecked == true;
-            var delta = bilinear != null && bezier != null ? ProfileDifference(bilinear, bezier) : null;
+                series.Add(new ProfileSeries(request.Name, samples, request.Color));
+                if (!request.IsActive) continue;
+                bilinear = samples;
+                // The current Bézier interpolator needs an in-memory 4×4 neighbourhood. The
+                // regular profile remains available for streaming layers without materialising
+                // the dataset; Bézier can still be compared on loaded/clipped layers.
+                if (includeBezier && request.Raster != null)
+                {
+                    var options = new BezierPatchOptions();
+                    bezier = RasterProfiler.SamplePolylineWorld(request.Raster, request.GeoReference, path, spacing,
+                        (r, c, row) => BezierPatchInterpolator.Sample(r, c, row, options));
+                    series.Add(new ProfileSeries(request.Name + " · " + bezierName, bezier, bezierColor, dashed: true));
+                }
+            }
+            return new ProfileCalculation(series, bilinear, bezier);
+        }
+
+        private void ApplyProfileCalculation(ProfileCalculation calculation)
+        {
+            _lastProfile = calculation.Series; // CSV, the profile window and the PDF report always get the real profile
+            _profileDeltaBox.IsEnabled = calculation.Bezier != null;
+            var delta = calculation.Bilinear != null && calculation.Bezier != null
+                ? ProfileDifference(calculation.Bilinear, calculation.Bezier)
+                : null;
             string unit = UnitLabel() ?? "";
             if (delta == null || !delta.Any(s => s.Value.HasValue))
             {
                 _profileDeltaText.IsVisible = false;
-                _profileChart.SetSeries(series, DistanceUnit(), UnitLabel());
+                _profileChart.SetSeries(calculation.Series, DistanceUnit(), UnitLabel());
                 return;
             }
 
@@ -494,9 +569,16 @@ namespace RasterField
             _profileChart.SetSeries(
                 _profileDeltaBox.IsChecked == true
                     ? new[] { new ProfileSeries(T("Δ Bézier − bilinear"), delta, AppTheme.IsDark ? AppTheme.DarkAccentColor : AppTheme.LightAccentColor) }
-                    : series,
+                    : calculation.Series,
                 DistanceUnit(), UnitLabel());
         }
+
+        private sealed record ProfileLayerRequest(string Name, Raster? Raster, IRasterSource? Source,
+            Func<IRasterSource>? SourceFactory, int Band, RasterGeoReference GeoReference,
+            bool IsActive, Color Color);
+
+        private sealed record ProfileCalculation(List<ProfileSeries> Series,
+            IReadOnlyList<ProfileSample>? Bilinear, IReadOnlyList<ProfileSample>? Bezier);
 
         /// <summary>Sample-by-sample <paramref name="bezier"/> − <paramref name="bilinear"/> (same path, same spacing).</summary>
         private static List<ProfileSample> ProfileDifference(IReadOnlyList<ProfileSample> bilinear, IReadOnlyList<ProfileSample> bezier) =>

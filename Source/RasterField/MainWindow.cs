@@ -231,8 +231,15 @@ namespace RasterField
             };
         }
 
-        /// <summary>Releases the raster view's rendered bitmap and streaming reader.</summary>
-        public void Dispose() => _view.Dispose();
+        /// <summary>Releases background profile work, rendered bitmaps and streaming readers.</summary>
+        public void Dispose()
+        {
+            _profileGeneration++;
+            _profileCts?.Cancel();
+            _profileCts?.Dispose();
+            _profileCts = null;
+            _view.Dispose();
+        }
 
         // ---- app settings (recent files, window geometry, last palette/stretch) -----
 

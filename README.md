@@ -63,7 +63,7 @@ Robustness: LF/CRLF, UTF‑8 BOM, missing optional blocks, `NrOfBands` absent �
 | `NoDataFiller` | Patches no-data gaps, non-destructively, **restricted to the convex hull of the raster's valid data** — a genuine internal gap (sensor dropout, cloud mask, stripe, …) gets filled, but the no-data margin *outside* the data's actual footprint (a rotated scene's background corners, a mosaic's missing corner, …) is always left untouched. `FillNearest` — classic two-pass nearest-valid-cell propagation (Rosenfeld & Pfaltz, 1966; same operation as Esri's *Nibble* / GRASS's `r.grow.distance`), no distance limit. `FillInverseDistanceWeighted` — GDAL's `GDALFillNodata` algorithm: directional ray search + inverse-distance-weighted average + optional smoothing, finished off with a nearest-neighbour backstop so every in-hull gap ends up filled regardless of the chosen search distance. `CountNoDataWithinHull` reports just the real gaps, separate from `CountNoData`'s raw (hull-inclusive-and-exclusive) total. The hull itself (`ConvexHull.Compute`) is a standard, reusable Andrew's-monotone-chain implementation. |
 | `RasterClipper` / `ErsDocument.Clip(...)` / `.ClipToWorldExtent(...)` | Crops a raster (and, at the document level, re-anchors the georeference so the crop's origin lands exactly where it did in the source — correct even under rotation) to a pixel window or a world-coordinate extent. Works whether or not the raster is loaded: with no bands loaded it reads straight from disk (see `RasterSource` below), so it doubles as the extraction tool for a large dataset. |
 | `RasterSource` | Random-access reader over the data file: `ReadWindow(x, y, w, h, stepX, stepY)` reads only an arbitrary sub-window, optionally decimated; `ReadOverview(maxW, maxH)` reads a whole-image preview decimated to fit. Seeking past skipped rows is O(1), so both stay fast regardless of the file's true size — the basis of the large-dataset support below. |
-| `RasterProfiler` | Samples a raster along an arbitrary line — `Sample`/`SampleWorld` return evenly-spaced `ProfileSample`s (distance, location, value) via `BilinearSample`, which follows the same corner-addressed convention as `RasterGeoReference` (a cell's value sits at its centre) and excludes no-data corners from the weighted average rather than poisoning the whole sample. The basis of the app's Profile tool. |
+| `RasterProfiler` | Samples a raster along an arbitrary line — `Sample`/`SampleWorld` return evenly-spaced `ProfileSample`s (distance, location, value) via `BilinearSample`, which follows the same corner-addressed convention as `RasterGeoReference` (a cell's value sits at its centre) and excludes no-data corners from the weighted average rather than poisoning the whole sample. `SamplePolylineWorld(IRasterSource, …)` profiles huge streamed rasters through a bounded 256×256 tile cache instead of loading the band. The basis of the app's Profile tool. |
 | `TerrainAnalysis` | `Slope`, `Aspect`, `Hillshade` from an elevation raster, using Horn's (1981) 3×3 gradient method and the standard Lambertian reflectance model — the same defaults as `gdaldem`/Esri's Slope, Aspect and Hillshade tools. `Curvature` (Zevenbergen & Thorne, 1987): `General` (convex/concave overall shape), `Profile` (along the slope — governs flow acceleration) and `Plan` (across the slope — governs flow convergence); the direction-dependent Profile/Plan fall back, on a perfectly flat gradient, to the exact directional average `-(D+E)` (half of General). A 3×3 window touching no-data propagates no-data to that output cell; edges replicate their nearest interior neighbour. |
 | `HydrologyAnalysis` | `FlowDirection` — classic single-flow-direction "D8" model, Esri's power-of-two encoding (0 = sink). `FlowAccumulation` — the upstream contributing-cell count for every cell, computed in one topological (Kahn's-algorithm) pass over the flow-direction DAG (guaranteed acyclic, since D8 only ever flows to a strictly lower cell). |
 | `ViewshedAnalysis` | Line-of-sight visibility from an observer point ("R2" viewshed — straight-line-of-sight against the terrain profile, no earth-curvature correction): 1/0/no-data per cell, with observer/target height offsets and an optional distance cap. |
@@ -205,7 +205,9 @@ made.Save("new.ers");
   vector card's `⋮` menu. Vector layers can be the **first layer**: an invisible frame provides the
   coordinate system until a raster arrives.
 * **Path tools** — **Profile** (`P`): a multi-point path with a live chart in the Analysis panel
-  (every visible raster layer plus the Bézier-interpolated curve), a larger window and CSV export;
+  (every visible raster layer, including huge streamed datasets, plus the Bézier-interpolated curve
+  for loaded/clipped layers), a larger window and CSV export. Streamed profile reads run in the
+  background, are cancelled when superseded and keep only a small bounded tile cache in memory;
   or along a vector line (card menu). **Measure** (`M`): length, terrain-following surface length,
   perimeter and area. **Zone** (`Z`): zonal statistics of every visible raster inside a drawn
   polygon; *Analysis ▸ Zonal statistics by polygon layer…* does it per polygon of a vector layer,
@@ -287,7 +289,9 @@ made.Save("new.ers");
   in testing added only ~15–20 MB to the process, versus the whole file (plus
   an equally large colourised bitmap) before this. The status bar and on‑canvas
   hint show *(streaming)* in this mode; the Clip tool still works (and is the
-  recommended way to pull a smaller, fully‑editable region out of a huge scene).
+  recommended way to pull a smaller, fully‑editable region out of a huge scene). Multi-point
+  profiles also read only the small source tiles crossed by the path, so they work directly on
+  these large layers without a preliminary clip.
 * **Palettes** — built‑ins + every `.pal` and PNG/BMP strip in `palette/`; reverse
   toggle; continuous / discrete / nearest modes; live legend. The bundled files are
   named in English by their content, low → high (e.g. *Precipitation (brown-blue)*,

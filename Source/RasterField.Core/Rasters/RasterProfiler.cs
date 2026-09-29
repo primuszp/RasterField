@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace RasterField.Rasters
 {
@@ -134,6 +135,54 @@ namespace RasterField.Rasters
         }
 
         /// <summary>
+        /// Samples a multi-vertex world-space path directly from a windowed raster source. Only
+        /// the small source tiles touched by the path are read, so profiles over very large
+        /// datasets do not require the complete band in memory. Samples are bilinearly
+        /// interpolated with the same cell-centre convention as <see cref="BilinearSample"/>.
+        /// </summary>
+        public static IReadOnlyList<ProfileSample> SamplePolylineWorld(
+            IRasterSource source, RasterGeoReference geoReference,
+            IReadOnlyList<(double X, double Y)> vertices, double spacing,
+            int band = 0, int tileSize = 256, CancellationToken cancellationToken = default)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            if (geoReference == null) throw new ArgumentNullException(nameof(geoReference));
+            if (vertices == null) throw new ArgumentNullException(nameof(vertices));
+            if (vertices.Count < 2) throw new ArgumentException("A path needs at least two vertices.", nameof(vertices));
+            if (!(spacing > 0)) throw new ArgumentOutOfRangeException(nameof(spacing), "The sample spacing must be positive.");
+            if (!geoReference.IsInvertible) throw new InvalidOperationException("The georeference is not invertible.");
+            if (band < 0 || band >= source.BandCount) throw new ArgumentOutOfRangeException(nameof(band));
+            if (tileSize < 2) throw new ArgumentOutOfRangeException(nameof(tileSize), "A source tile must be at least 2 × 2 cells.");
+
+            var sampler = new WindowedBilinearSampler(source, band, tileSize, cancellationToken);
+            var result = new List<ProfileSample>();
+            double travelled = 0;
+
+            void Add(double wx, double wy, double distance)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var (col, row) = geoReference.WorldToPixel(wx, wy);
+                result.Add(new ProfileSample(distance, wx, wy, sampler.Sample(col, row)));
+            }
+
+            Add(vertices[0].X, vertices[0].Y, 0);
+            for (int i = 1; i < vertices.Count; i++)
+            {
+                var (ax, ay) = vertices[i - 1];
+                var (bx, by) = vertices[i];
+                double len = Math.Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+                int steps = Math.Max(1, (int)Math.Ceiling(len / spacing));
+                for (int s = 1; s <= steps; s++)
+                {
+                    double t = s / (double)steps;
+                    Add(ax + (bx - ax) * t, ay + (by - ay) * t, travelled + len * t);
+                }
+                travelled += len;
+            }
+            return result;
+        }
+
+        /// <summary>
         /// Bilinearly interpolated value at pixel coordinate (<paramref name="col"/>,
         /// <paramref name="row"/>), using the same corner-addressed convention as
         /// <see cref="RasterGeoReference"/> (whole numbers are cell corners; a cell's own value
@@ -174,6 +223,105 @@ namespace RasterField.Rasters
             if (raster.IsNoData(v)) return;
             weightSum += weight;
             valueSum += weight * v;
+        }
+
+        /// <summary>
+        /// Small bounded LRU cache around <see cref="IRasterSource.ReadWindow"/>. A sequential
+        /// profile normally touches each tile once; keeping a few recent neighbours also avoids
+        /// repeated reads where bilinear interpolation crosses a tile edge or the path bends.
+        /// </summary>
+        private sealed class WindowedBilinearSampler
+        {
+            private const int MaxCachedTiles = 16;
+            private readonly IRasterSource _source;
+            private readonly int _band;
+            private readonly int _tileSize;
+            private readonly CancellationToken _cancellationToken;
+            private readonly Dictionary<long, CachedTile> _tiles = new Dictionary<long, CachedTile>();
+            private readonly LinkedList<long> _recent = new LinkedList<long>();
+
+            public WindowedBilinearSampler(IRasterSource source, int band, int tileSize, CancellationToken cancellationToken)
+            {
+                _source = source;
+                _band = band;
+                _tileSize = tileSize;
+                _cancellationToken = cancellationToken;
+            }
+
+            public float? Sample(double col, double row)
+            {
+                if (col < 0 || row < 0 || col > _source.Width || row > _source.Height) return null;
+
+                double u = col - 0.5;
+                double v = row - 0.5;
+                int c0 = (int)Math.Floor(u);
+                int r0 = (int)Math.Floor(v);
+                int c1 = c0 + 1;
+                int r1 = r0 + 1;
+                double fx = u - c0;
+                double fy = v - r0;
+
+                double weightSum = 0, valueSum = 0;
+                Accumulate(c0, r0, (1 - fx) * (1 - fy), ref weightSum, ref valueSum);
+                Accumulate(c1, r0, fx * (1 - fy), ref weightSum, ref valueSum);
+                Accumulate(c0, r1, (1 - fx) * fy, ref weightSum, ref valueSum);
+                Accumulate(c1, r1, fx * fy, ref weightSum, ref valueSum);
+                return weightSum > 0 ? (float)(valueSum / weightSum) : (float?)null;
+            }
+
+            private void Accumulate(int col, int row, double weight, ref double weightSum, ref double valueSum)
+            {
+                if (weight <= 0 || (uint)col >= (uint)_source.Width || (uint)row >= (uint)_source.Height) return;
+
+                Raster tile = GetTile(col / _tileSize, row / _tileSize);
+                float value = tile[row % _tileSize, col % _tileSize];
+                if (tile.IsNoData(value)) return;
+                weightSum += weight;
+                valueSum += weight * value;
+            }
+
+            private Raster GetTile(int tileX, int tileY)
+            {
+                long key = ((long)tileY << 32) | (uint)tileX;
+                if (_tiles.TryGetValue(key, out CachedTile? cached))
+                {
+                    _recent.Remove(cached.Node);
+                    _recent.AddFirst(cached.Node);
+                    return cached.Raster;
+                }
+
+                _cancellationToken.ThrowIfCancellationRequested();
+                int x = tileX * _tileSize;
+                int y = tileY * _tileSize;
+                int width = Math.Min(_tileSize, _source.Width - x);
+                int height = Math.Min(_tileSize, _source.Height - y);
+                Raster raster = _source.ReadWindow(x, y, width, height, band: _band);
+                var node = _recent.AddFirst(key);
+                _tiles.Add(key, new CachedTile(raster, node));
+
+                if (_tiles.Count > MaxCachedTiles)
+                {
+                    LinkedListNode<long>? oldest = _recent.Last;
+                    if (oldest != null)
+                    {
+                        _recent.RemoveLast();
+                        _tiles.Remove(oldest.Value);
+                    }
+                }
+                return raster;
+            }
+
+            private sealed class CachedTile
+            {
+                public CachedTile(Raster raster, LinkedListNode<long> node)
+                {
+                    Raster = raster;
+                    Node = node;
+                }
+
+                public Raster Raster { get; }
+                public LinkedListNode<long> Node { get; }
+            }
         }
     }
 }
