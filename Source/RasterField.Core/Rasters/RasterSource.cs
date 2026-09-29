@@ -19,7 +19,7 @@ namespace RasterField.Rasters
     /// skipped rows is cheap, so both stay fast regardless of the source's true size.
     /// Not thread-safe: use one <see cref="RasterSource"/> from one thread at a time.
     /// </remarks>
-    public sealed class RasterSource : IDisposable
+    public sealed class RasterSource : IRasterSource
     {
         private readonly Stream _stream;
         private readonly bool _ownsStream;

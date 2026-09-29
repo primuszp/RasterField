@@ -22,7 +22,7 @@ namespace RasterField
         [STAThread]
         public static void Main(string[] args)
         {
-            StartupFiles = args.Where(a => a.EndsWith(".ers", StringComparison.OrdinalIgnoreCase)).ToArray();
+            StartupFiles = args.Where(a => new[] { ".ers", ".tif", ".tiff" }.Any(ext => a.EndsWith(ext, StringComparison.OrdinalIgnoreCase))).ToArray();
             StartupVectorFiles = args.Where(a => new[] { ".erv", ".geojson", ".json", ".csv" }.Any(ext => a.EndsWith(ext, StringComparison.OrdinalIgnoreCase))).ToArray();
             StartupProject = args.FirstOrDefault(a => a.EndsWith(".rfproj", StringComparison.OrdinalIgnoreCase));
 

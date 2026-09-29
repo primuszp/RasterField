@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/Source/">
     <Project Path="Source/RasterField.Core/RasterField.Core.csproj" />
+    <Project Path="Source/RasterField.Gdal/RasterField.Gdal.csproj" />
     <Project Path="Source/RasterField/RasterField.csproj" />
     <Project Path="Source/RasterField.Tests/RasterField.Tests.csproj" />
   </Folder>

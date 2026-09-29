@@ -68,7 +68,7 @@ namespace RasterField
         public Raster? Raster { get; internal set; }
 
         /// <summary>Random-access reader (large dataset only).</summary>
-        public RasterSource? Source { get; internal set; }
+        public IRasterSource? Source { get; internal set; }
 
         /// <summary>Last streamed window for the active band (or the Red band, in RGB composite mode).</summary>
         public Raster? WindowRaster { get; internal set; }

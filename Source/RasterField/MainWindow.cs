@@ -14,6 +14,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using RasterField.ErMapper;
+using RasterField.Gdal;
 using RasterField.Rasters;
 using RasterField.Rendering;
 using RasterField.Vectors;
@@ -24,7 +25,7 @@ namespace RasterField
     /// <summary>
     /// Cross-platform host window: menu, palette / stretch controls and a live legend on the
     /// right, a status bar with the world coordinate and sampled value under the pointer, and
-    /// the <see cref="RasterView"/> filling the rest. Reads and writes <c>.ers</c> + BIL.
+    /// the <see cref="RasterView"/> filling the rest. Reads and writes ERS/BIL and GeoTIFF.
     /// </summary>
     public sealed partial class MainWindow : Window, IDisposable
     {
@@ -101,17 +102,22 @@ namespace RasterField
         // call) per CA1861 — they're immutable and shared across every Open/Save dialog that uses them.
         private static readonly FilePickerFileType ErsHeaderFileType =
             new("ER Mapper header (*.ers)") { Patterns = new[] { "*.ers" } };
-        private static readonly FilePickerFileType[] ErsOpenFileTypeFilter = { ErsHeaderFileType, FilePickerFileTypes.All };
+        private static readonly FilePickerFileType GeoTiffFileType =
+            new("GeoTIFF raster (*.tif, *.tiff)") { Patterns = new[] { "*.tif", "*.tiff" } };
+        private static readonly FilePickerFileType RasterFileType =
+            new("Raster datasets (*.ers, *.tif, *.tiff)") { Patterns = new[] { "*.ers", "*.tif", "*.tiff" } };
+        private static readonly FilePickerFileType[] ErsOpenFileTypeFilter = { RasterFileType, ErsHeaderFileType, GeoTiffFileType, FilePickerFileTypes.All };
         private static readonly FilePickerFileType[] ErsSaveFileTypeChoices = { ErsHeaderFileType };
+        private static readonly FilePickerFileType[] RasterSaveFileTypeChoices = { ErsHeaderFileType, GeoTiffFileType };
         private static readonly FilePickerFileType[] PngFileTypeChoices =
             { new("PNG image (*.png)") { Patterns = new[] { "*.png" } } };
         private static readonly FilePickerFileType[] ErvFileTypeChoices =
             { new("ER Mapper vector header (*.erv)") { Patterns = new[] { "*.erv" } } };
         private static readonly FilePickerFileType _ersOrErvFileType =
-            new("Layers (*.ers, *.erv, *.geojson, *.json, *.csv)") { Patterns = new[] { "*.ers", "*.erv", "*.geojson", "*.json", "*.csv" } };
+            new("Layers (*.ers, *.tif, *.tiff, *.erv, *.geojson, *.json, *.csv)") { Patterns = new[] { "*.ers", "*.tif", "*.tiff", "*.erv", "*.geojson", "*.json", "*.csv" } };
         private static readonly FilePickerFileType[] LayerOpenFileTypeFilter =
         {
-            _ersOrErvFileType, ErsHeaderFileType, ErvFileTypeChoices[0],
+            _ersOrErvFileType, RasterFileType, ErsHeaderFileType, GeoTiffFileType, ErvFileTypeChoices[0],
             new("GeoJSON (*.geojson, *.json)") { Patterns = new[] { "*.geojson", "*.json" } },
             new("CSV points (*.csv, *.txt)") { Patterns = new[] { "*.csv", "*.txt" } },
             FilePickerFileTypes.All,
@@ -124,7 +130,7 @@ namespace RasterField
 
         public MainWindow()
         {
-            Title = T("RasterField — ER Mapper raster viewer");
+            Title = T("RasterField — raster analysis");
             Width = 1180;
             Height = 720;
             MinWidth = 900;
@@ -502,7 +508,7 @@ namespace RasterField
         {
             try
             {
-                _view.LoadErs(path, CurrentPalette());
+                _view.LoadRaster(path, CurrentPalette());
                 _settings.AddRecentFile(Path.GetFullPath(path));
                 _settings.LastOpenDirectory = Path.GetDirectoryName(Path.GetFullPath(path));
                 _settings.Save();
@@ -556,7 +562,7 @@ namespace RasterField
 
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = T("Open ER Mapper raster header"),
+                Title = T("Open raster dataset"),
                 AllowMultiple = false,
                 SuggestedStartLocation = startLocation,
                 FileTypeFilter = ErsOpenFileTypeFilter,
@@ -579,7 +585,7 @@ namespace RasterField
                         return;
                     }
                     if (IsVectorFile(path)) AddVectorFromFile(path);
-                    else if (path.EndsWith(".ers", StringComparison.OrdinalIgnoreCase))
+                    else if (IsRasterFile(path))
                     {
                         // Layers already loaded: add this one alongside them rather than replacing everything.
                         if (_view.DrawOrder.Count == 0) OpenDataset(path);
@@ -605,7 +611,7 @@ namespace RasterField
 
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = T("Add layer(s) — raster (.ers) or vector (.erv, .geojson, .csv)"),
+                Title = T("Add layer(s) — raster (.ers, .tif, .tiff) or vector (.erv, .geojson, .csv)"),
                 AllowMultiple = true,
                 SuggestedStartLocation = startLocation,
                 FileTypeFilter = LayerOpenFileTypeFilter,
@@ -696,24 +702,33 @@ namespace RasterField
             if (_view.Document == null) return;
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = T("Save ER Mapper dataset (writes .ers + binary data file)"),
+                Title = T("Save raster dataset"),
                 DefaultExtension = "ers",
                 SuggestedFileName = SuggestName() + "_out.ers",
-                FileTypeChoices = ErsSaveFileTypeChoices,
+                FileTypeChoices = RasterSaveFileTypeChoices,
             });
             var path = file?.TryGetLocalPath();
             if (string.IsNullOrEmpty(path)) return;
 
             try
             {
-                var options = new ErsSaveOptions
+                if (IsGeoTiff(path!))
                 {
-                    CellType = SelectedOutputCellType(),
-                    ByteOrder = SelectedOutputByteOrder(),
-                };
-                _view.Document.Save(path!, options);
+                    await Task.Run(() => GeoTiffDataset.Save(_view.Document, path!));
+                }
+                else
+                {
+                    var options = new ErsSaveOptions
+                    {
+                        CellType = SelectedOutputCellType(),
+                        ByteOrder = SelectedOutputByteOrder(),
+                    };
+                    await Task.Run(() => _view.Document.Save(path!, options));
+                }
                 if (_view.ActiveLayer is { IsUnsaved: true } saved) _view.MarkSaved(saved, path!);
-                Flash(L.F("Dataset written: {0} (+ data file)", Path.GetFileName(path)));
+                Flash(IsGeoTiff(path!)
+                    ? L.F("GeoTIFF written: {0}", Path.GetFileName(path))
+                    : L.F("Dataset written: {0} (+ data file)", Path.GetFileName(path)));
             }
             catch (Exception ex) { await MessageAsync(T("Save failed"), ex.Message); }
         }
@@ -1109,21 +1124,20 @@ namespace RasterField
 
         /// <summary>
         /// Wraps a computed single-band result (terrain derivative, band-math output, …) into a
-        /// new document sharing the current dataset's georeference (origin, cell size, rotation
-        /// dropped — these outputs are never rotated) and coordinate system.
+        /// new document sharing the current dataset's exact affine georeference and coordinate system.
         /// </summary>
         private ErsDocument BuildDerivedDocument(Raster result, ErsDocument? source = null)
         {
             var doc = source ?? _view.Document ?? throw new InvalidOperationException("No dataset is open.");
-            var (originX, originY) = doc.GeoReference.PixelToWorld(0, 0);
-            var (_, b, c, _, e, f) = doc.GeoReference.GeoTransform;
-            double cellSizeX = Math.Sqrt(b * b + e * e);
-            double cellSizeY = Math.Sqrt(c * c + f * f);
-
-            return ErsDocument.Create(result, originX, originY, cellSizeX, cellSizeY,
-                ErsCellType.IEEE4ByteReal,
-                doc.Header.ByteOrder == ErsByteOrder.Unknown ? ErsByteOrder.LsbFirst : doc.Header.ByteOrder,
-                doc.Header.CoordinateSpace.Projection, doc.Header.CoordinateSpace.Datum);
+            ErsHeader header = ErsHeader.Parse(doc.Header.ToErsText());
+            header.DataSetType = ErsDataSetType.ErStorage;
+            header.DataFile = null;
+            header.HeaderOffset = 0;
+            header.RasterInfo.CellType = ErsCellType.IEEE4ByteReal;
+            header.RasterInfo.NullCellValue = double.IsNaN(result.NoDataValue) ? null : result.NoDataValue;
+            header.RasterInfo.Bands.Clear();
+            header.RasterInfo.Bands.Add(new BandInfo { Value = "Derived result" });
+            return ErsDocument.Create(header, new[] { result }, doc.GeoReference, doc.CoordinateReferenceWkt);
         }
 
         /// <summary>
@@ -1627,10 +1641,10 @@ namespace RasterField
         private void Flash(string message) => _infoText.Text = message;
 
         private async Task ShowAboutAsync() => await MessageAsync(T("About RasterField"), T(
-            "RasterField — a cross-platform pan/zoom viewer for the ERDAS ER Mapper raster format\n" +
-            "(.ers header + Band-Interleaved-by-Line data file).\n\n" +
-            "Built with Avalonia and the RasterField library: robust .ers parser and writer,\n" +
-            "BIL reader/writer with byte-order handling, georeferencing and palette colourisation.\n\n" +
+            "RasterField — a cross-platform raster viewer and terrain-analysis workspace.\n" +
+            "Open and save ER Mapper (.ers + BIL) and GeoTIFF datasets.\n\n" +
+            "Built with Avalonia, RasterField.Core and GDAL: windowed I/O, georeferencing,\n" +
+            "palette rendering, terrain tools, ΔZ comparison and cut/fill volume analysis.\n\n" +
             "Drag to pan · wheel to zoom · arrows / +/- · 0 or F to fit."));
 
         private async Task MessageAsync(string title, string message)

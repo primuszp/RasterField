@@ -303,8 +303,12 @@ namespace RasterField
         };
 
         private static readonly string[] VectorExtensions = { ".erv", ".geojson", ".json", ".csv", ".txt" };
+        private static readonly string[] RasterExtensions = { ".ers", ".tif", ".tiff" };
 
         private static bool IsVectorFile(string path) => VectorExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
+        private static bool IsRasterFile(string path) => RasterExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
+        private static bool IsGeoTiff(string path) => Path.GetExtension(path).Equals(".tif", StringComparison.OrdinalIgnoreCase) ||
+                                                      Path.GetExtension(path).Equals(".tiff", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>Adds an .erv, GeoJSON or CSV-points file as a vector layer.</summary>
         private VectorLayer AddVectorFromFile(string path)

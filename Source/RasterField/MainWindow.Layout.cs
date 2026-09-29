@@ -692,7 +692,7 @@ namespace RasterField
             {
                 _layersPanel.Children.Add(new TextBlock
                 {
-                    Text = T("No layers yet — drop .ers, .erv, .geojson or .csv files here, or use + Add layer."),
+                    Text = T("No layers yet — drop .ers, .tif, .tiff, .erv, .geojson or .csv files here, or use + Add layer."),
                     TextWrapping = TextWrapping.Wrap, Opacity = 0.6, FontStyle = FontStyle.Italic, Margin = new Thickness(2, 4),
                 });
                 return;

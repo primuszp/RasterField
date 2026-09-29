@@ -47,11 +47,18 @@ namespace RasterField
     public sealed class ErsDocument
     {
         private readonly List<Raster> _bands = new List<Raster>();
+        private readonly RasterGeoReference? _geoReferenceOverride;
+        private readonly bool _hasExternalSource;
+        private readonly string? _coordinateReferenceWkt;
 
-        private ErsDocument(ErsHeader header, string? headerPath)
+        private ErsDocument(ErsHeader header, string? headerPath, RasterGeoReference? geoReferenceOverride = null,
+            bool hasExternalSource = false, string? coordinateReferenceWkt = null)
         {
             Header = header;
             HeaderPath = headerPath;
+            _geoReferenceOverride = geoReferenceOverride;
+            _hasExternalSource = hasExternalSource;
+            _coordinateReferenceWkt = coordinateReferenceWkt;
         }
 
         /// <summary>The dataset header (mutable so callers can adjust metadata before saving).</summary>
@@ -63,6 +70,14 @@ namespace RasterField
         /// <summary>Path of the binary data file, once known.</summary>
         public string? DataFilePath { get; private set; }
 
+        /// <summary>Records the path used by a non-ERS format adapter after a successful save.</summary>
+        public void RecordExternalSavePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Path is required.", nameof(path));
+            HeaderPath = Path.GetFullPath(path);
+            DataFilePath = null;
+        }
+
         /// <summary>The decoded bands.</summary>
         public IReadOnlyList<Raster> Bands => _bands;
 
@@ -70,7 +85,17 @@ namespace RasterField
         public Raster? Band => _bands.Count > 0 ? _bands[0] : null;
 
         /// <summary>Image &#8596; world mapping derived from the current header.</summary>
-        public RasterGeoReference GeoReference => RasterGeoReference.FromHeader(Header);
+        public RasterGeoReference GeoReference => _geoReferenceOverride ?? RasterGeoReference.FromHeader(Header);
+
+        /// <summary>
+        /// True when the metadata represents a non-ERS source through an external raster reader.
+        /// Such a document can participate in display and analysis, but <see cref="OpenSource"/>
+        /// cannot reopen it as ERS/BIL.
+        /// </summary>
+        public bool HasExternalSource => _hasExternalSource;
+
+        /// <summary>Gets the source CRS as WKT when the originating format supplied it.</summary>
+        public string? CoordinateReferenceWkt => _coordinateReferenceWkt;
 
         /// <summary>
         /// Cell-count threshold above which <see cref="IsLargeDataset"/> reports
@@ -98,6 +123,8 @@ namespace RasterField
         /// </summary>
         public RasterSource OpenSource()
         {
+            if (HasExternalSource)
+                throw new InvalidOperationException("This document uses an external raster source; reopen it through its format adapter.");
             if (HeaderPath == null)
                 throw new InvalidOperationException("This document has no header path to resolve the data file from.");
             return RasterSource.Open(Header, HeaderPath);
@@ -130,6 +157,38 @@ namespace RasterField
             if (header == null) throw new ArgumentNullException(nameof(header));
             var doc = new ErsDocument(header, null);
             doc._bands.AddRange(bands ?? throw new ArgumentNullException(nameof(bands)));
+            doc.SyncHeaderToRasters();
+            return doc;
+        }
+
+        /// <summary>Wraps in-memory bands and metadata while preserving an exact affine georeference.</summary>
+        public static ErsDocument Create(ErsHeader header, IEnumerable<Raster> bands, RasterGeoReference geoReference,
+            string? coordinateReferenceWkt = null)
+        {
+            if (header == null) throw new ArgumentNullException(nameof(header));
+            if (bands == null) throw new ArgumentNullException(nameof(bands));
+            if (geoReference == null) throw new ArgumentNullException(nameof(geoReference));
+            var doc = new ErsDocument(header, null, geoReference, coordinateReferenceWkt: coordinateReferenceWkt);
+            doc._bands.AddRange(bands);
+            doc.SyncHeaderToRasters();
+            return doc;
+        }
+
+        /// <summary>
+        /// Creates the common metadata view used by the application for an externally-backed
+        /// raster such as GeoTIFF. The supplied affine georeference is preserved exactly, including
+        /// rotations or shear that cannot be represented losslessly by an ERS header.
+        /// </summary>
+        public static ErsDocument CreateExternalSourceMetadata(ErsHeader header, string sourcePath,
+            RasterGeoReference geoReference, IEnumerable<Raster>? loadedBands = null, string? coordinateReferenceWkt = null)
+        {
+            if (header == null) throw new ArgumentNullException(nameof(header));
+            if (sourcePath == null) throw new ArgumentNullException(nameof(sourcePath));
+            if (geoReference == null) throw new ArgumentNullException(nameof(geoReference));
+
+            var doc = new ErsDocument(header, Path.GetFullPath(sourcePath), geoReference,
+                hasExternalSource: true, coordinateReferenceWkt: coordinateReferenceWkt);
+            if (loadedBands != null) doc._bands.AddRange(loadedBands);
             doc.SyncHeaderToRasters();
             return doc;
         }
@@ -539,7 +598,9 @@ namespace RasterField
             if (options.CellType.HasValue) Header.RasterInfo.CellType = options.CellType.Value;
             if (options.ByteOrder.HasValue) Header.ByteOrder = options.ByteOrder.Value;
             if (Header.ByteOrder == ErsByteOrder.Unknown) Header.ByteOrder = ErsByteOrder.LsbFirst;
-            if (Header.DataSetType == ErsDataSetType.Unknown) Header.DataSetType = ErsDataSetType.ErStorage;
+            // Save(...) always writes a native ER Mapper BIL payload, even when this document was
+            // originally imported from a translated format such as GeoTIFF.
+            Header.DataSetType = ErsDataSetType.ErStorage;
             if (Header.DataType == ErsDataType.Unknown) Header.DataType = ErsDataType.Raster;
             if (!options.KeepHeaderOffset) Header.HeaderOffset = 0;
 

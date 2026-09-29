@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>RasterField.Gdal</RootNamespace>
+    <AssemblyName>RasterField.Gdal</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RasterField.Core\RasterField.Core.csproj" />
+    <!-- MIT-licensed GDAL/PROJ bindings plus native runtimes for the four shipped RIDs. -->
+    <PackageReference Include="MaxRev.Gdal.Universal" Version="3.13.3.580" />
+  </ItemGroup>
+
+</Project>

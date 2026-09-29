@@ -13,6 +13,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
+using RasterField.Gdal;
 using RasterField.Rasters;
 using RasterField.Rendering;
 using RasterField.Vectors;
@@ -64,12 +65,12 @@ namespace RasterField
                 new Cmd("_Save project", () => _ = SaveProjectAsync(false), Ctrl(Key.S)),
                 new Cmd("Save project _as…", () => _ = SaveProjectAsync(true)),
                 null,
-                new Cmd("_Open .ers…", () => _ = OpenDialogAsync(), Ctrl(Key.O)),
-                new Cmd("_Add layer(s)… (.ers, .erv, .geojson, .csv)", () => _ = AddLayerDialogAsync(), Ctrl(Key.O, shift: true)),
+                new Cmd("_Open raster…", () => _ = OpenDialogAsync(), Ctrl(Key.O)),
+                new Cmd("_Add layer(s)… (.ers, .tif, .tiff, .erv, .geojson, .csv)", () => _ = AddLayerDialogAsync(), Ctrl(Key.O, shift: true)),
                 new Cmd("Open _recent"), // filled by RebuildRecentMenu
                 null,
                 new Cmd("Save active _layer…", () => _ = SaveActiveLayerAsync()),
-                new Cmd("Save _dataset as… (.ers + data)", () => _ = SaveDatasetAsAsync(), Ctrl(Key.S, shift: true)),
+                new Cmd("Save _dataset as…", () => _ = SaveDatasetAsAsync(), Ctrl(Key.S, shift: true)),
                 new Cmd("Save _header as .ers…", () => _ = SaveHeaderAsAsync()),
                 new Cmd("_Export view as PNG…", () => _ = ExportPngAsync()),
                 null,
@@ -126,6 +127,7 @@ namespace RasterField
 
             var raster = new Cmd("_Raster").Add(
                 new Cmd("_Statistics && histogram…", () => _ = ShowStatisticsAsync()),
+                new Cmd("_Compare / ΔZ && volume…", () => _ = CompareRastersAsync()),
                 new Cmd("_Zonal statistics by polygon layer…", () => _ = ZonalByLayerAsync(null)),
                 new Cmd("_Band math…", () => _ = BandMathAsync()),
                 new Cmd("Fill _no-data gaps…", () => _ = FillNoDataAsync()),
@@ -436,10 +438,10 @@ namespace RasterField
         {
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = L.F("Save layer “{0}” (writes .ers + binary data file)", layer.Name),
+                Title = L.F("Save raster layer “{0}”", layer.Name),
                 DefaultExtension = "ers",
                 SuggestedFileName = SafeFileName(layer.Name) + ".ers",
-                FileTypeChoices = ErsSaveFileTypeChoices,
+                FileTypeChoices = RasterSaveFileTypeChoices,
             });
             var path = file?.TryGetLocalPath();
             if (string.IsNullOrEmpty(path)) return;
@@ -447,13 +449,16 @@ namespace RasterField
             try
             {
                 SetBusy(true, T("Saving…"));
-                await Task.Run(() => layer.Document.Save(path!));
+                if (IsGeoTiff(path!)) await Task.Run(() => GeoTiffDataset.Save(layer.Document, path!));
+                else await Task.Run(() => layer.Document.Save(path!));
                 SetBusy(false);
                 _view.MarkSaved(layer, path!);
                 _settings.AddRecentFile(Path.GetFullPath(path!));
                 _settings.Save();
                 RebuildRecentMenu();
-                Flash(L.F("Layer saved: {0} (+ data file)", Path.GetFileName(path)));
+                Flash(IsGeoTiff(path!)
+                    ? L.F("GeoTIFF written: {0}", Path.GetFileName(path))
+                    : L.F("Layer saved: {0} (+ data file)", Path.GetFileName(path)));
             }
             catch (Exception ex) { SetBusy(false); await MessageAsync(T("Save failed"), ex.Message); }
         }
@@ -485,6 +490,132 @@ namespace RasterField
             foreach (char ch in name)
                 sb.Append(Path.GetInvalidFileNameChars().Contains(ch) || ch == '×' || char.IsWhiteSpace(ch) ? '_' : ch);
             return sb.ToString();
+        }
+
+        // ---- raster comparison ----------------------------------------------------------
+
+        private async Task CompareRastersAsync()
+        {
+            var layers = _view.Layers.Where(l => !l.IsFrame).ToList();
+            if (layers.Count < 2)
+            {
+                await MessageAsync(T("Compare rasters"), T("Add at least two raster layers first."));
+                return;
+            }
+
+            var loaded = layers.Where(l => l.Raster != null).ToList();
+            if (loaded.Count < 2)
+            {
+                await MessageAsync(T("Compare rasters"),
+                    T("At least two layers must be fully loaded. Clip large streaming layers to a smaller area first."));
+                return;
+            }
+
+            var names = loaded.Select(l => l.Name).ToList();
+            int secondDefault = loaded.IndexOf(_view.ActiveLayer!);
+            if (secondDefault < 0) secondDefault = loaded.Count - 1;
+            int firstDefault = secondDefault == 0 ? 1 : 0;
+            bool zoneAvailable = _view.IsPathFinished && _view.CurrentPath.Count >= 3;
+
+            var firstBox = new ComboBox { ItemsSource = names, SelectedIndex = firstDefault, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var secondBox = new ComboBox { ItemsSource = names, SelectedIndex = secondDefault, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var thresholdBox = new NumericUpDown
+            {
+                Value = 0,
+                Minimum = 0,
+                FormatString = "0.###",
+                Increment = 0.1m,
+                Width = 180,
+                HorizontalAlignment = HorizontalAlignment.Left,
+            };
+            var zoneBox = new CheckBox
+            {
+                Content = T("Use the finished map zone as the analysis mask"),
+                IsChecked = zoneAvailable,
+                IsEnabled = zoneAvailable,
+            };
+            var tcs = new TaskCompletionSource<(int First, int Second, double Threshold, bool Zone)?>();
+            var dialog = new Window
+            {
+                Title = T("Compare rasters — ΔZ and volume"),
+                Width = 450,
+                SizeToContent = SizeToContent.Height,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                CanResize = false,
+            };
+            var run = new Button { Content = T("Compare → new ΔZ layer"), MinWidth = 150 };
+            var cancel = new Button { Content = T("Cancel"), MinWidth = 80 };
+            run.Click += (_, _) =>
+            {
+                tcs.TrySetResult((firstBox.SelectedIndex, secondBox.SelectedIndex,
+                    (double)(thresholdBox.Value ?? 0), zoneBox.IsChecked == true));
+                dialog.Close();
+            };
+            cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
+            dialog.Closed += (_, _) => tcs.TrySetResult(null);
+            dialog.Content = new StackPanel
+            {
+                Margin = new Thickness(16),
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock { Text = T("ΔZ is calculated as second raster minus first raster. The grids must match exactly."), TextWrapping = TextWrapping.Wrap, Opacity = 0.85 },
+                    new TextBlock { Text = T("First (baseline)") }, firstBox,
+                    new TextBlock { Text = T("Second (newer)") }, secondBox,
+                    new TextBlock { Text = T("Absolute change threshold") }, thresholdBox,
+                    zoneBox,
+                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { run, cancel } },
+                },
+            };
+            await dialog.ShowDialog(this);
+            var choice = await tcs.Task;
+            if (choice == null) return;
+            if (choice.Value.First == choice.Value.Second)
+            {
+                await MessageAsync(T("Compare rasters"), T("Choose two different raster layers."));
+                return;
+            }
+
+            RasterLayer first = loaded[choice.Value.First];
+            RasterLayer second = loaded[choice.Value.Second];
+            RasterGridCompatibility compatibility = RasterGridCompatibility.Check(first.Document, second.Document);
+            if (!compatibility.IsCompatible)
+            {
+                await MessageAsync(T("Rasters are not aligned"), compatibility.Message);
+                return;
+            }
+
+            IReadOnlyList<(double X, double Y)>? polygon = choice.Value.Zone
+                ? _view.CurrentPath.ToList()
+                : null;
+            try
+            {
+                SetBusy(true, T("Computing ΔZ and volumes…"));
+                RasterChangeResult result = await Task.Run(() => RasterChangeAnalysis.Compute(
+                    first.Raster!, second.Raster!, first.Document.GeoReference, choice.Value.Threshold, polygon));
+                SetBusy(false);
+
+                string layerName = $"{second.Name} − {first.Name} (ΔZ)";
+                AddDerivedRasterLayer(BuildDerivedDocument(result.Difference, first.Document), layerName,
+                    $"ΔZ: {second.Name} − {first.Name}");
+                _view.SetPalette(BuiltInPalettes.BlueWhiteRed);
+                double extent = Math.Max(Math.Abs(result.Minimum), Math.Abs(result.Maximum));
+                if (extent > 0 && !double.IsNaN(extent)) _view.SetValueRange(-extent, extent);
+
+                string unit = first.Document.Header.CoordinateSpace.EffectiveUnits;
+                if (string.IsNullOrWhiteSpace(unit)) unit = T("map unit");
+                string scope = polygon == null ? T("Entire aligned grid") : T("Finished map zone");
+                await MessageAsync(T("Raster comparison complete"), string.Format(CultureInfo.CurrentCulture,
+                    "{0}\n\nΔZ min / max: {1:N3} / {2:N3} {9}\nMean: {3:N3} {9}   σ: {4:N3} {9}\n|ΔZ| > {5:N3}: {6:N2} {9}² ({7:N0} cells)\n\nCut: {8:N2} {9}³\nFill: {10:N2} {9}³\nNet (fill − cut): {11:N2} {9}³",
+                    scope, result.Minimum, result.Maximum, result.Mean, result.StandardDeviation,
+                    choice.Value.Threshold, result.ThresholdArea, result.ThresholdCellCount,
+                    result.CutVolume, unit, result.FillVolume, result.NetVolume));
+            }
+            catch (Exception ex)
+            {
+                SetBusy(false);
+                await MessageAsync(T("Raster comparison failed"), ex.Message);
+            }
         }
 
         // ---- Bézier-patch subdivision ----------------------------------------------------

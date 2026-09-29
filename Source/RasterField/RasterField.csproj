@@ -34,6 +34,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RasterField.Core\RasterField.Core.csproj" />
+    <ProjectReference Include="..\RasterField.Gdal\RasterField.Gdal.csproj" />
   </ItemGroup>
 
   <ItemGroup>

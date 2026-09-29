@@ -11,6 +11,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.VisualTree;
 using RasterField.ErMapper;
+using RasterField.Gdal;
 using RasterField.Rasters;
 using RasterField.Rendering;
 using RasterField.Vectors;
@@ -187,7 +188,17 @@ namespace RasterField
         public RasterLayer AddLayerFromPath(string ersPath, Palette? palette = null)
         {
             if (string.IsNullOrWhiteSpace(ersPath)) throw new ArgumentException("Path is required.", nameof(ersPath));
-            if (!File.Exists(ersPath)) throw new FileNotFoundException("ERS header not found.", ersPath);
+            if (!File.Exists(ersPath)) throw new FileNotFoundException("Raster dataset not found.", ersPath);
+
+            if (IsGeoTiff(ersPath))
+            {
+                var opened = GeoTiffDataset.Open(ersPath);
+                RecordUndo("Add layer");
+                _undoSuppress++;
+                try { return AddLayerCore(opened.Document, Path.GetFileNameWithoutExtension(ersPath), palette, opened.Source); }
+                catch { opened.Source?.Dispose(); throw; }
+                finally { _undoSuppress--; }
+            }
 
             var document = ErsDocument.LoadHeaderOnly(ersPath);
             if (!document.IsLargeDataset) document.LoadRaster();
@@ -203,12 +214,12 @@ namespace RasterField
             finally { _undoSuppress--; }
         }
 
-        private RasterLayer AddLayerCore(ErsDocument document, string name, Palette? palette)
+        private RasterLayer AddLayerCore(ErsDocument document, string name, Palette? palette, IRasterSource? source = null)
         {
             RasterLayer? frame = _layers.FirstOrDefault(l => l.IsFrame);
             var previousActive = ActiveLayer; // null when this is the very first layer
 
-            var layer = CreateLayer(document, name);
+            var layer = CreateLayer(document, name, source);
             InitializeLayerDisplay(layer, palette);
             _layers.Add(layer);
             _drawOrder.Add(layer);
@@ -523,10 +534,15 @@ namespace RasterField
             MoveInDrawOrder(layer, -1);
         }
 
-        private static RasterLayer CreateLayer(ErsDocument document, string name)
+        private static RasterLayer CreateLayer(ErsDocument document, string name, IRasterSource? source = null)
         {
             ArgumentNullException.ThrowIfNull(document);
             var layer = new RasterLayer(document, name);
+            if (source != null)
+            {
+                layer.Source = source;
+                return layer;
+            }
             if (document.Bands.Count == 0)
             {
                 if (document.IsLargeDataset) layer.Source = document.OpenSource();
@@ -1408,14 +1424,25 @@ namespace RasterField
         /// <see cref="ErsDocument.LargeDatasetCellThreshold"/> cells is <i>not</i> read into
         /// memory here — see <see cref="IsStreaming"/>.
         /// </summary>
-        public void LoadErs(string ersPath, Palette? palette = null)
-        {
-            if (string.IsNullOrWhiteSpace(ersPath)) throw new ArgumentException("Path is required.", nameof(ersPath));
-            if (!File.Exists(ersPath)) throw new FileNotFoundException("ERS header not found.", ersPath);
+        public void LoadErs(string ersPath, Palette? palette = null) => LoadRaster(ersPath, palette);
 
-            var document = ErsDocument.LoadHeaderOnly(ersPath);
+        /// <summary>Loads an ERS or GeoTIFF dataset as the view's sole raster layer.</summary>
+        public void LoadRaster(string path, Palette? palette = null)
+        {
+            if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Path is required.", nameof(path));
+            if (!File.Exists(path)) throw new FileNotFoundException("Raster dataset not found.", path);
+
+            if (IsGeoTiff(path))
+            {
+                var opened = GeoTiffDataset.Open(path);
+                try { SetDocumentCore(opened.Document, palette, Path.GetFileNameWithoutExtension(path), opened.Source); }
+                catch { opened.Source?.Dispose(); throw; }
+                return;
+            }
+
+            var document = ErsDocument.LoadHeaderOnly(path);
             if (!document.IsLargeDataset) document.LoadRaster();
-            SetDocumentCore(document, palette, Path.GetFileNameWithoutExtension(ersPath));
+            SetDocumentCore(document, palette, Path.GetFileNameWithoutExtension(path));
         }
 
         /// <summary>
@@ -1425,7 +1452,7 @@ namespace RasterField
         /// </summary>
         public void SetDocument(ErsDocument document, Palette? palette = null) => SetDocumentCore(document, palette, null);
 
-        private void SetDocumentCore(ErsDocument document, Palette? palette, string? name)
+        private void SetDocumentCore(ErsDocument document, Palette? palette, string? name, IRasterSource? source = null)
         {
             ClearHistory();
             foreach (var l in _layers) l.Dispose();
@@ -1434,7 +1461,7 @@ namespace RasterField
             _vectorLayers.Clear();
             _activeLayerIndex = -1;
 
-            var layer = CreateLayer(document, name ?? "Layer 1");
+            var layer = CreateLayer(document, name ?? "Layer 1", source);
             InitializeLayerDisplay(layer, palette);
             _layers.Add(layer);
             _drawOrder.Add(layer);
@@ -1446,6 +1473,10 @@ namespace RasterField
             RasterLoaded?.Invoke(this, EventArgs.Empty);
             LayersChanged?.Invoke(this, EventArgs.Empty);
         }
+
+        private static bool IsGeoTiff(string path) =>
+            path.EndsWith(".tif", StringComparison.OrdinalIgnoreCase) ||
+            path.EndsWith(".tiff", StringComparison.OrdinalIgnoreCase);
 
         // ---- colourisation (active layer) ------------------------------------------
 
@@ -1768,7 +1799,7 @@ namespace RasterField
             var active = ActiveLayer;
             if (active == null || !_layers.Any(l => l.IsVisible && l.Bitmap != null))
             {
-                var text = new FormattedText(L.T("Drop .ers / .erv / .geojson / .csv / .rfproj files here, or File ▸ Open…"),
+                var text = new FormattedText(L.T("Drop .ers / .tif / .tiff / .erv / .geojson / .csv / .rfproj files here, or File ▸ Open…"),
                     System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
                     Typeface.Default, 13, AppTheme.TextSecondary);
                 context.DrawText(text, new Point((Bounds.Width - text.Width) / 2, (Bounds.Height - text.Height) / 2));

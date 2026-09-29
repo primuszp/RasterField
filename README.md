@@ -1,6 +1,6 @@
 # RasterField
 
-Robust, **complete reading and writing of the ERDAS ER Mapper file format** —
+Robust, **complete reading and writing of the ERDAS ER Mapper file format**, plus GeoTIFF through GDAL —
 both the **raster** dataset (`.ers` header + Band‑Interleaved‑by‑Line data file)
 and the **vector** dataset (`.erv` header + ASCII object-list data file) — with
 display in a modern, cross‑platform .NET application.
@@ -14,8 +14,10 @@ draw order.
 * **`RasterField.Core`** — a portable class library (`netstandard2.0` + `net10.0`,
   **no OS / `System.Drawing` dependency**): `.ers` parser & writer, BIL reader &
   writer, georeferencing, statistics, palette colourisation into a plain BGRA buffer.
+* **`RasterField.Gdal`** — the isolated GDAL adapter for windowed GeoTIFF read/write on
+  Windows, Linux and Intel/Apple-Silicon macOS; Core stays native-dependency-free.
 * **`RasterField`** — an **Avalonia** desktop app (Windows / Linux / macOS) that
-  opens, displays with palettes + pan/zoom, and **saves** `.ers` + BIL datasets
+  opens, displays with palettes + pan/zoom, and **saves** `.ers` + BIL or GeoTIFF datasets
   (including format conversion), plus PNG export.
 
 Format support follows the *ERDAS ER Mapper Customization Guide*
@@ -25,6 +27,7 @@ and *Vector Datasets and Header Files (.erv)*).
 ```
 Source/
   RasterField.Core/     class library   (netstandard2.0 ; net10.0)   assembly RasterField.Core, namespace RasterField.*
+  RasterField.Gdal/     GDAL adapter     (net10.0)                    GeoTIFF and windowed I/O
   RasterField/          Avalonia app     (net10.0, win/linux/osx)
   RasterField.Tests/    xUnit suite      (224 tests)
 RasterField.slnx        solution
@@ -54,6 +57,8 @@ Robustness: LF/CRLF, UTF‑8 BOM, missing optional blocks, `NrOfBands` absent �
 | `BilRasterReader` | Decodes the BIL file: every cell type, `ByteOrder` (LSB/MSB, swapped as needed), `HeaderOffset`, band de‑interleaving, `NullCellValue` → no‑data. Clear errors on truncation / unknown cell type. |
 | `BilRasterWriter` | **Inverse** of the reader: writes bands in BIL order, rounds & clamps for integer cell types, substitutes the null value for no‑data. |
 | `Raster` | Flat `float[]` band, no‑data aware; `RasterStatistics` (min/max/mean/σ, one pass), `RasterHistogram` (percentile stretches). |
+| `IRasterSource` / `GdalRasterSource` | Format-independent window/overview access, with a GDAL-backed implementation for GeoTIFF. |
+| `RasterChangeAnalysis` | Aligned-grid `second − first` ΔZ, statistics, absolute-threshold area and cut/fill/net volumes; optionally restricted to a world-coordinate polygon. |
 | `RasterGeoReference` | Affine image ⇄ world mapping from `RegistrationCoord` / `RegistrationCell` / `CellInfo` / `Rotation`: `PixelToWorld`, `WorldToPixel`, `WorldToCell`, `WorldBounds`. |
 | `NoDataFiller` | Patches no-data gaps, non-destructively, **restricted to the convex hull of the raster's valid data** — a genuine internal gap (sensor dropout, cloud mask, stripe, …) gets filled, but the no-data margin *outside* the data's actual footprint (a rotated scene's background corners, a mosaic's missing corner, …) is always left untouched. `FillNearest` — classic two-pass nearest-valid-cell propagation (Rosenfeld & Pfaltz, 1966; same operation as Esri's *Nibble* / GRASS's `r.grow.distance`), no distance limit. `FillInverseDistanceWeighted` — GDAL's `GDALFillNodata` algorithm: directional ray search + inverse-distance-weighted average + optional smoothing, finished off with a nearest-neighbour backstop so every in-hull gap ends up filled regardless of the chosen search distance. `CountNoDataWithinHull` reports just the real gaps, separate from `CountNoData`'s raw (hull-inclusive-and-exclusive) total. The hull itself (`ConvexHull.Compute`) is a standard, reusable Andrew's-monotone-chain implementation. |
 | `RasterClipper` / `ErsDocument.Clip(...)` / `.ClipToWorldExtent(...)` | Crops a raster (and, at the document level, re-anchors the georeference so the crop's origin lands exactly where it did in the source — correct even under rotation) to a pixel window or a world-coordinate extent. Works whether or not the raster is loaded: with no bands loaded it reads straight from disk (see `RasterSource` below), so it doubles as the extraction tool for a large dataset. |
@@ -231,7 +236,7 @@ made.Save("new.ers");
   area stays on screen. The pointer-value readout in the status bar, and every
   interactive tool (clip selection, profile line), always target the **active**
   layer specifically — exactly the one highlighted in the Layers panel.
-* **Open** `.ers` — menu, drag‑and‑drop, or command line; *File ▸ Open recent* keeps
+* **Open** `.ers`, `.tif` and `.tiff` — menu, drag‑and‑drop, or command line; *File ▸ Open recent* keeps
   the last 10 datasets (persisted across restarts).
 * **Remembers your setup** — window size/position/maximized state, last-used
   palette + reverse flag + stretch mode, theme choice, and the last folder you
@@ -321,7 +326,10 @@ made.Save("new.ers");
 * **Mosaic rasters** (*Raster ▸ Mosaic rasters…*) — pick two or more `.ers` files,
   an output cell size and an overlap rule (first/last/average); the merged result
   becomes a new derived layer.
-* **Write** — *Save header as .ers*, *Save dataset as…* (`.ers` + BIL, with an
+* **Change analysis** (*Raster ▸ Compare / ΔZ & volume…*) — validates exact grid/CRS
+  compatibility, creates a blue-white-red `second − first` layer, and reports min/max/mean/σ,
+  threshold-exceedance area and cut/fill/net volumes for the full raster or the finished map zone.
+* **Write** — *Save header as .ers*, *Save dataset as…* (`.ers` + BIL or GeoTIFF, with an
   optional output **cell type** and **byte order** for on‑the‑fly conversion),
   *Export view as PNG*.
 * **Status bar** — world easting/northing, cell index, sampled value and scale

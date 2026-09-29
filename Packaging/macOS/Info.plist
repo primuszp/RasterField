@@ -48,6 +48,14 @@
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
+            <string>GeoTIFF raster</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>tif</string><string>tiff</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
             <string>GeoJSON</string>
             <key>CFBundleTypeRole</key>
             <string>Viewer</string>
