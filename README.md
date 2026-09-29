@@ -329,6 +329,10 @@ made.Save("new.ers");
 * **Change analysis** (*Raster ▸ Compare / ΔZ & volume…*) — validates exact grid/CRS
   compatibility, creates a blue-white-red `second − first` layer, and reports min/max/mean/σ,
   threshold-exceedance area and cut/fill/net volumes for the full raster or the finished map zone.
+* **Swipe / Blink comparison** (*Comparison* menu) — isolates any two raster layers for visual
+  inspection. Swipe places them on opposite sides of a draggable vertical divider; Blink alternates
+  them at a configurable interval. Vector overlays remain visible in both modes, and `Esc` restores
+  the normal layer stack.
 * **Write** — *Save header as .ers*, *Save dataset as…* (`.ers` + BIL or GeoTIFF, with an
   optional output **cell type** and **byte order** for on‑the‑fly conversion),
   *Export view as PNG*.

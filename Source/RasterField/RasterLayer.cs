@@ -70,6 +70,9 @@ namespace RasterField
         /// <summary>Random-access reader (large dataset only).</summary>
         public IRasterSource? Source { get; internal set; }
 
+        /// <summary>Reopens a streaming source after an undo/redo cycle disposed its reader.</summary>
+        internal Func<IRasterSource>? SourceFactory { get; set; }
+
         /// <summary>Last streamed window for the active band (or the Red band, in RGB composite mode).</summary>
         public Raster? WindowRaster { get; internal set; }
 

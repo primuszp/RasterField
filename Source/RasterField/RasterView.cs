@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
@@ -60,6 +61,13 @@ namespace RasterField
 
         private bool _panning;
         private Point _panLast;
+        private RasterComparisonMode _comparisonMode;
+        private RasterLayer? _comparisonFirst;
+        private RasterLayer? _comparisonSecond;
+        private double _swipePosition = 0.5;
+        private bool _draggingSwipe;
+        private bool _blinkShowsSecond;
+        private Avalonia.Threading.DispatcherTimer? _blinkTimer;
 
         /// <summary>Which part of the clip-selection rectangle a drag is currently manipulating.</summary>
         private enum SelDrag { None, Create, Move, TL, TR, BL, BR, T, B, L, R }
@@ -111,12 +119,14 @@ namespace RasterField
         protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
         {
             base.OnDetachedFromVisualTree(e);
+            _blinkTimer?.Stop();
             foreach (var layer in _layers) layer.DisposeSource();
         }
 
         /// <summary>Releases every layer's rendered bitmap and streaming reader. Safe to call more than once.</summary>
         public void Dispose()
         {
+            _blinkTimer?.Stop();
             foreach (var layer in _layers) layer.Dispose();
             _layers.Clear();
             _drawOrder.Clear();
@@ -135,6 +145,9 @@ namespace RasterField
 
         /// <summary>Raised whenever the pan/zoom transform changes.</summary>
         public event EventHandler? ViewChanged;
+
+        /// <summary>Raised when Swipe/Blink comparison starts, changes or stops.</summary>
+        public event EventHandler? ComparisonChanged;
 
         /// <summary>
         /// Raised whenever the clip-selection rectangle changes — while it is being drawn,
@@ -181,6 +194,64 @@ namespace RasterField
         /// </summary>
         public RasterLayer? ActiveLayer => (uint)_activeLayerIndex < (uint)_layers.Count ? _layers[_activeLayerIndex] : null;
 
+        /// <summary>Gets the active two-layer visual comparison mode.</summary>
+        public RasterComparisonMode ComparisonMode => _comparisonMode;
+
+        /// <summary>Gets the first layer used by Swipe or Blink.</summary>
+        public RasterLayer? ComparisonFirst => _comparisonFirst;
+
+        /// <summary>Gets the second layer used by Swipe or Blink.</summary>
+        public RasterLayer? ComparisonSecond => _comparisonSecond;
+
+        /// <summary>Gets the vertical Swipe divider as a fraction of the viewport width.</summary>
+        public double SwipePosition => _swipePosition;
+
+        /// <summary>Starts a two-layer Swipe or Blink comparison.</summary>
+        public void StartComparison(RasterComparisonMode mode, RasterLayer first, RasterLayer second,
+            double swipePosition = 0.5, int blinkIntervalMilliseconds = 700)
+        {
+            if (mode == RasterComparisonMode.None) throw new ArgumentOutOfRangeException(nameof(mode));
+            if (!_layers.Contains(first)) throw new ArgumentException("The first layer is not loaded.", nameof(first));
+            if (!_layers.Contains(second)) throw new ArgumentException("The second layer is not loaded.", nameof(second));
+            if (ReferenceEquals(first, second)) throw new ArgumentException("Choose two different layers.", nameof(second));
+
+            _comparisonFirst = first;
+            _comparisonSecond = second;
+            _comparisonMode = mode;
+            _swipePosition = Math.Clamp(swipePosition, 0.02, 0.98);
+            _blinkShowsSecond = false;
+            _blinkTimer?.Stop();
+            if (mode == RasterComparisonMode.Blink)
+            {
+                _blinkTimer ??= new Avalonia.Threading.DispatcherTimer();
+                _blinkTimer.Interval = TimeSpan.FromMilliseconds(Math.Clamp(blinkIntervalMilliseconds, 100, 5000));
+                _blinkTimer.Tick -= OnBlinkTick;
+                _blinkTimer.Tick += OnBlinkTick;
+                _blinkTimer.Start();
+            }
+            RefreshStreamingWindow();
+            InvalidateVisual();
+            ComparisonChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Stops the active visual comparison and restores normal layer-stack rendering.</summary>
+        public void StopComparison()
+        {
+            _blinkTimer?.Stop();
+            _comparisonMode = RasterComparisonMode.None;
+            _comparisonFirst = null;
+            _comparisonSecond = null;
+            _draggingSwipe = false;
+            InvalidateVisual();
+            ComparisonChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        private void OnBlinkTick(object? sender, EventArgs e)
+        {
+            _blinkShowsSecond = !_blinkShowsSecond;
+            InvalidateVisual();
+        }
+
         /// <summary>
         /// Loads <paramref name="ersPath"/> as a brand-new additional layer on top of the stack
         /// (existing layers are kept), and makes it the active one.
@@ -195,7 +266,11 @@ namespace RasterField
                 var opened = GeoTiffDataset.Open(ersPath);
                 RecordUndo("Add layer");
                 _undoSuppress++;
-                try { return AddLayerCore(opened.Document, Path.GetFileNameWithoutExtension(ersPath), palette, opened.Source); }
+                try
+                {
+                    return AddLayerCore(opened.Document, Path.GetFileNameWithoutExtension(ersPath), palette,
+                        opened.Source, () => new GdalRasterSource(ersPath));
+                }
                 catch { opened.Source?.Dispose(); throw; }
                 finally { _undoSuppress--; }
             }
@@ -214,12 +289,13 @@ namespace RasterField
             finally { _undoSuppress--; }
         }
 
-        private RasterLayer AddLayerCore(ErsDocument document, string name, Palette? palette, IRasterSource? source = null)
+        private RasterLayer AddLayerCore(ErsDocument document, string name, Palette? palette,
+            IRasterSource? source = null, Func<IRasterSource>? sourceFactory = null)
         {
             RasterLayer? frame = _layers.FirstOrDefault(l => l.IsFrame);
             var previousActive = ActiveLayer; // null when this is the very first layer
 
-            var layer = CreateLayer(document, name, source);
+            var layer = CreateLayer(document, name, source, sourceFactory);
             InitializeLayerDisplay(layer, palette);
             _layers.Add(layer);
             _drawOrder.Add(layer);
@@ -253,6 +329,8 @@ namespace RasterField
             if (!_layers[index].IsFrame) RecordUndo("Remove layer");
 
             var layer = _layers[index];
+            if (ReferenceEquals(layer, _comparisonFirst) || ReferenceEquals(layer, _comparisonSecond))
+                StopComparison();
             _layers.RemoveAt(index);
             _drawOrder.Remove(layer);
             layer.Dispose();
@@ -534,10 +612,12 @@ namespace RasterField
             MoveInDrawOrder(layer, -1);
         }
 
-        private static RasterLayer CreateLayer(ErsDocument document, string name, IRasterSource? source = null)
+        private static RasterLayer CreateLayer(ErsDocument document, string name, IRasterSource? source = null,
+            Func<IRasterSource>? sourceFactory = null)
         {
             ArgumentNullException.ThrowIfNull(document);
             var layer = new RasterLayer(document, name);
+            layer.SourceFactory = sourceFactory;
             if (source != null)
             {
                 layer.Source = source;
@@ -545,7 +625,11 @@ namespace RasterField
             }
             if (document.Bands.Count == 0)
             {
-                if (document.IsLargeDataset) layer.Source = document.OpenSource();
+                if (document.IsLargeDataset)
+                {
+                    layer.SourceFactory ??= document.OpenSource;
+                    layer.Source = layer.SourceFactory();
+                }
                 else document.LoadRaster();
             }
             return layer;
@@ -1112,6 +1196,9 @@ namespace RasterField
                 _layers.Clear(); _layers.AddRange(snap.Layers);
                 _vectorLayers.Clear(); _vectorLayers.AddRange(snap.Vectors);
                 _drawOrder.Clear(); _drawOrder.AddRange(snap.DrawOrder);
+                if ((_comparisonFirst != null && !_layers.Contains(_comparisonFirst)) ||
+                    (_comparisonSecond != null && !_layers.Contains(_comparisonSecond)))
+                    StopComparison();
 
                 foreach (var (layer, st) in snap.Rasters)
                 {
@@ -1123,7 +1210,7 @@ namespace RasterField
                     layer.ActiveBand = st.Band; layer.ShowRgbComposite = st.Rgb;
 
                     if (layer.Source == null && layer.Document.Bands.Count == 0 && layer.Document.IsLargeDataset)
-                        layer.Source = layer.Document.OpenSource();
+                        layer.Source = (layer.SourceFactory ?? layer.Document.OpenSource)();
                     if (layer.Source != null) { if (bandChanged || docChanged || layer.Bitmap == null) { layer.WindowRaster = null; layer.WindowRasterG = null; layer.WindowRasterB = null; } }
                     else if (layer.Document.Bands.Count > 0) layer.Raster = layer.Document.Bands[Math.Min(st.Band, layer.Document.Bands.Count - 1)];
 
@@ -1236,9 +1323,14 @@ namespace RasterField
             layer.DisposeSource();
             layer.DisposeSmooth();
             layer.Document = document;
+            layer.SourceFactory = null;
             if (document.Bands.Count == 0)
             {
-                if (document.IsLargeDataset) layer.Source = document.OpenSource();
+                if (document.IsLargeDataset)
+                {
+                    layer.SourceFactory = document.OpenSource;
+                    layer.Source = layer.SourceFactory();
+                }
                 else document.LoadRaster();
             }
             layer.ActiveBand = Math.Min(layer.ActiveBand, Math.Max(0, layer.BandCount - 1));
@@ -1302,6 +1394,7 @@ namespace RasterField
         /// <summary>Removes every layer and forgets the history (a new, empty project).</summary>
         public void ClearAll()
         {
+            StopComparison();
             foreach (var l in _layers) l.Dispose();
             _layers.Clear();
             _vectorLayers.Clear();
@@ -1435,7 +1528,11 @@ namespace RasterField
             if (IsGeoTiff(path))
             {
                 var opened = GeoTiffDataset.Open(path);
-                try { SetDocumentCore(opened.Document, palette, Path.GetFileNameWithoutExtension(path), opened.Source); }
+                try
+                {
+                    SetDocumentCore(opened.Document, palette, Path.GetFileNameWithoutExtension(path), opened.Source,
+                        () => new GdalRasterSource(path));
+                }
                 catch { opened.Source?.Dispose(); throw; }
                 return;
             }
@@ -1452,8 +1549,10 @@ namespace RasterField
         /// </summary>
         public void SetDocument(ErsDocument document, Palette? palette = null) => SetDocumentCore(document, palette, null);
 
-        private void SetDocumentCore(ErsDocument document, Palette? palette, string? name, IRasterSource? source = null)
+        private void SetDocumentCore(ErsDocument document, Palette? palette, string? name,
+            IRasterSource? source = null, Func<IRasterSource>? sourceFactory = null)
         {
+            StopComparison();
             ClearHistory();
             foreach (var l in _layers) l.Dispose();
             _layers.Clear();
@@ -1461,7 +1560,7 @@ namespace RasterField
             _vectorLayers.Clear();
             _activeLayerIndex = -1;
 
-            var layer = CreateLayer(document, name ?? "Layer 1", source);
+            var layer = CreateLayer(document, name ?? "Layer 1", source, sourceFactory);
             InitializeLayerDisplay(layer, palette);
             _layers.Add(layer);
             _drawOrder.Add(layer);
@@ -1634,7 +1733,9 @@ namespace RasterField
 
             foreach (var layer in _layers)
             {
-                if (layer.Source == null || !layer.IsVisible) continue;
+                bool comparisonLayer = _comparisonMode != RasterComparisonMode.None &&
+                    (ReferenceEquals(layer, _comparisonFirst) || ReferenceEquals(layer, _comparisonSecond));
+                if (layer.Source == null || (!layer.IsVisible && !comparisonLayer)) continue;
                 RefreshLayerStreamingWindow(layer, active, activeCentreCell, bitmapW, bitmapH);
             }
         }
@@ -1797,7 +1898,10 @@ namespace RasterField
             context.FillRectangle(Background, new Rect(Bounds.Size));
 
             var active = ActiveLayer;
-            if (active == null || !_layers.Any(l => l.IsVisible && l.Bitmap != null))
+            bool comparisonValid = _comparisonMode != RasterComparisonMode.None &&
+                _comparisonFirst?.Bitmap != null && _comparisonSecond?.Bitmap != null &&
+                _layers.Contains(_comparisonFirst) && _layers.Contains(_comparisonSecond);
+            if (active == null || (!comparisonValid && !_layers.Any(l => l.IsVisible && l.Bitmap != null)))
             {
                 var text = new FormattedText(L.T("Drop .ers / .tif / .tiff / .erv / .geojson / .csv / .rfproj files here, or File ▸ Open…"),
                     System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
@@ -1807,18 +1911,28 @@ namespace RasterField
             }
 
             bool activeInvertible = active.Document.GeoReference.IsInvertible;
-            foreach (var layer in _drawOrder)
+            if (comparisonValid)
             {
-                switch (layer)
+                DrawComparison(context, active, activeInvertible);
+                foreach (var vectorLayer in _drawOrder.OfType<VectorLayer>())
                 {
-                    case RasterLayer rasterLayer when rasterLayer.IsVisible && rasterLayer.Bitmap != null && rasterLayer.Opacity > 0:
-                        using (context.PushOpacity(rasterLayer.Opacity))
-                        using (context.PushRenderOptions(new RenderOptions { BitmapBlendingMode = ToAvalonia(rasterLayer.BlendMode) }))
-                            DrawLayer(context, rasterLayer, active, activeInvertible);
-                        break;
-                    case VectorLayer vectorLayer when vectorLayer.IsVisible && activeInvertible:
+                    if (vectorLayer.IsVisible && activeInvertible)
                         DrawVectorLayer(context, vectorLayer, active);
-                        break;
+                }
+            }
+            else
+            {
+                foreach (var layer in _drawOrder)
+                {
+                    switch (layer)
+                    {
+                        case RasterLayer rasterLayer when rasterLayer.IsVisible && rasterLayer.Bitmap != null && rasterLayer.Opacity > 0:
+                            DrawRasterWithStyle(context, rasterLayer, active, activeInvertible);
+                            break;
+                        case VectorLayer vectorLayer when vectorLayer.IsVisible && activeInvertible:
+                            DrawVectorLayer(context, vectorLayer, active);
+                            break;
+                    }
                 }
             }
 
@@ -1830,6 +1944,9 @@ namespace RasterField
 
             if (_path.Count > 0 && activeInvertible)
                 DrawPath(context, active);
+
+            if (comparisonValid)
+                DrawComparisonOverlay(context);
 
             string hintText = $"zoom {_scale:0.###}×  ·  {_layers.Count} layer{(_layers.Count == 1 ? "" : "s")}";
             if (_vectorLayers.Count > 0) hintText += $" + {_vectorLayers.Count} vector";
@@ -1849,6 +1966,60 @@ namespace RasterField
             var hintBox = new Rect(10, Bounds.Height - hint.Height - 16, hint.Width + 16, hint.Height + 8);
             context.FillRectangle(new SolidColorBrush(Color.FromArgb(150, 0x15, 0x18, 0x1D)), hintBox, 6);
             context.DrawText(hint, new Point(hintBox.X + 8, hintBox.Y + 4));
+        }
+
+        private void DrawRasterWithStyle(DrawingContext context, RasterLayer layer, RasterLayer active, bool activeInvertible)
+        {
+            if (layer.Bitmap == null || layer.Opacity <= 0) return;
+            using (context.PushOpacity(layer.Opacity))
+            using (context.PushRenderOptions(new RenderOptions { BitmapBlendingMode = ToAvalonia(layer.BlendMode) }))
+                DrawLayer(context, layer, active, activeInvertible);
+        }
+
+        private void DrawComparison(DrawingContext context, RasterLayer active, bool activeInvertible)
+        {
+            var first = _comparisonFirst!;
+            var second = _comparisonSecond!;
+            if (_comparisonMode == RasterComparisonMode.Blink)
+            {
+                DrawRasterWithStyle(context, _blinkShowsSecond ? second : first, active, activeInvertible);
+                return;
+            }
+
+            double divider = Bounds.Width * _swipePosition;
+            using (context.PushClip(new Rect(0, 0, divider, Bounds.Height)))
+                DrawRasterWithStyle(context, first, active, activeInvertible);
+            using (context.PushClip(new Rect(divider, 0, Math.Max(0, Bounds.Width - divider), Bounds.Height)))
+                DrawRasterWithStyle(context, second, active, activeInvertible);
+        }
+
+        private void DrawComparisonOverlay(DrawingContext context)
+        {
+            string left = _comparisonMode == RasterComparisonMode.Blink
+                ? (_blinkShowsSecond ? _comparisonSecond!.Name : _comparisonFirst!.Name)
+                : _comparisonFirst!.Name;
+            string right = _comparisonMode == RasterComparisonMode.Blink ? L.T("Blink") : _comparisonSecond!.Name;
+            DrawComparisonLabel(context, left, 12, HorizontalAlignment.Left);
+            DrawComparisonLabel(context, right, Bounds.Width - 12, HorizontalAlignment.Right);
+
+            if (_comparisonMode != RasterComparisonMode.Swipe) return;
+            double x = Bounds.Width * _swipePosition;
+            var shadow = new Pen(new SolidColorBrush(Color.FromArgb(150, 0, 0, 0)), 5);
+            var line = new Pen(new SolidColorBrush(Color.FromRgb(255, 255, 255)), 2);
+            context.DrawLine(shadow, new Point(x, 0), new Point(x, Bounds.Height));
+            context.DrawLine(line, new Point(x, 0), new Point(x, Bounds.Height));
+            context.DrawEllipse(new SolidColorBrush(Color.FromRgb(255, 255, 255)), null,
+                new Point(x, Bounds.Height / 2), 7, 18);
+        }
+
+        private static void DrawComparisonLabel(DrawingContext context, string text, double anchorX, HorizontalAlignment alignment)
+        {
+            var formatted = new FormattedText(text, System.Globalization.CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight, Typeface.Default, 12, Brushes.White);
+            double x = alignment == HorizontalAlignment.Right ? anchorX - formatted.Width - 16 : anchorX;
+            var box = new Rect(x, 12, formatted.Width + 16, formatted.Height + 8);
+            context.FillRectangle(new SolidColorBrush(Color.FromArgb(175, 0, 0, 0)), box, 5);
+            context.DrawText(formatted, new Point(box.X + 8, box.Y + 4));
         }
 
         /// <summary>
@@ -2273,6 +2444,16 @@ namespace RasterField
             Focus();
             var p = e.GetCurrentPoint(this);
 
+            if (_comparisonMode == RasterComparisonMode.Swipe && p.Properties.IsLeftButtonPressed &&
+                Math.Abs(p.Position.X - Bounds.Width * _swipePosition) <= 12)
+            {
+                _draggingSwipe = true;
+                e.Pointer.Capture(this);
+                Cursor = new Cursor(StandardCursorType.SizeWestEast);
+                e.Handled = true;
+                return;
+            }
+
             if (SelectionMode && p.Properties.IsLeftButtonPressed && Document != null)
             {
                 SelDrag hit = _hasSelection ? HitTestHandle(p.Position) : SelDrag.None;
@@ -2349,6 +2530,15 @@ namespace RasterField
         {
             base.OnPointerReleased(e);
 
+            if (_draggingSwipe)
+            {
+                _draggingSwipe = false;
+                e.Pointer.Capture(null);
+                Cursor = Cursor.Default;
+                e.Handled = true;
+                return;
+            }
+
             if (_selDrag != SelDrag.None)
             {
                 _selDrag = SelDrag.None;
@@ -2396,7 +2586,12 @@ namespace RasterField
             base.OnPointerMoved(e);
             Point pos = e.GetPosition(this);
 
-            if (_selDrag != SelDrag.None)
+            if (_draggingSwipe)
+            {
+                _swipePosition = Bounds.Width <= 0 ? 0.5 : Math.Clamp(pos.X / Bounds.Width, 0.02, 0.98);
+                InvalidateVisual();
+            }
+            else if (_selDrag != SelDrag.None)
             {
                 UpdateSelectionDrag(pos);
                 RaiseSelectionChanged();
@@ -2423,6 +2618,11 @@ namespace RasterField
             else if (_pathTool != PathTool.None)
             {
                 Cursor = HitTestPathVertex(pos) >= 0 ? new Cursor(StandardCursorType.SizeAll) : new Cursor(StandardCursorType.Cross);
+            }
+            else if (_comparisonMode == RasterComparisonMode.Swipe &&
+                     Math.Abs(pos.X - Bounds.Width * _swipePosition) <= 12)
+            {
+                Cursor = new Cursor(StandardCursorType.SizeWestEast);
             }
 
             RaiseReadout(pos);
@@ -2497,6 +2697,7 @@ namespace RasterField
                 case Key.Escape:
                     if (_hasSelection) ClearSelection();
                     else if (_path.Count > 0) ClearPath();
+                    else if (_comparisonMode != RasterComparisonMode.None) StopComparison();
                     else return;
                     break;
                 case Key.Back when _pathTool != PathTool.None: RemoveLastPathVertex(); break;
@@ -2582,6 +2783,19 @@ namespace RasterField
         Darken,
         Lighten,
         SoftLight,
+    }
+
+    /// <summary>How two raster layers are compared visually.</summary>
+    public enum RasterComparisonMode
+    {
+        /// <summary>Normal layer-stack rendering.</summary>
+        None,
+
+        /// <summary>First layer left of a draggable divider, second layer right of it.</summary>
+        Swipe,
+
+        /// <summary>Alternates between the two layers at a fixed interval.</summary>
+        Blink,
     }
 
     /// <summary>How <see cref="RasterView"/> draws cells when magnified.</summary>

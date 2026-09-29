@@ -469,6 +469,7 @@ namespace RasterField
             _view.SelectionChanged += (_, _) => UpdateClipPanel();
             _view.PathChanged += (_, _) => OnPathChanged();
             _view.PathFinished += (_, _) => OnPathChanged();
+            _view.ComparisonChanged += (_, _) => RefreshMenuChecks();
             _view.HistoryChanged += (_, _) => RefreshMenuChecks();
             _view.IdentifyRequested += OnIdentifyRequested;
 

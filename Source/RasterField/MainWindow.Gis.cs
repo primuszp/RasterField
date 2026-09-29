@@ -141,6 +141,14 @@ namespace RasterField
                 null,
                 magnification);
 
+            var comparison = new Cmd("_Comparison").Add(
+                new Cmd("_Swipe…", () => _ = ConfigureVisualComparisonAsync(RasterComparisonMode.Swipe),
+                    isChecked: () => _view.ComparisonMode == RasterComparisonMode.Swipe),
+                new Cmd("_Blink…", () => _ = ConfigureVisualComparisonAsync(RasterComparisonMode.Blink),
+                    isChecked: () => _view.ComparisonMode == RasterComparisonMode.Blink),
+                null,
+                new Cmd("_Stop comparison", () => { _view.StopComparison(); RefreshMenuChecks(); }));
+
             var vector = new Cmd("Vec_tor").Add(
                 new Cmd("Generate _contours…", () => _ = GenerateContoursAsync()),
                 new Cmd("_Stream network…", () => _ = GenerateStreamNetworkAsync()),
@@ -175,7 +183,7 @@ namespace RasterField
                 new Cmd("_Keyboard shortcuts…", () => _ = ShowShortcutsAsync()),
                 new Cmd("_About…", () => _ = ShowAboutAsync()));
 
-            return new List<Cmd> { file, edit, view, layer, raster, interpolation, vector, terrain, tools, palette, help };
+            return new List<Cmd> { file, edit, view, layer, raster, comparison, interpolation, vector, terrain, tools, palette, help };
         }
 
         /// <summary>Rebuilds both menus (after a language change or a bookmark edit).</summary>
@@ -493,6 +501,85 @@ namespace RasterField
         }
 
         // ---- raster comparison ----------------------------------------------------------
+
+        private async Task ConfigureVisualComparisonAsync(RasterComparisonMode mode)
+        {
+            var layers = _view.Layers.Where(l => !l.IsFrame && l.Bitmap != null).ToList();
+            if (layers.Count < 2)
+            {
+                await MessageAsync(T("Visual comparison"), T("Add at least two raster layers first."));
+                return;
+            }
+
+            var names = layers.Select(l => l.Name).ToList();
+            int secondDefault = layers.IndexOf(_view.ActiveLayer!);
+            if (secondDefault < 0) secondDefault = layers.Count - 1;
+            int firstDefault = secondDefault == 0 ? 1 : 0;
+            var firstBox = new ComboBox { ItemsSource = names, SelectedIndex = firstDefault, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var secondBox = new ComboBox { ItemsSource = names, SelectedIndex = secondDefault, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var value = new NumericUpDown
+            {
+                Minimum = mode == RasterComparisonMode.Swipe ? 2 : 100,
+                Maximum = mode == RasterComparisonMode.Swipe ? 98 : 5000,
+                Value = mode == RasterComparisonMode.Swipe ? (decimal)(_view.SwipePosition * 100) : 700,
+                Increment = mode == RasterComparisonMode.Swipe ? 1 : 100,
+                FormatString = "0",
+                Width = 150,
+                HorizontalAlignment = HorizontalAlignment.Left,
+            };
+            var tcs = new TaskCompletionSource<(int First, int Second, int Value)?>();
+            var dialog = new Window
+            {
+                Title = mode == RasterComparisonMode.Swipe ? T("Swipe comparison") : T("Blink comparison"),
+                Width = 420,
+                SizeToContent = SizeToContent.Height,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                CanResize = false,
+            };
+            var start = new Button { Content = T("Start comparison"), MinWidth = 120 };
+            var cancel = new Button { Content = T("Cancel"), MinWidth = 80 };
+            start.Click += (_, _) =>
+            {
+                tcs.TrySetResult((firstBox.SelectedIndex, secondBox.SelectedIndex, (int)(value.Value ?? 0)));
+                dialog.Close();
+            };
+            cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
+            dialog.Closed += (_, _) => tcs.TrySetResult(null);
+            dialog.Content = new StackPanel
+            {
+                Margin = new Thickness(16),
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock { Text = mode == RasterComparisonMode.Swipe
+                        ? T("The first layer is shown left of the draggable divider; the second is shown on the right.")
+                        : T("The display alternates between the first and second layer."), TextWrapping = TextWrapping.Wrap, Opacity = 0.85 },
+                    new TextBlock { Text = T("First layer") }, firstBox,
+                    new TextBlock { Text = T("Second layer") }, secondBox,
+                    new TextBlock { Text = mode == RasterComparisonMode.Swipe ? T("Initial divider position (%)") : T("Blink interval (milliseconds)") }, value,
+                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { start, cancel } },
+                },
+            };
+            await dialog.ShowDialog(this);
+            var choice = await tcs.Task;
+            if (choice == null) return;
+            if (choice.Value.First == choice.Value.Second)
+            {
+                await MessageAsync(T("Visual comparison"), T("Choose two different raster layers."));
+                return;
+            }
+
+            RasterLayer first = layers[choice.Value.First];
+            RasterLayer second = layers[choice.Value.Second];
+            _view.SetActiveLayer(first);
+            _view.StartComparison(mode, first, second,
+                swipePosition: mode == RasterComparisonMode.Swipe ? choice.Value.Value / 100.0 : 0.5,
+                blinkIntervalMilliseconds: mode == RasterComparisonMode.Blink ? choice.Value.Value : 700);
+            RefreshMenuChecks();
+            Flash(mode == RasterComparisonMode.Swipe
+                ? T("Swipe active — drag the vertical divider; Comparison ▸ Stop comparison restores the layer stack.")
+                : T("Blink active — Comparison ▸ Stop comparison restores the layer stack."));
+        }
 
         private async Task CompareRastersAsync()
         {
