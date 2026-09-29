@@ -6,10 +6,11 @@ namespace RasterField.Rasters
     /// <summary>One traced contour line: a single level value and the ordered points that form it.</summary>
     public sealed class ContourLine
     {
-        internal ContourLine(double level, IReadOnlyList<(double X, double Y)> points)
+        internal ContourLine(double level, IReadOnlyList<(double X, double Y)> points, bool isIndex = false)
         {
             Level = level;
             Points = points;
+            IsIndex = isIndex;
         }
 
         /// <summary>The elevation (or other value) this line traces.</summary>
@@ -17,6 +18,49 @@ namespace RasterField.Rasters
 
         /// <summary>The line's vertices, in world coordinates, in walk order.</summary>
         public IReadOnlyList<(double X, double Y)> Points { get; }
+
+        /// <summary><see langword="true"/> for an index (major) contour — every <see cref="ContourOptions.IndexEvery"/>-th level.</summary>
+        public bool IsIndex { get; }
+
+        /// <summary><see langword="true"/> when the line closes on itself (first point equals last point).</summary>
+        public bool IsClosed => Points.Count > 2 && Points[0].X == Points[Points.Count - 1].X && Points[0].Y == Points[Points.Count - 1].Y;
+
+        /// <summary>Total length of the polyline, in world units.</summary>
+        public double Length
+        {
+            get
+            {
+                double len = 0;
+                for (int i = 1; i < Points.Count; i++)
+                {
+                    double dx = Points[i].X - Points[i - 1].X, dy = Points[i].Y - Points[i - 1].Y;
+                    len += Math.Sqrt(dx * dx + dy * dy);
+                }
+                return len;
+            }
+        }
+    }
+
+    /// <summary>Parameters for <see cref="ContourGenerator.Trace(Raster, RasterGeoReference, ContourOptions)"/>.</summary>
+    public sealed class ContourOptions
+    {
+        /// <summary>Lowest level to trace (rounded up to a multiple of <see cref="Interval"/>).</summary>
+        public double Minimum { get; set; }
+
+        /// <summary>Highest level to trace.</summary>
+        public double Maximum { get; set; }
+
+        /// <summary>Contour interval (distance between successive levels). Must be positive.</summary>
+        public double Interval { get; set; } = 10;
+
+        /// <summary>Every n-th level (counted from level 0, i.e. multiples of <c>n × Interval</c>) is an index contour; 0 = none.</summary>
+        public int IndexEvery { get; set; } = 5;
+
+        /// <summary>Chaikin corner-cutting passes applied to every line (0 = raw marching-squares output).</summary>
+        public int SmoothingIterations { get; set; }
+
+        /// <summary>Lines shorter than this (world units) are dropped as noise; 0 keeps everything.</summary>
+        public double MinimumLength { get; set; }
     }
 
     /// <summary>
@@ -75,6 +119,83 @@ namespace RasterField.Rasters
         }
 
         /// <summary>
+        /// Builds the list of levels between <paramref name="minimum"/> and <paramref name="maximum"/>
+        /// (inclusive) that are whole multiples of <paramref name="interval"/>.
+        /// </summary>
+        public static IReadOnlyList<double> BuildLevels(double minimum, double maximum, double interval)
+        {
+            var levels = new List<double>();
+            if (!(interval > 0) || maximum < minimum) return levels;
+
+            long first = (long)Math.Ceiling(minimum / interval - 1e-9);
+            long last = (long)Math.Floor(maximum / interval + 1e-9);
+            for (long n = first; n <= last; n++)
+                levels.Add(n * interval);
+            return levels;
+        }
+
+        /// <summary>
+        /// Traces all levels described by <paramref name="options"/>, marks index contours, smooths
+        /// and filters the result.
+        /// </summary>
+        public static IReadOnlyList<ContourLine> Trace(Raster raster, RasterGeoReference geoReference, ContourOptions options)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            if (!(options.Interval > 0)) throw new ArgumentOutOfRangeException(nameof(options), "The contour interval must be positive.");
+            if (options.SmoothingIterations < 0) throw new ArgumentOutOfRangeException(nameof(options), "Smoothing iterations cannot be negative.");
+
+            var levels = BuildLevels(options.Minimum, options.Maximum, options.Interval);
+            if (levels.Count == 0) return Array.Empty<ContourLine>();
+
+            var result = new List<ContourLine>();
+            foreach (var line in TraceLevels(raster, geoReference, levels))
+            {
+                var points = line.Points;
+                for (int i = 0; i < options.SmoothingIterations; i++)
+                    points = Chaikin(points);
+
+                bool isIndex = false;
+                if (options.IndexEvery > 0)
+                {
+                    long n = (long)Math.Round(line.Level / options.Interval);
+                    isIndex = n % options.IndexEvery == 0;
+                }
+
+                var contour = new ContourLine(line.Level, points, isIndex);
+                if (options.MinimumLength > 0 && contour.Length < options.MinimumLength) continue;
+                result.Add(contour);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// One pass of Chaikin's corner cutting: every segment is replaced by points at 1/4 and 3/4
+        /// of its length. An open line keeps its endpoints (so it still meets the raster edge / a
+        /// no-data gap); a closed line stays closed.
+        /// </summary>
+        public static IReadOnlyList<(double X, double Y)> Chaikin(IReadOnlyList<(double X, double Y)> points)
+        {
+            if (points == null) throw new ArgumentNullException(nameof(points));
+            if (points.Count < 3) return points;
+
+            bool closed = points[0].X == points[points.Count - 1].X && points[0].Y == points[points.Count - 1].Y;
+            var output = new List<(double X, double Y)>(points.Count * 2);
+            if (!closed) output.Add(points[0]);
+            for (int i = 0; i < points.Count - 1; i++)
+            {
+                var a = points[i];
+                var b = points[i + 1];
+                var q = (0.75 * a.X + 0.25 * b.X, 0.75 * a.Y + 0.25 * b.Y);
+                var r = (0.25 * a.X + 0.75 * b.X, 0.25 * a.Y + 0.75 * b.Y);
+                if (closed || i > 0) output.Add(q);
+                if (closed || i < points.Count - 2) output.Add(r);
+            }
+            if (closed) output.Add(output[0]);
+            else output.Add(points[points.Count - 1]);
+            return output;
+        }
+
+        /// <summary>
         /// Emits the 0, 1 or 2 line segments (in world coordinates) that a single 2&#215;2 cell
         /// contributes at <paramref name="level"/>, given its four corner values (top-left,
         /// top-right, bottom-left, bottom-right) at image coordinates (col,row)..(col+1,row+1).
@@ -92,10 +213,12 @@ namespace RasterField.Rasters
             (double X, double Y) Left() => (col, row + Frac(tl, bl, level));
             (double X, double Y) Right() => (col + 1, row + Frac(tr, br, level));
 
+            // (col, row) here indexes samples, and a sample sits at its cell's centre — half a cell
+            // in from the corner-addressed pixel coordinate the georeference expects.
             void Emit((double X, double Y) a, (double X, double Y) b)
             {
-                var wa = geo.PixelToWorld(a.X, a.Y);
-                var wb = geo.PixelToWorld(b.X, b.Y);
+                var wa = geo.PixelToWorld(a.X + 0.5, a.Y + 0.5);
+                var wb = geo.PixelToWorld(b.X + 0.5, b.Y + 0.5);
                 segments.Add((wa, wb));
             }
 

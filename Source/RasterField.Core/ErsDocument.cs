@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 using RasterField.ErMapper;
 using RasterField.Rasters;
 
@@ -276,7 +277,19 @@ namespace RasterField
             }
 
             var (originX, originY) = GeoReference.PixelToWorld(x0, y0);
+            var newHeader = DeriveHeader(originX, originY, cw, ch, croppedBands.Length,
+                Header.RasterInfo.CellInfo?.XDimension, Header.RasterInfo.CellInfo?.YDimension, Header.RasterInfo.CellType);
+            return Create(newHeader, croppedBands);
+        }
 
+        /// <summary>
+        /// A new header for a dataset derived from this one: same coordinate space (datum,
+        /// projection, units, rotation), null value and band descriptions, but its own size, cell
+        /// size and origin (the world position of its cell (0, 0) corner).
+        /// </summary>
+        private ErsHeader DeriveHeader(double originX, double originY, int width, int height, int bandCount,
+            double? cellSizeX, double? cellSizeY, ErsCellType cellType)
+        {
             var newHeader = new ErsHeader
             {
                 DataSetType = Header.DataSetType,
@@ -293,16 +306,16 @@ namespace RasterField
                 },
                 RasterInfo = new RasterInfo
                 {
-                    CellType = Header.RasterInfo.CellType,
+                    CellType = cellType,
                     NullCellValue = Header.RasterInfo.NullCellValue,
-                    CellInfo = Header.RasterInfo.CellInfo == null ? null : new CellInfo
+                    CellInfo = cellSizeX == null || cellSizeY == null ? null : new CellInfo
                     {
-                        XDimension = Header.RasterInfo.CellInfo.XDimension,
-                        YDimension = Header.RasterInfo.CellInfo.YDimension,
+                        XDimension = cellSizeX.Value,
+                        YDimension = cellSizeY.Value,
                     },
-                    NrOfLines = ch,
-                    NrOfCellsPerLine = cw,
-                    NrOfBands = croppedBands.Length,
+                    NrOfLines = height,
+                    NrOfCellsPerLine = width,
+                    NrOfBands = bandCount,
                     RegistrationCellX = 0,
                     RegistrationCellY = 0,
                     RegistrationCoord = new RegistrationCoord
@@ -315,8 +328,75 @@ namespace RasterField
             };
             foreach (var band in Header.RasterInfo.Bands)
                 newHeader.RasterInfo.Bands.Add(new BandInfo { Value = band.Value, Units = band.Units, Width = band.Width });
+            return newHeader;
+        }
 
-            return Create(newHeader, croppedBands);
+        // ---- interpolation / subdivision -----------------------------------------------
+
+        /// <summary>
+        /// Creates a new dataset <see cref="BezierPatchOptions.Factor"/> times finer than this one,
+        /// every band resampled with <see cref="BezierPatchInterpolator"/>. The extent, origin and
+        /// rotation are unchanged; the cell size is divided by the factor. Integer cell types are
+        /// promoted to <see cref="ErsCellType.IEEE4ByteReal"/> (an interpolated surface is not integral).
+        /// </summary>
+        /// <remarks>Works whether or not the bands are loaded (reads them from disk if not).</remarks>
+        public ErsDocument Subdivide(BezierPatchOptions options, IProgress<double>? progress = null, CancellationToken cancellationToken = default)
+        {
+            int w = Header.RasterInfo.NrOfCellsPerLine, h = Header.RasterInfo.NrOfLines;
+            return Subdivide(0, 0, w, h, options, progress, cancellationToken);
+        }
+
+        /// <summary>
+        /// As <see cref="Subdivide(BezierPatchOptions, IProgress{double}, CancellationToken)"/>, but only
+        /// for the <paramref name="width"/> &#215; <paramref name="height"/> cell window at
+        /// (<paramref name="x"/>, <paramref name="y"/>) (clamped to the image). Neighbouring cells just
+        /// outside the window are still used, so the result joins seamlessly with the full surface.
+        /// </summary>
+        public ErsDocument Subdivide(int x, int y, int width, int height, BezierPatchOptions options,
+            IProgress<double>? progress = null, CancellationToken cancellationToken = default)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            options.Validate();
+            int totalWidth = Header.RasterInfo.NrOfCellsPerLine;
+            int totalHeight = Header.RasterInfo.NrOfLines;
+            int x0 = Math.Max(0, Math.Min(x, totalWidth));
+            int y0 = Math.Max(0, Math.Min(y, totalHeight));
+            int x1 = Math.Max(x0, Math.Min(x + width, totalWidth));
+            int y1 = Math.Max(y0, Math.Min(y + height, totalHeight));
+            if (x1 - x0 <= 0 || y1 - y0 <= 0) throw new ArgumentException("The requested window does not overlap the raster.");
+
+            // Read the window plus up to 2 real neighbour cells per side (a patch needs a 4×4 stencil).
+            int mx0 = Math.Max(0, x0 - 2), my0 = Math.Max(0, y0 - 2);
+            int mx1 = Math.Min(totalWidth, x1 + 2), my1 = Math.Min(totalHeight, y1 + 2);
+            int k = options.Factor;
+
+            int bandCount = Math.Max(1, Header.RasterInfo.NrOfBands);
+            var result = new Raster[bandCount];
+            RasterSource? source = _bands.Count > 0 ? null : OpenSource();
+            try
+            {
+                for (int b = 0; b < bandCount; b++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    Raster window = source == null
+                        ? RasterClipper.Crop(_bands[b], mx0, my0, mx1 - mx0, my1 - my0)
+                        : source.ReadWindow(mx0, my0, mx1 - mx0, my1 - my0, band: b);
+                    int band = b;
+                    var bandProgress = progress == null ? null : new Progress<double>(p => progress.Report((band + p) / bandCount));
+                    var fine = BezierPatchInterpolator.Subdivide(window, options, bandProgress, cancellationToken);
+                    result[b] = RasterClipper.Crop(fine, (x0 - mx0) * k, (y0 - my0) * k, (x1 - x0) * k, (y1 - y0) * k);
+                }
+            }
+            finally
+            {
+                source?.Dispose();
+            }
+
+            var (originX, originY) = GeoReference.PixelToWorld(x0, y0);
+            var cellType = Header.RasterInfo.CellType == ErsCellType.IEEE8ByteReal ? ErsCellType.IEEE8ByteReal : ErsCellType.IEEE4ByteReal;
+            var newHeader = DeriveHeader(originX, originY, (x1 - x0) * k, (y1 - y0) * k, bandCount,
+                Header.RasterInfo.CellSizeX / k, Header.RasterInfo.CellSizeY / k, cellType);
+            return Create(newHeader, result);
         }
 
         /// <summary>

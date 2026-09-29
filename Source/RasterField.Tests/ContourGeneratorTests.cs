@@ -28,13 +28,15 @@ namespace RasterField.Tests
             Assert.Equal(2.5, line.Level);
             Assert.Equal(4, line.Points.Count);
 
+            // Samples sit at cell centres (x + 0.5), so 2.5 falls midway between the centres of
+            // columns 2 and 3 — pixel coordinate 3.0 — spanning the first to the last row centre.
             foreach (var p in line.Points)
-                Assert.Equal(2.5, p.X, 6);
+                Assert.Equal(3.0, p.X, 6);
 
             double minY = line.Points.Min(p => p.Y);
             double maxY = line.Points.Max(p => p.Y);
-            Assert.Equal(0.0, minY, 6);
-            Assert.Equal(3.0, maxY, 6);
+            Assert.Equal(0.5, minY, 6);
+            Assert.Equal(3.5, maxY, 6);
         }
 
         [Fact]
@@ -93,9 +95,9 @@ namespace RasterField.Tests
             var lines = ContourGenerator.TraceLevel(raster, geo, 2.5);
             var line = Assert.Single(lines);
 
-            // x = 1000 + 2.5*10 = 1025 for every point on this vertical contour.
+            // Pixel x = 2.5 + 0.5 (cell-centre offset) → x = 1000 + 3.0*10 = 1030 on this vertical contour.
             foreach (var p in line.Points)
-                Assert.Equal(1025.0, p.X, 6);
+                Assert.Equal(1030.0, p.X, 6);
         }
     }
 }
