@@ -149,8 +149,13 @@ namespace RasterField
             _profileDeltaBox.Content = T("Δ Bézier − bilinear");
             ToolTip.SetTip(_profileDeltaBox, T("Plot the difference between the Bézier and the bilinear profile of the active layer, scaled to fit — on a smooth surface the two curves otherwise overlap."));
             _profileDeltaBox.IsCheckedChanged += (_, _) => UpdateProfile();
+            _profileChart.HoverChanged += (_, e) => _view.SetProfileHover(e.Sample);
             var profileWindowBtn = new Button { Content = T("Window…") };
-            profileWindowBtn.Click += (_, _) => { if (_lastProfile.Count > 0) new ProfileWindow(_lastProfile, DistanceUnit(), UnitLabel()).Show(this); };
+            profileWindowBtn.Click += (_, _) =>
+            {
+                if (_lastProfile.Count > 0)
+                    new ProfileWindow(_lastProfile, DistanceUnit(), UnitLabel(), sample => _view.SetProfileHover(sample)).Show(this);
+            };
             var profileCsvBtn = new Button { Content = "CSV…" };
             profileCsvBtn.Click += async (_, _) => await ProfileWindow.ExportCsvAsync(this, _lastProfile, DistanceUnit());
             var profileStart = new Button { Content = T("Draw profile (P)") };
@@ -452,6 +457,7 @@ namespace RasterField
 
         private async void UpdateProfile()
         {
+            _view.SetProfileHover(null);
             _profileCts?.Cancel();
             _profileCts?.Dispose();
             _profileCts = new CancellationTokenSource();

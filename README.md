@@ -207,7 +207,9 @@ made.Save("new.ers");
 * **Path tools** — **Profile** (`P`): a multi-point path with a live chart in the Analysis panel
   (every visible raster layer, including huge streamed datasets, plus the Bézier-interpolated curve
   for loaded/clipped layers), a larger window and CSV export. Streamed profile reads run in the
-  background, are cancelled when superseded and keep only a small bounded tile cache in memory;
+  background, are cancelled when superseded and keep only a small bounded tile cache in memory.
+  Hovering either profile chart shows a distance/value crosshair and highlights the same sampled
+  world-coordinate position on the map;
   or along a vector line (card menu). **Measure** (`M`): length, terrain-following surface length,
   perimeter and area. **Zone** (`Z`): zonal statistics of every visible raster inside a drawn
   polygon; *Analysis ▸ Zonal statistics by polygon layer…* does it per polygon of a vector layer,

@@ -564,7 +564,7 @@ A terv minden pontja megvalósult; az alábbi táblázat azt is jelzi, ahol a me
 | **Bézier‑patch interpoláció** | ✅ | Core + párbeszéd előnézettel + megjelenítési simítás + szintvonal‑forrás + profil‑görbe + pontazonosító. Húzható elválasztós osztott előnézet helyett két kép egymás mellett. |
 | **Szintvonal, vízhálózat** | ✅ | Fővonal + vonal menti felirat, Chaikin‑simítás, min. hossz, Bézier forrásfelszín; Strahler‑rend szerinti vonalvastagság. |
 | **Pontazonosító** | ✅ | Az eredmény az Elemzés panel „Azonosítás” fülén: minden látható réteg (összes sáv, bilineáris, Bézier), vektoroknál a legközelebbi objektum. |
-| **Többpontos profil** | ✅ | `P`; kattintás pontot ad, húzás mozgat, dupla kattintás / Enter lezár, Backspace visszavon. Élő diagram a dokkban, minden látható réteg + Bézier‑görbe, külön ablak és CSV‑export. Vektorvonal mentén is (⋮ ▸ Profil az első vonal mentén). |
+| **Többpontos profil** | ✅ | `P`; kattintás pontot ad, húzás mozgat, dupla kattintás / Enter lezár, Backspace visszavon. Élő diagram a dokkban, minden látható réteg + Bézier‑görbe, külön ablak és CSV‑export. A diagram fölötti kurzor távolságot és rétegenkénti értéket mutat, a hozzá tartozó világkoordinátát pedig kiemeli a térképen. Vektorvonal mentén is (⋮ ▸ Profil az első vonal mentén). |
 | **Mérés** | ✅ | `M`; hossz, terepkövető (3D) felszíni hossz, lezárva kerület és terület. |
 | **Zonális statisztika** | ✅ | `Z`: rajzolt sokszögben minden látható raszterre; illetve poligonrétegből soronként, CSV‑exporttal. |
 | **Vektor első rétegként** | ✅ | Láthatatlan „keret” réteg adja a koordinátarendszert, amíg nincs raszter; az első raszter érkezésekor eltűnik. |

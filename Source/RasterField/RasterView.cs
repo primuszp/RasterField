@@ -85,6 +85,7 @@ namespace RasterField
         private PathTool _pathTool;
         private readonly List<(double X, double Y)> _path = new List<(double X, double Y)>();
         private bool _pathFinished;
+        private (double X, double Y)? _profileHoverWorld;
         private int _pathDragIndex = -1;
         // Pressed on a segment's midpoint handle: the vertex is inserted only once the drag starts.
         private int _pathInsertSegment = -1;
@@ -857,6 +858,7 @@ namespace RasterField
                 _pathTool = value;
                 _path.Clear();
                 _pathFinished = false;
+                _profileHoverWorld = null;
                 _pathDragIndex = -1;
                 _pathInsertSegment = -1;
                 Cursor = value != PathTool.None ? new Cursor(StandardCursorType.Cross) : Cursor.Default;
@@ -867,6 +869,13 @@ namespace RasterField
         /// <summary>The path's vertices, in world coordinates.</summary>
         public IReadOnlyList<(double X, double Y)> CurrentPath => _path;
 
+        /// <summary>Highlights a sampled profile location on the map, or clears it with null.</summary>
+        public void SetProfileHover(ProfileSample? sample)
+        {
+            _profileHoverWorld = sample.HasValue ? (sample.Value.X, sample.Value.Y) : null;
+            InvalidateVisual();
+        }
+
         /// <summary><see langword="true"/> once the user finished the path (the next click starts a new one).</summary>
         public bool IsPathFinished => _pathFinished;
 
@@ -875,6 +884,7 @@ namespace RasterField
         {
             _path.Clear();
             _pathFinished = false;
+            _profileHoverWorld = null;
             RaisePathChanged();
         }
 
@@ -884,6 +894,7 @@ namespace RasterField
             if (_path.Count == 0) return;
             _path.RemoveAt(_path.Count - 1);
             _pathFinished = false;
+            _profileHoverWorld = null;
             RaisePathChanged();
         }
 
@@ -902,6 +913,7 @@ namespace RasterField
             _path.Clear();
             _path.AddRange(vertices);
             _pathFinished = finished && _path.Count >= 2;
+            _profileHoverWorld = null;
             RaisePathChanged();
             if (_pathFinished) PathFinished?.Invoke(this, EventArgs.Empty);
         }
@@ -2519,6 +2531,13 @@ namespace RasterField
                 context.DrawGeometry(fill, new Pen(brush, 2), geometry);
                 if (_pathTool == PathTool.Measure && !_pathFinished && pts.Count >= 3)
                     context.DrawLine(new Pen(brush, 1, new DashStyle(new double[] { 4, 3 }, 0)), pts[pts.Count - 1], pts[0]);
+            }
+
+            if (_pathTool == PathTool.Profile && _profileHoverWorld is { } hover)
+            {
+                Point point = WorldToScreen(active, hover.X, hover.Y);
+                context.DrawEllipse(Brushes.White, new Pen(Brushes.Black, 2), point, 7, 7);
+                context.DrawEllipse(brush, null, point, 3.5, 3.5);
             }
 
             // Midpoint handles (hollow, smaller): drag one to insert a new vertex on that segment.
