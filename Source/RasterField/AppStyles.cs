@@ -1,11 +1,15 @@
+using System;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Presenters;
 using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
 using Avalonia.Layout;
 using Avalonia.Controls.Documents;
 using Avalonia.Media;
 using Avalonia.Styling;
+using Avalonia.Animation;
+using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Themes.Fluent;
 
 namespace RasterField
@@ -43,8 +47,31 @@ namespace RasterField
                 ["RfTrackBrush"] = new SolidColorBrush(track),
                 ["RfThumbRingBrush"] = new SolidColorBrush(ring),
             };
-            resources.ThemeDictionaries[ThemeVariant.Dark] = Dict(AppTheme.DarkAccentColor, Color.FromRgb(0x3A, 0x41, 0x4C), Color.FromRgb(0xE8, 0xEC, 0xF0));
-            resources.ThemeDictionaries[ThemeVariant.Light] = Dict(AppTheme.LightAccentColor, Color.FromRgb(0xC9, 0xCF, 0xD6), Colors.White);
+            var dark = Dict(AppTheme.DarkAccentColor, Color.FromRgb(0x3A, 0x41, 0x4C), Color.FromRgb(0xE8, 0xEC, 0xF0));
+            var light = Dict(AppTheme.LightAccentColor, Color.FromRgb(0xC9, 0xCF, 0xD6), Colors.White);
+
+            // Layer cards: resting, hovered, active (selected) and active + hovered.
+            dark["RfCardBrush"] = new SolidColorBrush(Color.FromRgb(0x23, 0x28, 0x30));
+            dark["RfCardHoverBrush"] = new SolidColorBrush(Color.FromRgb(0x2B, 0x31, 0x3B));
+            dark["RfCardActiveBrush"] = new SolidColorBrush(Color.FromRgb(0x1D, 0x30, 0x31));
+            dark["RfCardActiveHoverBrush"] = new SolidColorBrush(Color.FromRgb(0x23, 0x3A, 0x3B));
+            light["RfCardBrush"] = new SolidColorBrush(Color.FromRgb(0xE6, 0xE9, 0xED));
+            light["RfCardHoverBrush"] = new SolidColorBrush(Color.FromRgb(0xDC, 0xE0, 0xE5));
+            light["RfCardActiveBrush"] = new SolidColorBrush(Color.FromRgb(0xE0, 0xF0, 0xEE));
+            light["RfCardActiveHoverBrush"] = new SolidColorBrush(Color.FromRgb(0xD3, 0xEA, 0xE7));
+
+            // Flat icon buttons: muted glyph at rest, a soft round wash and a stronger glyph on hover.
+            dark["RfIconBrush"] = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0xA2));
+            dark["RfIconHoverBrush"] = new SolidColorBrush(Color.FromRgb(0xE8, 0xEC, 0xF0));
+            dark["RfIconHoverBackground"] = new SolidColorBrush(Colors.White, 0.09);
+            dark["RfIconPressedBackground"] = new SolidColorBrush(Colors.White, 0.16);
+            light["RfIconBrush"] = new SolidColorBrush(Color.FromRgb(0x62, 0x6C, 0x7A));
+            light["RfIconHoverBrush"] = new SolidColorBrush(Color.FromRgb(0x1F, 0x26, 0x30));
+            light["RfIconHoverBackground"] = new SolidColorBrush(Colors.Black, 0.07);
+            light["RfIconPressedBackground"] = new SolidColorBrush(Colors.Black, 0.13);
+
+            resources.ThemeDictionaries[ThemeVariant.Dark] = dark;
+            resources.ThemeDictionaries[ThemeVariant.Light] = light;
         }
 
         /// <summary>The app's styles; add after the FluentTheme.</summary>
@@ -133,7 +160,82 @@ namespace RasterField
                     new Setter(Layoutable.WidthProperty, 22.0),
                     new Setter(Layoutable.HeightProperty, 22.0),
                     new Setter(TemplatedControl.CornerRadiusProperty, new CornerRadius(6)),
+                    new Setter(TemplatedControl.ForegroundProperty, new DynamicResourceExtension("RfIconBrush")),
                 },
+            });
+            // Fluent paints hover/pressed/disabled on the template's presenter; restyle all three there.
+            styles.Add(new Style(x => x.OfType<Button>().Class("icon").Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
+            {
+                Setters =
+                {
+                    new Setter(Animatable.TransitionsProperty, new Transitions
+                    {
+                        new BrushTransition { Property = ContentPresenter.BackgroundProperty, Duration = TimeSpan.FromMilliseconds(110) },
+                    }),
+                },
+            });
+            styles.Add(new Style(x => x.OfType<Button>().Class("icon").Class(":pointerover").Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
+            {
+                Setters =
+                {
+                    new Setter(ContentPresenter.BackgroundProperty, new DynamicResourceExtension("RfIconHoverBackground")),
+                    new Setter(ContentPresenter.ForegroundProperty, new DynamicResourceExtension("RfIconHoverBrush")),
+                    new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent),
+                },
+            });
+            styles.Add(new Style(x => x.OfType<Button>().Class("icon").Class(":pressed").Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
+            {
+                Setters =
+                {
+                    new Setter(ContentPresenter.BackgroundProperty, new DynamicResourceExtension("RfIconPressedBackground")),
+                    new Setter(ContentPresenter.ForegroundProperty, new DynamicResourceExtension("RfAccentBrush")),
+                },
+            });
+            styles.Add(new Style(x => x.OfType<Button>().Class("icon").Class(":disabled").Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
+            {
+                Setters =
+                {
+                    new Setter(ContentPresenter.BackgroundProperty, Brushes.Transparent),
+                    new Setter(ContentPresenter.ForegroundProperty, new DynamicResourceExtension("RfIconBrush")),
+                },
+            });
+            styles.Add(new Style(x => x.OfType<Button>().Class("icon").Class(":disabled"))
+            {
+                Setters = { new Setter(Visual.OpacityProperty, 0.28) },
+            });
+            styles.Add(new Style(x => x.OfType<Button>().Class("icon").Class(":pressed"))
+            {
+                Setters = { new Setter(Visual.RenderTransformProperty, new ScaleTransform(0.92, 0.92)) },
+            });
+
+            // ---- layer cards: the whole card lights up under the pointer; the active one keeps its accent ----
+            styles.Add(new Style(x => x.OfType<Border>().Class("layerCard"))
+            {
+                Setters =
+                {
+                    new Setter(Border.BackgroundProperty, new DynamicResourceExtension("RfCardBrush")),
+                    new Setter(Border.BorderBrushProperty, Brushes.Transparent),
+                    new Setter(Animatable.TransitionsProperty, new Transitions
+                    {
+                        new BrushTransition { Property = Border.BackgroundProperty, Duration = TimeSpan.FromMilliseconds(120) },
+                    }),
+                },
+            });
+            styles.Add(new Style(x => x.OfType<Border>().Class("layerCard").Class(":pointerover"))
+            {
+                Setters = { new Setter(Border.BackgroundProperty, new DynamicResourceExtension("RfCardHoverBrush")) },
+            });
+            styles.Add(new Style(x => x.OfType<Border>().Class("layerCard").Class("active"))
+            {
+                Setters =
+                {
+                    new Setter(Border.BackgroundProperty, new DynamicResourceExtension("RfCardActiveBrush")),
+                    new Setter(Border.BorderBrushProperty, new DynamicResourceExtension("RfAccentBrush")),
+                },
+            });
+            styles.Add(new Style(x => x.OfType<Border>().Class("layerCard").Class("active").Class(":pointerover"))
+            {
+                Setters = { new Setter(Border.BackgroundProperty, new DynamicResourceExtension("RfCardActiveHoverBrush")) },
             });
 
             // ---- macOS title-bar buttons (sidebar toggles): borderless, hover-only background ----

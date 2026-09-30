@@ -164,9 +164,10 @@ made.Save("new.ers");
   panel lists them top-to-bottom in stacking order (top of the list = drawn in
   front) as rounded cards — the active layer's card gets an accent border and
   tint, so it's obvious at a glance which one every tool and side-panel control
-  targets — each with a visibility checkbox, click-to-activate, and circular
-  ▲/▼/✕ buttons (a properly-sized, clearly clickable target, not a cramped
-  default-sized square one) to reorder or remove. Layers with different
+  targets. A click anywhere on a card selects its layer, and the whole card tints
+  under the pointer; each has a visibility checkbox and thin line-icon buttons
+  (move up / down, ⋮ menu, recompute, save) that are muted at rest and get a soft
+  round highlight on hover. Layers with different
   origins, cell sizes, projections or even rotation all line up correctly on
   screen — each is projected into the active layer's view through its own
   georeference. Multiple files on the command line (`RasterField a.ers b.ers

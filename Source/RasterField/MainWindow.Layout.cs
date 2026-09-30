@@ -1009,13 +1009,13 @@ namespace RasterField
                 TextTrimming = TextTrimming.CharacterEllipsis,
             };
             ToolTip.SetTip(nameText, LayerTip(layer.Name, layer.Lineage, layer.IsUnsaved) + "\n" + L.F("{0} object(s)", layer.Document.Objects.Count));
-            var upBtn = CircleIconButton("▲");
+            var upBtn = IconButton(LayerIcon.Up);
             upBtn.IsEnabled = _view.CanMoveLayerUp(layer);
             upBtn.Click += (_, _) => RunLayerActionSafely(() => _view.MoveVectorLayerUp(layer));
-            var downBtn = CircleIconButton("▼");
+            var downBtn = IconButton(LayerIcon.Down);
             downBtn.IsEnabled = _view.CanMoveLayerDown(layer);
             downBtn.Click += (_, _) => RunLayerActionSafely(() => _view.MoveVectorLayerDown(layer));
-            var menuBtn = CircleIconButton("⋮");
+            var menuBtn = IconButton(LayerIcon.More);
             // Avalonia only opens a ContextMenu on the control it is attached to, so the ⋮ button
             // and the card's right-click each get their own instance of the same menu.
             var buttonMenu = BuildVectorContextMenu(layer);
@@ -1027,7 +1027,7 @@ namespace RasterField
             var styleRow = BuildVectorStyleRow(layer);
             if (layer.IsUnsaved)
             {
-                var saveBtn = CircleIconButton("⤓");
+                var saveBtn = IconButton(LayerIcon.Save);
                 ToolTip.SetTip(saveBtn, T("Save this derived layer as .erv"));
                 saveBtn.Click += async (_, _) => await SaveVectorLayerAsync(layer);
                 styleRow.Children.Add(saveBtn);
@@ -1045,31 +1045,24 @@ namespace RasterField
             // Bound to the layer object, not its momentary list position.
             visBox.IsCheckedChanged += (_, _) => RunLayerActionSafely(() => _view.SetLayerVisible(layer, visBox.IsChecked == true));
 
-            var nameBtn = new Button
+            // The whole card selects the layer (see below), so the name is plain text.
+            var nameText = new TextBlock
             {
-                // A TextBlock, not a plain string: string Content treats "_" as an access key.
-                Content = new TextBlock
-                {
-                    Text = (layer.Lineage != null ? "↳ " : "") + layer.Name + (layer.IsUnsaved ? " ●" : ""),
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                },
-                HorizontalContentAlignment = HorizontalAlignment.Left,
-                VerticalContentAlignment = VerticalAlignment.Center,
+                Text = (layer.Lineage != null ? "↳ " : "") + layer.Name + (layer.IsUnsaved ? " ●" : ""),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = VerticalAlignment.Center,
                 FontWeight = isActive ? FontWeight.SemiBold : FontWeight.Normal,
-                Background = Brushes.Transparent,
-                BorderThickness = new Thickness(0),
-                Padding = new Thickness(2, 0),
+                Margin = new Thickness(2, 0),
             };
-            nameBtn.Click += (_, _) => RunLayerActionSafely(() => _view.SetActiveLayer(layer));
-            ToolTip.SetTip(nameBtn, LayerTip(layer.Name, layer.Lineage, layer.IsUnsaved, layer.IsStreaming));
+            ToolTip.SetTip(nameText, LayerTip(layer.Name, layer.Lineage, layer.IsUnsaved, layer.IsStreaming));
 
-            var upBtn = CircleIconButton("▲");
+            var upBtn = IconButton(LayerIcon.Up);
             upBtn.IsEnabled = _view.CanMoveLayerUp(layer);
             upBtn.Click += (_, _) => RunLayerActionSafely(() => _view.MoveLayerUp(layer));
-            var downBtn = CircleIconButton("▼");
+            var downBtn = IconButton(LayerIcon.Down);
             downBtn.IsEnabled = _view.CanMoveLayerDown(layer);
             downBtn.Click += (_, _) => RunLayerActionSafely(() => _view.MoveLayerDown(layer));
-            var menuBtn = CircleIconButton("⋮");
+            var menuBtn = IconButton(LayerIcon.More);
             // Avalonia only opens a ContextMenu on the control it is attached to, so the ⋮ button
             // and the card's right-click each get their own instance of the same menu.
             var buttonMenu = BuildRasterContextMenu(layer);
@@ -1077,7 +1070,15 @@ namespace RasterField
             menuBtn.Click += (_, _) => buttonMenu.Open(menuBtn);
             var menu = BuildRasterContextMenu(layer);
 
-            var card = BuildLayerCard(visBox, nameBtn, upBtn, downBtn, menuBtn, isActive, BuildRasterLayerRow(layer));
+            var card = BuildLayerCard(visBox, nameText, upBtn, downBtn, menuBtn, isActive, BuildRasterLayerRow(layer));
+            // A left click anywhere on the card selects the layer; its buttons, checkbox and slider
+            // handle their own presses first (those arrive here already handled).
+            card.Cursor = new Cursor(StandardCursorType.Hand);
+            card.PointerPressed += (_, e) =>
+            {
+                if (e.Handled || !e.GetCurrentPoint(card).Properties.IsLeftButtonPressed || isActive) return;
+                RunLayerActionSafely(() => _view.SetActiveLayer(layer));
+            };
             card.ContextMenu = menu;
             _layersPanel.Children.Add(card);
         }
@@ -1104,14 +1105,14 @@ namespace RasterField
             if (layer.IsStreaming) row.Children.Add(new TextBlock { Text = "⇶ " + T("streaming"), Foreground = AppTheme.TextSecondary, VerticalAlignment = VerticalAlignment.Center, FontSize = AppTheme.FontCaption });
             if (layer.Recipe != null)
             {
-                var gear = CircleIconButton("↻");
+                var gear = IconButton(LayerIcon.Recompute);
                 ToolTip.SetTip(gear, T("Change parameters and recompute"));
                 gear.Click += async (_, _) => await EditRecipeAsync(layer);
                 row.Children.Add(gear);
             }
             if (layer.IsUnsaved)
             {
-                var saveBtn = CircleIconButton("⤓");
+                var saveBtn = IconButton(LayerIcon.Save);
                 ToolTip.SetTip(saveBtn, T("Save this derived layer (.ers + data)"));
                 saveBtn.Click += async (_, _) => await SaveRasterLayerAsync(layer);
                 row.Children.Add(saveBtn);
@@ -1219,21 +1220,50 @@ namespace RasterField
 
         private static string FormatHex(Color c) => string.Create(CultureInfo.InvariantCulture, $"#{c.R:X2}{c.G:X2}{c.B:X2}");
 
-        /// <summary>A small, flat icon button (styled by the "icon" class in <see cref="AppStyles"/>).</summary>
-        private static Button CircleIconButton(string glyph, IBrush? foreground = null)
+        private enum LayerIcon { Up, Down, More, Recompute, Save }
+
+        /// <summary>
+        /// A small, flat icon button with a thin line icon (styled by the "icon" class in
+        /// <see cref="AppStyles"/>: muted at rest, a soft wash and a stronger stroke on hover).
+        /// The icon strokes with the button's current foreground, so it follows every state.
+        /// </summary>
+        private static Button IconButton(LayerIcon icon)
         {
+            (string data, bool filled) = icon switch
+            {
+                LayerIcon.Up => ("M4.5,10 L8,6.5 L11.5,10", false),
+                LayerIcon.Down => ("M4.5,6.5 L8,10 L11.5,6.5", false),
+                LayerIcon.More => ("M8,3.2 m-1.25,0 a1.25,1.25 0 1,0 2.5,0 a1.25,1.25 0 1,0 -2.5,0 Z " +
+                                   "M8,8 m-1.25,0 a1.25,1.25 0 1,0 2.5,0 a1.25,1.25 0 1,0 -2.5,0 Z " +
+                                   "M8,12.8 m-1.25,0 a1.25,1.25 0 1,0 2.5,0 a1.25,1.25 0 1,0 -2.5,0 Z", true),
+                LayerIcon.Recompute => ("M12.3,8.6 A4.4,4.4 0 1 1 10.9,4.6 M11.4,2.3 L11.1,5 L8.4,4.7", false),
+                _ => ("M8,2.8 V9.8 M5,7 L8,10 L11,7 M3.8,12.9 H12.2", false),
+            };
+            var path = new Avalonia.Controls.Shapes.Path
+            {
+                Data = Geometry.Parse(data),
+                Width = 16, Height = 16,
+                StrokeThickness = filled ? 0 : 1.5,
+                StrokeLineCap = PenLineCap.Round,
+                StrokeJoin = PenLineJoin.Round,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var foreground = path.GetObservable(Avalonia.Controls.Documents.TextElement.ForegroundProperty);
+            path.Bind(filled ? Avalonia.Controls.Shapes.Shape.FillProperty : Avalonia.Controls.Shapes.Shape.StrokeProperty, foreground);
+
             var b = new Button
             {
-                Content = glyph,
+                Content = path,
                 HorizontalContentAlignment = HorizontalAlignment.Center,
                 VerticalContentAlignment = VerticalAlignment.Center,
-                Foreground = foreground ?? AppTheme.TextSecondary,
+                RenderTransformOrigin = RelativePoint.Center,
             };
             b.Classes.Add("icon");
             return b;
         }
 
-        /// <summary>Wraps one layer's row controls in a rounded card; the active raster layer gets an accent border and tint.</summary>
+        /// <summary>Wraps one layer's row controls in a rounded card; the active raster layer gets an accent border and tint, every card a hover tint.</summary>
         private static Border BuildLayerCard(Control visBox, Control name, Control upBtn, Control downBtn, Control menuBtn, bool isActive, Control? styleRow = null)
         {
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto,Auto"), ColumnSpacing = 2 };
@@ -1257,16 +1287,18 @@ namespace RasterField
                 content = stack;
             }
 
-            return new Border
+            // Colours come from the "layerCard" / "active" styles (hover included), not local values.
+            var card = new Border
             {
                 Child = content,
                 CornerRadius = new CornerRadius(8),
-                Background = isActive ? AppTheme.ActiveHighlight : AppTheme.BarBackground,
-                BorderBrush = isActive ? AppTheme.Accent : Brushes.Transparent,
                 BorderThickness = new Thickness(1),
                 Padding = new Thickness(6, 5, 4, 5),
                 Margin = new Thickness(0, 2),
             };
+            card.Classes.Add("layerCard");
+            if (isActive) card.Classes.Add("active");
+            return card;
         }
 
         // ---- vector export --------------------------------------------------------------
