@@ -31,7 +31,7 @@ namespace RasterField
         private readonly NumericUpDown _rBox = new NumericUpDown { Minimum = 0, Maximum = 255, Increment = 1, Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
         private readonly NumericUpDown _gBox = new NumericUpDown { Minimum = 0, Maximum = 255, Increment = 1, Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
         private readonly NumericUpDown _bBox = new NumericUpDown { Minimum = 0, Maximum = 255, Increment = 1, Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
-        private readonly TextBox _hexBox = new TextBox { Watermark = T("#RRGGBB"), Width = 90 };
+        private readonly TextBox _hexBox = new TextBox { Watermark = T("#RRGGBB"), Width = 90, VerticalContentAlignment = VerticalAlignment.Center, TextAlignment = Avalonia.Media.TextAlignment.Center };
         private readonly ComboBox _startFromBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
 
         private readonly PaletteLibrary _library;

@@ -1494,7 +1494,7 @@ namespace RasterField
             var rowBox = new NumericUpDown { Minimum = 0, Maximum = height - 1, Value = height / 2, Increment = 1, Width = 120, HorizontalAlignment = HorizontalAlignment.Left };
             var observerHeightBox = new NumericUpDown { Minimum = 0, Maximum = 10000, Value = 1.8M, Increment = 0.5M, FormatString = "0.#", Width = 120, HorizontalAlignment = HorizontalAlignment.Left };
             var targetHeightBox = new NumericUpDown { Minimum = 0, Maximum = 10000, Value = 0M, Increment = 0.5M, FormatString = "0.#", Width = 120, HorizontalAlignment = HorizontalAlignment.Left };
-            var maxDistBox = new NumericUpDown { Minimum = 0, Maximum = int.MaxValue, Value = 0M, Increment = 50, FormatString = "0", Width = 120, HorizontalAlignment = HorizontalAlignment.Left };
+            var maxDistBox = new NumericUpDown { Minimum = 0, Maximum = int.MaxValue, Value = 0M, Increment = 50, FormatString = "0", Width = 140, HorizontalAlignment = HorizontalAlignment.Left };
 
             var dialog = new Window
             {

@@ -176,8 +176,8 @@ namespace RasterField
                 Text = seed.KernelText.Replace("; ", "\n", StringComparison.Ordinal), AcceptsReturn = true, Height = 110,
                 FontFamily = new FontFamily("monospace"), TextWrapping = TextWrapping.NoWrap,
             };
-            var divisorBox = new NumericUpDown { Value = (decimal)seed.Divisor, Increment = 1, FormatString = "0.####", Width = 110 };
-            var offsetBox = new NumericUpDown { Value = (decimal)seed.Offset, Increment = 1, FormatString = "0.####", Width = 110 };
+            var divisorBox = new NumericUpDown { Value = (decimal)seed.Divisor, Increment = 1, FormatString = "0.####", Width = 130 };
+            var offsetBox = new NumericUpDown { Value = (decimal)seed.Offset, Increment = 1, FormatString = "0.####", Width = 130 };
             var strictBox = new CheckBox { Content = T("No-data wherever the window touches a gap (otherwise the centre value fills it)"), IsChecked = seed.Strict };
             var errorText = new TextBlock { Foreground = AppTheme.Danger, FontSize = AppTheme.FontCaption, TextWrapping = TextWrapping.Wrap };
             var okBtn = new Button { Content = T("Apply → new layer"), MinWidth = 80 };

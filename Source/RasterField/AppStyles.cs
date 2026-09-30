@@ -153,6 +153,36 @@ namespace RasterField
                 },
             });
 
+            // ---- numeric inputs: the number centred both ways, compact ▲▼ buttons ----
+            // Fluent's spinner buttons are 34 px each, which left e.g. 12 px for the digits of an
+            // 80 px R/G/B box; its inner text box also sits the digits against the top edge.
+            styles.Add(new Style(x => x.OfType<NumericUpDown>())
+            {
+                Setters =
+                {
+                    new Setter(NumericUpDown.TextAlignmentProperty, TextAlignment.Center),
+                    new Setter(NumericUpDown.VerticalContentAlignmentProperty, VerticalAlignment.Center),
+                },
+            });
+            styles.Add(new Style(x => x.OfType<NumericUpDown>().Template().OfType<TextBox>().Name("PART_TextBox"))
+            {
+                Setters =
+                {
+                    new Setter(TextBox.TextAlignmentProperty, TextAlignment.Center),
+                    new Setter(TextBox.VerticalContentAlignmentProperty, VerticalAlignment.Center),
+                },
+            });
+            // The template sets MinWidth on the buttons itself, which outranks a plain style; a selector
+            // with an activator (the always-true :not(.rf-wide)) is applied at trigger priority and wins.
+            styles.Add(new Style(x => x.OfType<ButtonSpinner>().Template().OfType<RepeatButton>().Not(y => y.Class("rf-wide")))
+            {
+                Setters =
+                {
+                    new Setter(Layoutable.MinWidthProperty, 20.0),
+                    new Setter(Layoutable.WidthProperty, 20.0),
+                },
+            });
+
             // ---- quieter GridSplitters ----
             styles.Add(new Style(x => x.OfType<GridSplitter>())
             {

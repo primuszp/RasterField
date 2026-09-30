@@ -1185,7 +1185,7 @@ namespace RasterField
                 Background = new SolidColorBrush(layer.Color), BorderBrush = AppTheme.Border, BorderThickness = new Thickness(1),
                 VerticalAlignment = VerticalAlignment.Center,
             };
-            var hexBox = new TextBox { Text = FormatHex(layer.Color), Width = 76, VerticalContentAlignment = VerticalAlignment.Center, Watermark = "#RRGGBB" };
+            var hexBox = new TextBox { Text = FormatHex(layer.Color), Width = 76, VerticalContentAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Center, Watermark = "#RRGGBB" };
             void ApplyHex()
             {
                 RunLayerActionSafely(() =>
