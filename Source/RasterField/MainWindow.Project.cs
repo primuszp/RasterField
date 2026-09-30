@@ -170,6 +170,18 @@ namespace RasterField
                     return new RecipeResult(BuildDerivedDocument(result, doc, label, units), null, null, null, $"{src.Name} · {label}", L.F("{0} of {1}", label, src.Name), default);
                 }
 
+                case "filter":
+                {
+                    var raster = Band();
+                    var spec = FilterSpec.FromRecipe(recipe);
+                    Raster result = await Task.Run(() => spec.Apply(raster, cancellationToken), cancellationToken);
+                    string label = spec.Label();
+                    // Smoothing / sharpening keep the data's meaning, so its unit too.
+                    var bands = doc.Header.RasterInfo.Bands;
+                    string? units = spec.KeepsValues && bands.Count > src.ActiveBand ? bands[src.ActiveBand].Units : null;
+                    return new RecipeResult(BuildDerivedDocument(result, doc, label, units), null, null, null, $"{src.Name} · {label}", L.F("{0} of {1}", label, src.Name), default);
+                }
+
                 case "swissrelief":
                 {
                     var raster = Band();
@@ -194,7 +206,7 @@ namespace RasterField
         /// <summary>Computes a recipe and adds the result as a new derived layer.</summary>
         private async Task<object?> CreateDerivedAsync(LayerRecipe recipe, string busyText)
         {
-            using var cancellation = recipe.Operation == "bezier" ? new CancellationTokenSource() : null;
+            using var cancellation = recipe.Operation is "bezier" or "filter" ? new CancellationTokenSource() : null;
             SetBusy(true, busyText, cancellation);
             try
             {
@@ -222,7 +234,7 @@ namespace RasterField
             {
                 var layer = AddDerivedRasterLayer(r.Raster, r.Name, r.Lineage, recipe.Operation == "bezier" ? recipe.Source as RasterLayer : null);
                 layer.Recipe = recipe;
-                ApplyDerivedStyle(layer, recipe.Operation);
+                ApplyDerivedStyle(layer, recipe);
                 return layer;
             }
             var v = AddDerivedVectorLayer(r.Vector!, r.Name, r.Lineage, r.VectorColor, r.Widths, r.Labels, lineWidth: 1.0);
@@ -238,13 +250,19 @@ namespace RasterField
         /// diverging ramp symmetric around 0 for curvature and an emphasised blue ramp for flow
         /// accumulation. The user can still change all of it in the properties panel.
         /// </summary>
-        private void ApplyDerivedStyle(RasterLayer layer, string operation)
+        private void ApplyDerivedStyle(RasterLayer layer, LayerRecipe recipe)
         {
             var raster = layer.Raster;
             if (raster == null || layer.ShowRgbComposite || raster.Statistics.ValidCount == 0) return;
             var stats = raster.Statistics;
-            switch (operation)
+            switch (recipe.Operation)
             {
+                case "filter":
+                    if (FilterDisplay(FilterSpec.FromRecipe(recipe), raster) is { } display)
+                        _view.ApplyDisplaySettings(layer, display.Palette, display.Min, display.Max);
+                    else if (recipe.Source is RasterLayer source)
+                        _view.CopyDisplaySettings(source, layer); // smoothing / sharpening: same values, same look
+                    break;
                 case "hillshade":
                     _view.ApplyDisplaySettings(layer, BuiltInPalettes.Grayscale, 0, 255);
                     break;
@@ -284,6 +302,7 @@ namespace RasterField
                 "bezier" => await AskBezierRecipeAsync(src, recipe),
                 "contours" => await AskContourRecipeAsync(src, recipe),
                 "streams" => await AskStreamRecipeAsync(src, recipe),
+                "filter" => await ShowFilterDialogAsync(src, recipe),
                 "curvature" => await ShowCurvatureDialogAsync() is CurvatureType t
                     ? new LayerRecipe("curvature", src, new Dictionary<string, string> { ["type"] = t.ToString() }) : null,
                 "bandmath" => await ShowBandMathDialogAsync(Enumerable.Range(1, Math.Max(1, src.Document.Bands.Count)).Select(i => $"b{i}").ToList(), recipe.Get("expr", "")) is string e && e.Length > 0
@@ -292,7 +311,7 @@ namespace RasterField
             };
             if (updated == null) return;
 
-            using var cancellation = updated.Operation == "bezier" ? new CancellationTokenSource() : null;
+            using var cancellation = updated.Operation is "bezier" or "filter" ? new CancellationTokenSource() : null;
             SetBusy(true, T("Recomputing…"), cancellation);
             try
             {

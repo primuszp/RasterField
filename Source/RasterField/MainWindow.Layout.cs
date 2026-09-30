@@ -1130,6 +1130,7 @@ namespace RasterField
             menu.Items.Add(Item(T("Statistics & histogram…"), () => { Activate(); _ = ShowStatisticsAsync(); }));
             menu.Items.Add(Item(T("Generate contours…"), () => { Activate(); _ = GenerateContoursAsync(); }));
             menu.Items.Add(Item(T("Bézier-patch subdivision…"), () => { Activate(); _ = BezierSubdivisionAsync(); }));
+            menu.Items.Add(Item(T("Filter (convolution)…"), () => { Activate(); _ = FilterAsync(); }));
             menu.Items.Add(Item(T("Hillshade"), () => { Activate(); _ = ComputeTerrainAsync(TerrainProduct.Hillshade); }));
             menu.Items.Add(Item(T("Slope"), () => { Activate(); _ = ComputeTerrainAsync(TerrainProduct.Slope); }));
             if (layer.Recipe != null)

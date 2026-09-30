@@ -161,6 +161,7 @@ namespace RasterField
                 new Cmd("_Band math…", () => _ = BandMathAsync()),
                 new Cmd("Fill _no-data gaps…", () => _ = FillNoDataAsync()),
                 new Cmd("_Bézier-patch subdivision…", () => _ = BezierSubdivisionAsync(), Ctrl(Key.B)),
+                new Cmd("_Filter (convolution)…", () => _ = FilterAsync()),
                 null,
                 new Cmd("Clip by _extent (E/N)…", () => _ = ClipByExtentAsync()),
                 new Cmd("_Mosaic rasters…", () => _ = MosaicAsync()));

@@ -18,7 +18,7 @@ namespace RasterField
             Parameters = parameters != null ? new Dictionary<string, string>(parameters) : new Dictionary<string, string>();
         }
 
-        /// <summary>Operation key: bezier, contours, streams, slope, aspect, hillshade, curvature, flowdir, flowacc, bandmath.</summary>
+        /// <summary>Operation key: bezier, contours, streams, slope, aspect, hillshade, curvature, flowdir, flowacc, swissrelief, filter, bandmath.</summary>
         public string Operation { get; }
 
         /// <summary>The source layer (a <see cref="RasterLayer"/>).</summary>
