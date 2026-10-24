@@ -11,7 +11,7 @@ namespace RasterField
     /// gamma, render mode, active band, RGB-composite toggle) — exactly the per-document state
     /// <see cref="RasterView"/> used to hold flatly, before it could show more than one dataset
     /// at once. Visibility and display order are the layer's own responsibility too; order is
-    /// simply this layer's position in <see cref="RasterView.Layers"/> (later = drawn on top).
+    /// this layer's position in <see cref="RasterView.DrawOrder"/> (later = drawn on top).
     /// </summary>
     public sealed class RasterLayer : IDisposable
     {

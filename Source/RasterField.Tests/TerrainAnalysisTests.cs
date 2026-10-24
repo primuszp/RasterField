@@ -141,5 +141,42 @@ namespace RasterField.Tests
 
             Assert.Equal(rise * 100.0, slope[70, 50], 4);
         }
+
+        [Theory]
+        [InlineData(1, 0, 270)]
+        [InlineData(-1, 0, 90)]
+        [InlineData(0, 1, 0)]
+        [InlineData(0, -1, 180)]
+        public void Hillshade_lights_a_plane_facing_the_sun(int dx, int dy, double azimuth)
+        {
+            var elevation = new Raster(5, 5);
+            for (int y = 0; y < 5; y++)
+                for (int x = 0; x < 5; x++) elevation[y, x] = dx * x + dy * y;
+
+            var lit = TerrainAnalysis.Hillshade(elevation, 1, 1, azimuth, 45);
+            var dark = TerrainAnalysis.Hillshade(elevation, 1, 1, azimuth + 180, 45);
+            Assert.Equal(255, lit[2, 2], 4);
+            Assert.Equal(0, dark[2, 2], 4);
+        }
+
+        [Fact]
+        public void Derived_zero_values_are_valid_when_elevation_uses_zero_as_no_data()
+        {
+            var elevation = new Raster(5, 5, noDataValue: 0);
+            Array.Fill(elevation.Samples, 100f);
+            elevation[0, 0] = 0;
+            foreach (var result in new[] {
+                TerrainAnalysis.Slope(elevation, 1, 1),
+                TerrainAnalysis.Curvature(elevation, 1, 1),
+                TerrainAnalysis.Hillshade(elevation, 1, 1, altitudeDegrees: 0) })
+            {
+                Assert.Equal(0, result[2, 2], 4);
+                Assert.False(result.IsNoData(result[2, 2]));
+                Assert.True(result.IsNoData(result[0, 0]));
+            }
+            var aspect = TerrainAnalysis.Aspect(new Raster(3, 3, new float[9], -1), 1, 1);
+            Assert.False(aspect.IsNoData(aspect[1, 1]));
+        }
+
     }
 }

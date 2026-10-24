@@ -28,6 +28,7 @@ namespace RasterField.Rasters
     public static class RasterAlgebra
     {
         /// <summary>Parses and evaluates <paramref name="expression"/> over <paramref name="bands"/>, producing a new raster of the same size.</summary>
+        /// <remarks>The output uses NaN for no-data unless an explicit output sentinel is supplied.</remarks>
         public static Raster Evaluate(string expression, IReadOnlyDictionary<string, Raster> bands, double? outputNoDataValue = null)
         {
             if (string.IsNullOrWhiteSpace(expression)) throw new ArgumentException("An expression is required.", nameof(expression));
@@ -53,7 +54,9 @@ namespace RasterField.Rasters
             if (tokens[pos].Type != TokType.End)
                 throw new RasterAlgebraException($"Unexpected '{tokens[pos].Text}' after the expression.");
 
-            double noData = outputNoDataValue ?? order.Select(n => bands[n].NoDataValue).FirstOrDefault(v => !double.IsNaN(v));
+            // A transformed value can equal any input sentinel (including zero).
+            // Only reserve a numeric output sentinel when the caller explicitly requests it.
+            double noData = outputNoDataValue ?? double.NaN;
             var result = new Raster(width, height, noData);
 
             var sourceArrays = order.Select(n => bands[n]).ToArray();

@@ -32,11 +32,8 @@ namespace RasterField.Rasters
 
         /// <summary>
         /// Computes the D8 flow direction for every cell: the code (see the type remarks) of the
-        /// neighbour with the steepest downhill slope. A no-data elevation cell, or one whose
-        /// every in-bounds, non-no-data neighbour is at the same height or higher, gets no-data
-        /// in the result too (the latter — a sink/flat cell with no strict descent — is
-        /// represented as no-data rather than 0, so it round-trips through the raster's no-data
-        /// machinery; use <see cref="Raster.IsNoData"/> to test for it either way).
+        /// neighbour with the steepest downhill slope. No-data elevation cells remain no-data.
+        /// A valid cell without a strictly lower neighbour is a sink, represented by code 0.
         /// </summary>
         public static Raster FlowDirection(Raster elevation, double cellSizeX, double cellSizeY)
         {
@@ -96,6 +93,7 @@ namespace RasterField.Rasters
         /// a cell is finalised only once every cell that flows into it has already contributed,
         /// then its own total (contributors + itself) is added to whatever it flows into. O(cells).
         /// </remarks>
+        /// <exception cref="ArgumentException">The supplied flow directions contain a cycle.</exception>
         public static Raster FlowAccumulation(Raster flowDirection)
         {
             if (flowDirection == null) throw new ArgumentNullException(nameof(flowDirection));
@@ -122,6 +120,7 @@ namespace RasterField.Rasters
                     if ((uint)nc >= (uint)w || (uint)nr >= (uint)h) { target[idx] = -1; continue; }
 
                     int t = nr * w + nc;
+                    if (flowDirection.IsNoData(flowDirection.Samples[t])) { target[idx] = -1; continue; }
                     target[idx] = t;
                     inDegree[t]++;
                 }
@@ -132,15 +131,23 @@ namespace RasterField.Rasters
             for (int i = 0; i < n; i++)
                 if (isValid[i] && inDegree[i] == 0) queue.Enqueue(i);
 
+            int processed = 0;
             while (queue.Count > 0)
             {
                 int cell = queue.Dequeue();
+                processed++;
                 int t = target[cell];
                 if (t < 0) continue;
 
                 acc[t] += acc[cell] + 1.0;
                 if (--inDegree[t] == 0) queue.Enqueue(t);
             }
+
+            int validCount = 0;
+            for (int i = 0; i < n; i++)
+                if (isValid[i]) validCount++;
+            if (processed != validCount)
+                throw new ArgumentException("Flow directions contain a cycle; accumulation requires an acyclic drainage network.", nameof(flowDirection));
 
             var output = new Raster(w, h, noDataValue: -1);
             for (int i = 0; i < n; i++)

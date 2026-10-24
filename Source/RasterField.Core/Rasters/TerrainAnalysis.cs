@@ -84,7 +84,8 @@ namespace RasterField.Rasters
             {
                 dzdx *= zFactor; dzdy *= zFactor;
                 double slopeRad = Math.Atan(Math.Sqrt(dzdx * dzdx + dzdy * dzdy));
-                double aspectRad = (dzdx == 0 && dzdy == 0) ? 0.0 : Math.Atan2(dzdy, -dzdx);
+                // Both angles are compass bearings; row coordinates increase southwards.
+                double aspectRad = (dzdx == 0 && dzdy == 0) ? 0.0 : Math.Atan2(-dzdx, dzdy);
 
                 double shade = cosZenith * Math.Cos(slopeRad) + sinZenith * Math.Sin(slopeRad) * Math.Cos(azimuthRad - aspectRad);
                 if (shade < 0) shade = 0;
@@ -112,7 +113,7 @@ namespace RasterField.Rasters
             if (cellSizeX <= 0 || cellSizeY <= 0) throw new ArgumentOutOfRangeException(nameof(cellSizeX), "Cell sizes must be positive.");
 
             int w = elevation.Width, h = elevation.Height;
-            var output = new Raster(w, h, double.IsNaN(elevation.NoDataValue) ? float.NaN : elevation.NoDataValue);
+            var output = new Raster(w, h, double.NaN);
 
             double cx2 = cellSizeX * cellSizeX, cy2 = cellSizeY * cellSizeY;
 
@@ -173,7 +174,7 @@ namespace RasterField.Rasters
             if (cellSizeX <= 0 || cellSizeY <= 0) throw new ArgumentOutOfRangeException(nameof(cellSizeX), "Cell sizes must be positive.");
 
             int w = elevation.Width, h = elevation.Height;
-            var output = new Raster(w, h, double.IsNaN(elevation.NoDataValue) ? float.NaN : elevation.NoDataValue);
+            var output = new Raster(w, h, double.NaN);
 
             void ComputeRow(int r)
             {

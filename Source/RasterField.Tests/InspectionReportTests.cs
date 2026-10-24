@@ -1,25 +1,24 @@
 using System;
 using System.IO;
-using Avalonia;
+using System.Threading;
+using System.Threading.Tasks;
+using Avalonia.Headless;
 using PdfSharp.Pdf.IO;
 using RasterField.Rasters;
 using Xunit;
 
 namespace RasterField.Tests
 {
+    [Collection("Avalonia")]
     public sealed class InspectionReportTests
     {
+        private readonly HeadlessUnitTestSession _session;
+
+        public InspectionReportTests(AvaloniaTestFixture fixture) => _session = fixture.Session;
+
         [Fact]
-        public void Writer_creates_summary_and_profile_pages()
+        public Task Writer_creates_summary_and_profile_pages() => _session.Dispatch(() =>
         {
-            // The report only needs Avalonia's asset loader (for the bundled Inter font). No-op
-            // windowing/rendering subsystems register it without starting the native platform,
-            // which on macOS must run on the process's main thread and fails on a test thread.
-            AppBuilder.Configure<Application>()
-                .UseStandardRuntimePlatformSubsystem()
-                .UseWindowingSubsystem(() => { }, "Test")
-                .UseRenderingSubsystem(() => { }, "Test")
-                .SetupWithoutStarting();
             string? retainedPath = Environment.GetEnvironmentVariable("RASTERFIELD_REPORT_TEST_OUTPUT");
             string path = retainedPath ?? Path.Combine(Path.GetTempPath(), $"rasterfield-report-{Guid.NewGuid():N}.pdf");
             try
@@ -70,6 +69,6 @@ namespace RasterField.Tests
             {
                 if (retainedPath == null && File.Exists(path)) File.Delete(path);
             }
-        }
+        }, CancellationToken.None);
     }
 }

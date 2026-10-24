@@ -52,8 +52,8 @@ namespace RasterField.Rasters
 
             output.SetValueFast(observerRow, observerCol, Visible);
 
-            int minCol = Math.Max(0, observerCol - maxDist), maxCol = Math.Min(w - 1, observerCol + maxDist);
-            int minRow = Math.Max(0, observerRow - maxDist), maxRow = Math.Min(h - 1, observerRow + maxDist);
+            int minCol = Math.Max(0, observerCol - maxDist), maxCol = (int)Math.Min(w - 1, (long)observerCol + maxDist);
+            int minRow = Math.Max(0, observerRow - maxDist), maxRow = (int)Math.Min(h - 1, (long)observerRow + maxDist);
             double maxDistSq = (double)maxDist * maxDist;
 
             var parallelOptions = new ParallelOptions { CancellationToken = cancellationToken };

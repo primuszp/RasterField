@@ -136,5 +136,29 @@ namespace RasterField.Tests
             };
             Assert.Throws<System.ArgumentException>(() => RasterAlgebra.Evaluate("b1 + b2", bands));
         }
+
+        [Theory]
+        [InlineData(double.NaN)]
+        [InlineData(0)]
+        [InlineData(-9999)]
+        public void Default_output_no_data_does_not_hide_valid_results(double noData)
+        {
+            var source = Constant(2, 1, 5, noData);
+            source[0, 1] = float.NaN;
+            var bands = new Dictionary<string, Raster> { ["b1"] = source };
+            string expression = noData == -9999 ? "b1 - 10004" : "b1 - b1";
+            var result = RasterAlgebra.Evaluate(expression, bands);
+            Assert.False(result.IsNoData(result[0, 0]));
+            Assert.Equal(1, result.Statistics.ValidCount);
+            Assert.True(result.IsNoData(result[0, 1]));
+        }
+
+        [Fact]
+        public void Explicit_output_no_data_is_honoured()
+        {
+            var bands = new Dictionary<string, Raster> { ["b1"] = Constant(1, 1, 5) };
+            Assert.Equal(-9999, RasterAlgebra.Evaluate("b1", bands, -9999).NoDataValue);
+        }
+
     }
 }

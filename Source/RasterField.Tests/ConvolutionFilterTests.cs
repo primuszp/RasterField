@@ -132,5 +132,55 @@ namespace RasterField.Tests
             Assert.Throws<FormatException>(() => ConvolutionKernel.Parse("1 x 3; 4 5 6; 7 8 9"));
             Assert.Throws<ArgumentOutOfRangeException>(() => ConvolutionKernel.Parse("1", divisor: 0));
         }
+
+        [Fact]
+        public void Zero_relief_and_gradients_remain_valid_with_zero_input_no_data()
+        {
+            var source = new Raster(5, 5, noDataValue: 0);
+            System.Array.Fill(source.Samples, 100f);
+            foreach (var output in new[] {
+                ConvolutionFilter.Convolve(source, ConvolutionKernel.Laplace()),
+                ConvolutionFilter.SobelMagnitude(source) })
+            {
+                Assert.Equal(0, output[2, 2], 4);
+                Assert.False(output.IsNoData(output[2, 2]));
+            }
+        }
+
+        [Theory]
+        [InlineData(3)]
+        [InlineData(5)]
+        [InlineData(7)]
+        public void Emboss_matches_analytic_directional_derivative_for_all_compass_directions(int size)
+        {
+            var plane = Plane(21, 21, (x, y) => 100 + 3 * x - 2 * y);
+            for (int azimuth = 0; azimuth < 360; azimuth += 45)
+            {
+                double a = azimuth * Math.PI / 180;
+                double expected = -3 * Math.Sin(a) - 2 * Math.Cos(a);
+                var output = ConvolutionFilter.Convolve(plane, ConvolutionKernel.Emboss(azimuth, size));
+                Assert.Equal(expected, output[10, 10], 5);
+            }
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        [InlineData(2)]
+        [InlineData(-3)]
+        public void Emboss_rejects_invalid_sizes_before_building_weights(int size)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => ConvolutionKernel.Emboss(315, size));
+        }
+
+        [Theory]
+        [InlineData(double.NaN)]
+        [InlineData(double.PositiveInfinity)]
+        [InlineData(double.NegativeInfinity)]
+        public void Emboss_rejects_non_finite_light_directions(double azimuth)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => ConvolutionKernel.Emboss(azimuth));
+        }
+
     }
 }

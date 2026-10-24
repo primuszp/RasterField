@@ -320,6 +320,8 @@ namespace RasterField
             // lines up with whatever was already loaded rather than jumping to a stale viewport.
             if (previousActive == null) { _needsFit = true; ZoomToFit(); }
             else RebaseViewport(previousActive, layer);
+            ClearSelection();
+            previousActive?.DisposeSmooth();
 
             // A real raster now provides the coordinate frame: drop the vector-only stand-in.
             if (frame != null)
@@ -343,6 +345,7 @@ namespace RasterField
             if (!_layers[index].IsFrame) RecordUndo("Remove layer");
 
             var layer = _layers[index];
+            var oldActive = ActiveLayer;
             if (ReferenceEquals(layer, _comparisonFirst) || ReferenceEquals(layer, _comparisonSecond))
                 StopComparison();
             _layers.RemoveAt(index);
@@ -356,6 +359,13 @@ namespace RasterField
                 _activeLayerIndex = Math.Clamp(_activeLayerIndex, 0, _layers.Count - 1);
             }
             EnsureFrame(layer.IsFrame ? null : layer);
+            if (!ReferenceEquals(oldActive, ActiveLayer))
+            {
+                if (oldActive != null && ActiveLayer is { } active) RebaseViewport(oldActive, active);
+                ClearSelection();
+            }
+            RefreshStreamingWindow();
+            ScheduleSmoothOverlay();
 
             InvalidateVisual();
             RasterLoaded?.Invoke(this, EventArgs.Empty);
@@ -388,7 +398,7 @@ namespace RasterField
             // Tool state is expressed in the old active layer's cell space; rather than also
             // projecting it (rarely worth the complexity for a still-being-drawn selection),
             // simply clear it — consistent with how switching datasets already behaved.
-            _hasSelection = false; _selDrag = SelDrag.None;
+            ClearSelection();
             oldActive?.DisposeSmooth();
 
             RefreshStreamingWindow();
@@ -1267,7 +1277,7 @@ namespace RasterField
             _undoSuppress++;
             try
             {
-                var previousActive = ActiveLayer;
+                var previousView = GetViewState();
                 foreach (var l in _layers)
                     if (!snap.Layers.Contains(l)) l.Dispose(); // releases bitmap/reader only; the document stays for redo
 
@@ -1311,10 +1321,12 @@ namespace RasterField
 
                 _activeLayerIndex = snap.Active != null ? _layers.IndexOf(snap.Active) : (_layers.Count > 0 ? 0 : -1);
                 var active = ActiveLayer;
-                if (previousActive != null && active != null && !ReferenceEquals(previousActive, active) && _layers.Contains(previousActive))
-                    RebaseViewport(previousActive, active);
-                else if (previousActive == null || !_layers.Contains(previousActive)) { _needsFit = true; ZoomToFit(); }
+                if (previousView is { } pv && active != null)
+                    SetViewState(pv.X, pv.Y, pv.WorldPerPixel);
+                else { _needsFit = true; ZoomToFit(); }
+                ClearSelection();
                 RefreshStreamingWindow();
+                ScheduleSmoothOverlay();
             }
             finally { _undoSuppress--; }
 
@@ -1398,6 +1410,7 @@ namespace RasterField
             ArgumentNullException.ThrowIfNull(layer);
             ArgumentNullException.ThrowIfNull(document);
             RecordUndo("Recompute layer");
+            var previousView = ReferenceEquals(layer, ActiveLayer) ? GetViewState() : null;
             layer.DisposeSource();
             layer.DisposeSmooth();
             layer.Document = document;
@@ -1412,7 +1425,13 @@ namespace RasterField
                 else document.LoadRaster();
             }
             layer.ActiveBand = Math.Min(layer.ActiveBand, Math.Max(0, layer.BandCount - 1));
-            if (layer.Source == null) layer.Raster = document.Bands[layer.ActiveBand];
+            layer.Raster = layer.Source == null ? document.Bands[layer.ActiveBand] : null;
+            if (!layer.CanShowRgbComposite) layer.ShowRgbComposite = false;
+            if (ReferenceEquals(layer, ActiveLayer))
+            {
+                if (previousView is { } pv) SetViewState(pv.X, pv.Y, pv.WorldPerPixel);
+                ClearSelection();
+            }
             if (lineage != null) layer.Lineage = lineage;
             if (recipe != null) layer.Recipe = recipe;
             layer.IsUnsaved = true;

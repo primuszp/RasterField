@@ -70,7 +70,11 @@ namespace RasterField.Rasters
         /// </summary>
         public static ConvolutionKernel Emboss(double azimuthDegrees, int size = 3)
         {
-            double a = azimuthDegrees * Math.PI / 180.0;
+            if (size < 3 || size % 2 == 0)
+                throw new ArgumentOutOfRangeException(nameof(size), "Emboss needs an odd window size of at least 3.");
+            if (double.IsNaN(azimuthDegrees) || double.IsInfinity(azimuthDegrees))
+                throw new ArgumentOutOfRangeException(nameof(azimuthDegrees), "The light direction must be finite.");
+            double a = (azimuthDegrees % 360.0) * Math.PI / 180.0;
             // Screen axes (x right, y down): the direction pointing away from the light.
             double ax = -Math.Sin(a), ay = Math.Cos(a);
             double m = Math.Max(Math.Abs(ax), Math.Abs(ay));
@@ -334,7 +338,7 @@ namespace RasterField.Rasters
         }
 
         private static Raster NewOutput(Raster source) =>
-            new Raster(source.Width, source.Height, double.IsNaN(source.NoDataValue) ? double.NaN : source.NoDataValue);
+            new Raster(source.Width, source.Height, double.NaN);
 
         private static void ForRows(int height, Action<int> row, CancellationToken cancellationToken)
         {

@@ -136,5 +136,23 @@ namespace RasterField.Tests
             Assert.Equal((6, 3), (dir.Width, dir.Height));
             Assert.Equal((6, 3), (acc.Width, acc.Height));
         }
+
+        [Fact]
+        public void FlowAccumulation_rejects_cycles_in_supplied_directions()
+        {
+            var direction = new Raster(3, 1, new float[] { 1, 1, 16 });
+            Assert.Throws<System.ArgumentException>(() => HydrologyAnalysis.FlowAccumulation(direction));
+        }
+
+        [Fact]
+        public void FlowAccumulation_stops_at_no_data_destinations()
+        {
+            var direction = new Raster(3, 1, new float[] { 1, 1, float.NaN });
+            var accumulation = HydrologyAnalysis.FlowAccumulation(direction);
+            Assert.Equal(0, accumulation[0, 0]);
+            Assert.Equal(1, accumulation[0, 1]);
+            Assert.True(accumulation.IsNoData(accumulation[0, 2]));
+        }
+
     }
 }

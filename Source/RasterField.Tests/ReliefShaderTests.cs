@@ -134,5 +134,17 @@ namespace RasterField.Tests
             Assert.Equal((9, 5), (shade.Width, shade.Height));
             Assert.Equal((9, 5), (image.Width, image.Height));
         }
+        [Fact]
+        public void Multidirectional_shade_does_not_reuse_the_elevation_sentinel()
+        {
+            var elevation = new Raster(5, 5, noDataValue: 255);
+            System.Array.Fill(elevation.Samples, 100f);
+            elevation[0, 0] = 255;
+            var shade = ReliefShader.MultidirectionalHillshade(elevation, 1, 1, altitudeDegrees: 90);
+            Assert.Equal(255, shade[2, 2]);
+            Assert.False(shade.IsNoData(shade[2, 2]));
+            Assert.True(shade.IsNoData(shade[0, 0]));
+        }
+
     }
 }

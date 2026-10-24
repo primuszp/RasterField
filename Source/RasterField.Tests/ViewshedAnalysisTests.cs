@@ -121,5 +121,14 @@ namespace RasterField.Tests
             Assert.Throws<OperationCanceledException>(() => ViewshedAnalysis.Compute(
                 elevation, 50, 50, cancellationToken: cancellation.Token));
         }
+
+        [Fact]
+        public void Maximum_integer_radius_covers_the_whole_raster_without_overflow()
+        {
+            var result = ViewshedAnalysis.Compute(FlatPlane(5, 5, 10), 2, 2,
+                maxDistanceCells: int.MaxValue);
+            Assert.All(result.Samples, value => Assert.Equal(ViewshedAnalysis.Visible, value));
+        }
+
     }
 }

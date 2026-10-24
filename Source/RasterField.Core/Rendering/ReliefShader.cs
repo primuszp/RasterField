@@ -53,7 +53,7 @@ namespace RasterField.Rendering
                 }
             }
 
-            var output = new Raster(w, h, double.IsNaN(elevation.NoDataValue) ? float.NaN : elevation.NoDataValue);
+            var output = new Raster(w, h, double.NaN);
             for (int i = 0; i < sum.Length; i++)
                 output.Samples[i] = count[i] > 0 ? (float)(sum[i] / count[i]) : float.NaN;
 
