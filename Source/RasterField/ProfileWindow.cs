@@ -83,21 +83,12 @@ namespace RasterField
             Content = root;
         }
 
-        private static readonly FilePickerFileType[] CsvFileTypes =
-            { new("CSV (*.csv)") { Patterns = new[] { "*.csv" } } };
 
         /// <summary>Writes every series side by side: distance, x, y, then one value column per series.</summary>
         internal static async Task ExportCsvAsync(TopLevel owner, IReadOnlyList<ProfileSeries> series, string distanceUnit)
         {
             if (series.Count == 0) return;
-            var file = await owner.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = L.T("Export profile as CSV"),
-                DefaultExtension = "csv",
-                SuggestedFileName = "profile.csv",
-                FileTypeChoices = CsvFileTypes,
-            });
-            var path = file?.TryGetLocalPath();
+            var path = await Dialogs.SavePathAsync(owner, L.T("Export profile as CSV"), "profile.csv", FileTypes.Only(FileTypes.Csv));
             if (string.IsNullOrEmpty(path)) return;
 
             using var writer = new StreamWriter(path!);
@@ -191,12 +182,12 @@ namespace RasterField
                 double v = _minValue + (_maxValue - _minValue) * i / 4.0;
                 double y = Sy(v);
                 context.DrawLine(gridPen, new Point(MarginLeft, y), new Point(MarginLeft + plotW, y));
-                DrawText(context, v.ToString("g4", CultureInfo.InvariantCulture), new Point(4, y - 7), AppTheme.TextSecondary, 10);
+                DrawText(context, v.ToString("g4", CultureInfo.CurrentCulture), new Point(4, y - 7), AppTheme.TextSecondary, 10);
             }
             foreach (double d in new[] { _minDistance, (_minDistance + _maxDistance) / 2, _maxDistance })
             {
                 double x = Sx(d);
-                var t = FormatText(d.ToString("0.##", CultureInfo.InvariantCulture), 10, AppTheme.TextSecondary);
+                var t = FormatText(d.ToString("0.##", CultureInfo.CurrentCulture), 10, AppTheme.TextSecondary);
                 context.DrawText(t, new Point(Math.Clamp(x - t.Width / 2, MarginLeft, MarginLeft + plotW - t.Width), MarginTop + plotH + 4));
             }
             context.DrawLine(axisPen, new Point(MarginLeft, MarginTop), new Point(MarginLeft, MarginTop + plotH));
@@ -349,7 +340,7 @@ namespace RasterField
                 if (index < 0) continue;
                 ProfileSample sample = series.Samples[index];
                 string value = sample.Value.HasValue
-                    ? sample.Value.Value.ToString("g6", CultureInfo.InvariantCulture) +
+                    ? sample.Value.Value.ToString("g6", CultureInfo.CurrentCulture) +
                       (string.IsNullOrWhiteSpace(_valueUnit) ? "" : " " + _valueUnit)
                     : "—";
                 lines.Add(series.Name + ": " + value);

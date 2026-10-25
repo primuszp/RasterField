@@ -184,8 +184,14 @@ made.Save("new.ers");
   zone tabs) on the left, the map in the middle, the active layer's *Properties* (band, palette,
   stretch with an **interactive histogram** — drag its two handles —, gamma, opacity, **blend
   mode**, derivation, metadata, full ERS header) and the legend on the right. `F9` / `F10` / `F11`
-  toggle the side panels / map only. **Command palette** (`Ctrl+K`) searches every menu command,
-  accent-insensitively. Hungarian and English UI (*View ▸ Language*).
+  toggle the side panels / map only. **Command palette** (`Ctrl+K` / `⌘K`) searches every menu
+  command, accent-insensitively, and shows its shortcut. *Help ▸ Keyboard shortcuts* is generated
+  from the menu model, in the platform's notation (⌘, ⇧, ⌃ on macOS).
+* **Hungarian and English** — the whole interface, chosen in *Settings…* (`⌘,` in the macOS
+  application menu, `Ctrl+,` in *Edit* elsewhere) or following the system. Every translated string
+  has a Hungarian entry, which `TranslationCoverageTests` enforces. Numbers are shown in the
+  user's own format (decimal comma on a Hungarian system), units in plain words ("map units" for
+  ER Mapper's `natural`); files keep invariant numbers.
 * **Derived layers with recipes** — every analysis result (Bézier subdivision, contours, stream
   network, slope/aspect/hillshade/curvature, flow direction/accumulation, band math, viewshed,
   clip, mosaic) becomes a **new layer in memory**, marked `↳` (derived) and `●` (not saved yet);
@@ -254,18 +260,27 @@ made.Save("new.ers");
   opened from, all saved to a small per‑user settings file
   (`%AppData%/RasterField/settings.json` on Windows; the XDG/Library equivalents
   elsewhere) and restored on next launch.
-* **Theming** — follows the OS light/dark setting live by default; *View ▸
-  Theme* offers System/Light/Dark explicitly. A single curated palette
+* **Theming** — follows the OS light/dark setting live by default; *Settings…*
+  offers System/Light/Dark explicitly. A single curated palette
   (`AppTheme`, in `RasterField/AppTheme.cs`) drives every custom-drawn piece of
   chrome — window/panel/status-bar backgrounds, the raster canvas backdrop, the
   active-layer highlight — so light mode is a real, considered second theme, not
   a hardcoded dark palette left to look broken under a light system setting.
+* **Dialogs** — every dialog is built by one helper (`Dialogs`): the same margins, the
+  platform's button order (primary action last on macOS/Linux, first on Windows), the accented
+  primary button on Enter and Cancel on Esc; validation disables the primary button instead of
+  complaining after the fact.
+* **macOS** — a localised application menu (About, Settings… `⌘,`, Hide `⌘H`, Quit `⌘Q`, which
+  still warns about unsaved layers), the Window menu, View ▸ Enter full screen (`⌃⌘F`), Redo on
+  `⇧⌘Z`, files opened from the Finder, the Dock or "Open With" (the bundle declares the document
+  types), and `CFBundleLocalizations` so the system's own Open/Save panels follow the
+  interface language.
 * **Platform-native touches** — a Windows 11 Mica / macOS vibrancy window
   backdrop where the OS offers one (`Window.TransparencyLevelHint`, falling back
   cleanly where it doesn't). On macOS specifically, the app's menu lives in the
   real system menu bar (via Avalonia's `NativeMenu`, mirroring the in-window one
   used on Windows/Linux) rather than an in-window strip, with a proper
-  *RasterField* application menu (About, Hide, Quit) and a Window menu. The
+  *RasterField* application menu (About, Settings…, Hide, Quit) and a Window menu. The
   client area extends under the title bar, where a unified 44 px bar
   (`MainWindow.TitleBar.cs`) holds the traffic lights, a sidebar toggle, the
   project title with the active layer, a ⌘K command-search pill and an
@@ -274,7 +289,7 @@ made.Save("new.ers");
   *Raster* holds processing that produces modified data (band math, gap fill,
   Bézier subdivision, clip, mosaic); *Analysis* holds measurements and
   derivations (statistics, zonal, ΔZ, *Terrain ▸*, *Hydrology ▸*, contours);
-  comparison, magnification and theme live under *View*, palettes under *Layer*,
+  comparison and magnification live under *View*, palettes under *Layer*,
   exports under *File ▸ Export*.
   On macOS they live in the system menu bar; on Windows and Linux the same menus
   form the horizontal in-window menu bar, above the app bar (sidebar toggles,

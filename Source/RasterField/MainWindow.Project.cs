@@ -31,8 +31,6 @@ namespace RasterField
         private readonly List<ProjectBookmark> _bookmarks = new();
         private bool _closeConfirmed;
 
-        private static readonly FilePickerFileType ProjectFileType = new("RasterField project (*.rfproj)") { Patterns = new[] { "*.rfproj" } };
-        private static readonly FilePickerFileType[] ProjectFileTypes = { ProjectFileType };
 
         // ---- recipes ---------------------------------------------------------------------
 
@@ -413,11 +411,9 @@ namespace RasterField
             Color.FromRgb(120, 220, 90), Color.FromRgb(255, 120, 60),
         };
 
-        private static readonly string[] VectorExtensions = { ".erv", ".geojson", ".json", ".csv", ".txt" };
-        private static readonly string[] RasterExtensions = { ".ers", ".tif", ".tiff" };
-
-        private static bool IsVectorFile(string path) => VectorExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
-        private static bool IsRasterFile(string path) => RasterExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
+        private static bool IsVectorFile(string path) => Program.VectorExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
+        private static bool IsRasterFile(string path) => Program.RasterExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
+        private static bool IsProjectFile(string path) => Path.GetExtension(path).Equals(".rfproj", StringComparison.OrdinalIgnoreCase);
         private static bool IsGeoTiff(string path) => Path.GetExtension(path).Equals(".tif", StringComparison.OrdinalIgnoreCase) ||
                                                       Path.GetExtension(path).Equals(".tiff", StringComparison.OrdinalIgnoreCase);
 
@@ -487,7 +483,7 @@ namespace RasterField
             {
                 Title = T("Open RasterField project"),
                 AllowMultiple = false,
-                FileTypeFilter = new[] { ProjectFileType, FilePickerFileTypes.All },
+                FileTypeFilter = new[] { FileTypes.Project, FilePickerFileTypes.All },
             });
             var path = files.Count > 0 ? files[0].TryGetLocalPath() : null;
             if (!string.IsNullOrEmpty(path)) await LoadProjectAsync(path!);
@@ -598,14 +594,7 @@ namespace RasterField
             string? path = saveAs ? null : _projectPath;
             if (path == null)
             {
-                var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-                {
-                    Title = T("Save RasterField project"),
-                    DefaultExtension = "rfproj",
-                    SuggestedFileName = (_projectPath != null ? Path.GetFileNameWithoutExtension(_projectPath) : SuggestName()) + ".rfproj",
-                    FileTypeChoices = ProjectFileTypes,
-                });
-                path = file?.TryGetLocalPath();
+                path = await Dialogs.SavePathAsync(this, T("Save RasterField project"), (_projectPath != null ? Path.GetFileNameWithoutExtension(_projectPath) : SuggestName()) + ".rfproj", FileTypes.Only(FileTypes.Project));
                 if (string.IsNullOrEmpty(path)) return;
             }
 
@@ -704,44 +693,9 @@ namespace RasterField
 
         // ---- small dialogs -------------------------------------------------------------------------
 
-        private async Task<string?> AskTextAsync(string title, string label, string value)
-        {
-            var tcs = new TaskCompletionSource<string?>();
-            var box = new TextBox { Text = value };
-            var dialog = new Window { Title = title, Width = 380, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner, CanResize = false };
-            var ok = new Button { Content = T("OK"), MinWidth = 80 };
-            var cancel = new Button { Content = T("Cancel"), MinWidth = 80 };
-            ok.Click += (_, _) => { tcs.TrySetResult(box.Text); dialog.Close(); };
-            cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-            box.KeyDown += (_, e) => { if (e.Key == Avalonia.Input.Key.Enter) { tcs.TrySetResult(box.Text); dialog.Close(); } };
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16), Spacing = 8,
-                Children = { new TextBlock { Text = label }, box, new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { ok, cancel } } },
-            };
-            dialog.Opened += (_, _) => { box.Focus(); box.SelectAll(); };
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
-        }
+        private Task<string?> AskTextAsync(string title, string label, string value) => Dialogs.AskTextAsync(this, title, label, value);
 
-        private async Task<bool> ConfirmAsync(string title, string message, string confirmText)
-        {
-            var tcs = new TaskCompletionSource<bool>();
-            var dialog = new Window { Title = title, Width = 460, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner, CanResize = false };
-            var ok = new Button { Content = confirmText, MinWidth = 100 };
-            var cancel = new Button { Content = T("Cancel"), MinWidth = 80 };
-            ok.Click += (_, _) => { tcs.TrySetResult(true); dialog.Close(); };
-            cancel.Click += (_, _) => { tcs.TrySetResult(false); dialog.Close(); };
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16), Spacing = 12,
-                Children = { new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap }, new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { ok, cancel } } },
-            };
-            dialog.Closed += (_, _) => tcs.TrySetResult(false);
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
-        }
+        private Task<bool> ConfirmAsync(string title, string message, string confirmText) => Dialogs.ConfirmAsync(this, title, message, confirmText);
 
         /// <summary>Warns before closing while derived layers exist only in memory.</summary>
         private async void OnWindowClosing(object? sender, WindowClosingEventArgs e)

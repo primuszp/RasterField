@@ -15,7 +15,6 @@ namespace RasterField.Rendering
         /// <summary>Bytes per pixel (always 4).</summary>
         public const int BytesPerPixel = 4;
 
-        private const int ParallelRowThreshold = 64;
 
         /// <summary>Creates a transparent image of the given size.</summary>
         public RasterImage(int width, int height)
@@ -90,10 +89,7 @@ namespace RasterField.Rendering
                 }
             }
 
-            if (Height >= ParallelRowThreshold)
-                System.Threading.Tasks.Parallel.For(0, Height, SplitRow);
-            else
-                for (int y = 0; y < Height; y++) SplitRow(y);
+            ParallelRows.For(Height, SplitRow);
 
             return (
                 new Raster(Width, Height, red, noDataValue: 0),
@@ -118,7 +114,6 @@ namespace RasterField.Rendering
         private const int LutSize = 4096;
 
         /// <summary>Rows at or above which rendering is split across threads; below it the fixed cost of scheduling isn't worth it.</summary>
-        private const int ParallelRowThreshold = 64;
 
         /// <summary>Renders into an existing buffer, which must have the raster's dimensions (lets the host reuse one allocation).</summary>
         public static void RenderInto(RasterImage image, Raster raster, RasterColorizer colorizer)
@@ -171,10 +166,7 @@ namespace RasterField.Rendering
                 }
             }
 
-            if (height >= ParallelRowThreshold)
-                System.Threading.Tasks.Parallel.For(0, height, RenderRow);
-            else
-                for (int y = 0; y < height; y++) RenderRow(y);
+            ParallelRows.For(height, RenderRow);
         }
     }
 }

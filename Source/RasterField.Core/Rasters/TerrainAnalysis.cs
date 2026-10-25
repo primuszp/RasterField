@@ -37,7 +37,6 @@ namespace RasterField.Rasters
     /// </remarks>
     public static class TerrainAnalysis
     {
-        private const int ParallelRowThreshold = 64;
 
         /// <summary>Computes slope (steepness), in <paramref name="units"/>.</summary>
         public static Raster Slope(Raster elevation, double cellSizeX, double cellSizeY, SlopeUnits units = SlopeUnits.Degrees, double zFactor = 1.0)
@@ -159,10 +158,7 @@ namespace RasterField.Rasters
                 }
             }
 
-            if (h >= ParallelRowThreshold)
-                Parallel.For(0, h, ComputeRow);
-            else
-                for (int r = 0; r < h; r++) ComputeRow(r);
+            ParallelRows.For(h, ComputeRow);
 
             output.InvalidateStatistics();
             return output;
@@ -193,10 +189,7 @@ namespace RasterField.Rasters
                 }
             }
 
-            if (h >= ParallelRowThreshold)
-                Parallel.For(0, h, ComputeRow);
-            else
-                for (int r = 0; r < h; r++) ComputeRow(r);
+            ParallelRows.For(h, ComputeRow);
 
             output.InvalidateStatistics();
             return output;

@@ -215,7 +215,6 @@ namespace RasterField.Rasters
     /// </summary>
     public static class ConvolutionFilter
     {
-        private const int ParallelRowThreshold = 64;
 
         /// <summary>Applies <paramref name="kernel"/> to every cell.</summary>
         public static Raster Convolve(Raster source, ConvolutionKernel kernel, ConvolutionNoData noData = ConvolutionNoData.FillFromCentre,
@@ -271,7 +270,7 @@ namespace RasterField.Rasters
                 }
             }
 
-            ForRows(h, Row, cancellationToken);
+            ParallelRows.For(h, Row, cancellationToken);
             output.InvalidateStatistics();
             return output;
         }
@@ -354,7 +353,7 @@ namespace RasterField.Rasters
             double[] Pass(double[] values, bool horizontal)
             {
                 var result = new double[values.Length];
-                ForRows(h, y =>
+                ParallelRows.For(h, y =>
                 {
                     for (int x = 0; x < w; x++)
                     {
@@ -408,7 +407,7 @@ namespace RasterField.Rasters
             var sums = new double[src.Length];
             var totals = new double[src.Length];
 
-            ForRows(h, y =>
+            ParallelRows.For(h, y =>
             {
                 for (int x = 0; x < w; x++)
                 {
@@ -430,7 +429,7 @@ namespace RasterField.Rasters
 
             var output = NewOutput(source);
             float[] dst = output.Samples;
-            ForRows(h, y =>
+            ParallelRows.For(h, y =>
             {
                 for (int x = 0; x < w; x++)
                 {
@@ -453,21 +452,5 @@ namespace RasterField.Rasters
 
         private static Raster NewOutput(Raster source) =>
             new Raster(source.Width, source.Height, double.NaN);
-
-        private static void ForRows(int height, Action<int> row, CancellationToken cancellationToken)
-        {
-            if (height >= ParallelRowThreshold)
-            {
-                Parallel.For(0, height, new ParallelOptions { CancellationToken = cancellationToken }, row);
-            }
-            else
-            {
-                for (int y = 0; y < height; y++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    row(y);
-                }
-            }
-        }
     }
 }

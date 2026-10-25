@@ -32,9 +32,32 @@ namespace RasterField
             return english;
         }
 
-        /// <summary>Translates a composite-format string, then formats it (invariant numbers).</summary>
+        /// <summary>
+        /// Translates a composite-format string, then formats it with the user's own number format
+        /// (the system region — decimal comma on a Hungarian Mac), as native apps do. For display
+        /// only: anything written to a file formats its numbers invariantly itself.
+        /// </summary>
         public static string F(string englishFormat, params object?[] args) =>
-            string.Format(CultureInfo.InvariantCulture, T(englishFormat), args);
+            string.Format(CultureInfo.CurrentCulture, T(englishFormat), args);
+
+        /// <summary>A number for display in the user's number format (<paramref name="format"/> as for <see cref="double.ToString(string)"/>).</summary>
+        public static string Num(double value, string format = "g6") => value.ToString(format, CultureInfo.CurrentCulture);
+
+        /// <summary>
+        /// A coordinate/value unit as shown to the user. ER Mapper's keywords (<c>natural</c>,
+        /// <c>METERS</c>, <c>FEET</c>, <c>DEGREES</c>…) become the usual short forms; "natural"
+        /// (no declared unit) reads as "map units" in the interface language.
+        /// </summary>
+        public static string UnitName(string? unit) => (unit ?? string.Empty).Trim().ToUpperInvariant() switch
+        {
+            "" or "NATURAL" => T("map units"),
+            "METERS" or "METRES" or "METER" or "METRE" or "M" => "m",
+            "KILOMETERS" or "KILOMETRES" or "KM" => "km",
+            "FEET" or "FOOT" or "FT" => "ft",
+            "US_SURVEY_FEET" or "US SURVEY FEET" => "US ft",
+            "DEGREES" or "DEGREE" or "DEG" => "°",
+            _ => unit!.Trim(),
+        };
 
         /// <summary>Whether a Hungarian translation exists for <paramref name="english"/> (for tests).</summary>
         internal static bool HasHungarian(string english) => Hungarian.ContainsKey(english);

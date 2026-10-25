@@ -11,7 +11,6 @@ namespace RasterField.Rendering
     public static class RgbCompositeRenderer
     {
         /// <summary>Rows at or above which independent scanlines are rendered concurrently.</summary>
-        private const int ParallelRowThreshold = 64;
 
         /// <summary>
         /// Renders <paramref name="r"/>/<paramref name="g"/>/<paramref name="b"/> (same
@@ -85,10 +84,7 @@ namespace RasterField.Rendering
                 }
             }
 
-            if (r.Height >= ParallelRowThreshold)
-                System.Threading.Tasks.Parallel.For(0, r.Height, RenderRow);
-            else
-                for (int y = 0; y < r.Height; y++) RenderRow(y);
+            ParallelRows.For(r.Height, RenderRow);
 
             return image;
         }

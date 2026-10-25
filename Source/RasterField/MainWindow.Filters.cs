@@ -111,7 +111,7 @@ namespace RasterField
         {
             foreach (var (a, name) in FilterDirections)
                 if (Math.Abs(a - azimuth) < 1e-6) return name;
-            return azimuth.ToString("0.#", CultureInfo.InvariantCulture) + "°";
+            return L.Num(azimuth, "0.#") + "°";
         }
 
         private static string FilterKindName(FilterKind kind) => kind switch
@@ -167,7 +167,6 @@ namespace RasterField
 
         private async Task<LayerRecipe?> ShowFilterDialogAsync(RasterLayer layer, LayerRecipe? initial)
         {
-            var tcs = new TaskCompletionSource<LayerRecipe?>();
             var seed = initial != null ? FilterSpec.FromRecipe(initial) : FilterSpec.Default;
 
             var kindBox = new ComboBox { ItemsSource = Array.ConvertAll(FilterKinds, FilterKindName), SelectedIndex = Array.IndexOf(FilterKinds, seed.Kind), HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -179,16 +178,15 @@ namespace RasterField
             var kernelBox = new TextBox
             {
                 Text = seed.KernelText.Replace("; ", "\n", StringComparison.Ordinal), AcceptsReturn = true, Height = 110,
-                FontFamily = new FontFamily("monospace"), TextWrapping = TextWrapping.NoWrap,
+                FontFamily = AppTheme.MonospaceFont, TextWrapping = TextWrapping.NoWrap,
             };
             var divisorBox = new NumericUpDown { Value = (decimal)seed.Divisor, Increment = 1, FormatString = "0.####", Width = 130 };
             var offsetBox = new NumericUpDown { Value = (decimal)seed.Offset, Increment = 1, FormatString = "0.####", Width = 130 };
             var strictBox = new CheckBox { Content = T("No-data wherever the window touches a gap (otherwise the centre value fills it)"), IsChecked = seed.Strict };
             var errorText = new TextBlock { Foreground = AppTheme.Danger, FontSize = AppTheme.FontCaption, TextWrapping = TextWrapping.Wrap };
-            var okBtn = new Button { Content = T(initial == null ? "Apply → new layer" : "Recompute"), MinWidth = 80 };
-            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
+            var okBtn = Dialogs.Primary(initial == null ? T("Apply → new layer") : T("Recompute"));
 
-            StackPanel Captioned(string caption, Control c) => new StackPanel { Spacing = 2, Children = { new TextBlock { Text = caption, Opacity = 0.8, FontSize = 11 }, c } };
+            static StackPanel Captioned(string caption, Control c) => Dialogs.Captioned(caption, c);
             var sizeRow = Captioned(T("Window"), sizeBox);
             var directionRow = Captioned(T("Light from"), directionBox);
             var radiusRow = Captioned(T("Radius (cells)"), radiusBox);
@@ -257,6 +255,7 @@ namespace RasterField
                     catch (Exception ex) when (ex is FormatException or ArgumentException) { error = ex.Message; }
                 }
                 errorText.Text = error ?? "";
+                errorText.IsVisible = error != null;
                 okBtn.IsEnabled = error == null;
 
                 if (patch != null && error == null)
@@ -279,46 +278,18 @@ namespace RasterField
             offsetBox.ValueChanged += (_, _) => Update();
             strictBox.IsCheckedChanged += (_, _) => Update();
 
-            var dialog = new Window
-            {
-                Title = T("Filter (convolution)") + " — " + layer.Name,
-                Width = 500,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-            okBtn.Click += (_, _) =>
-            {
-                tcs.TrySetResult(new LayerRecipe("filter", layer, Current().ToParameters()));
-                dialog.Close();
-            };
-            cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-
-            var previews = new StackPanel
-            {
-                Orientation = Orientation.Horizontal, Spacing = 12,
-                Children = { Captioned(T("Original"), originalImage), Captioned(T("Filtered"), filteredImage) },
-            };
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 10,
-                Children =
-                {
-                    kindBox,
-                    helpText,
-                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { sizeRow, directionRow, radiusRow } },
-                    customPanel,
-                    strictBox,
-                    errorText,
-                    patch != null ? previews : new TextBlock { Text = T("(no preview for a streaming or RGB layer)"), Opacity = 0.7 },
-                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { okBtn, cancelBtn } },
-                },
-            };
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
+            var previews = Dialogs.Row(Captioned(T("Original"), originalImage), Captioned(T("Filtered"), filteredImage));
+            var body = Dialogs.Stack(
+                kindBox,
+                helpText,
+                Dialogs.Row(sizeRow, directionRow, radiusRow),
+                customPanel,
+                strictBox,
+                errorText,
+                patch != null ? previews : Dialogs.Hint(T("(no preview for a streaming or RGB layer)")));
             Update();
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
+            return await Dialogs.ShowAsync<LayerRecipe?>(this, T("Filter (convolution)") + " — " + layer.Name, body, okBtn,
+                () => new LayerRecipe("filter", layer, Current().ToParameters()), null, width: 520);
         }
     }
 }

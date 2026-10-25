@@ -52,7 +52,7 @@ namespace RasterField
                 double value = _colorizer.Minimum + (_colorizer.Maximum - _colorizer.Minimum) * f;
 
                 context.DrawLine(pen, new Point(bar.Right, y), new Point(bar.Right + 4, y));
-                var label = new FormattedText(value.ToString("g4", CultureInfo.InvariantCulture),
+                var label = new FormattedText(value.ToString("g4", CultureInfo.CurrentCulture),
                     CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Typeface.Default, AppTheme.FontCaption - 0.5, ink);
                 context.DrawText(label, new Point(bar.Right + 8, y - label.Height / 2));
             }

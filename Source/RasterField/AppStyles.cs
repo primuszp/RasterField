@@ -50,6 +50,9 @@ namespace RasterField
             var dark = Dict(AppTheme.DarkAccentColor, Color.FromRgb(0x3A, 0x41, 0x4C), Color.FromRgb(0xE8, 0xEC, 0xF0));
             var light = Dict(AppTheme.LightAccentColor, Color.FromRgb(0xC9, 0xCF, 0xD6), Colors.White);
 
+            dark["RfBorderBrush"] = new SolidColorBrush(Color.FromRgb(0x2E, 0x34, 0x3E));
+            light["RfBorderBrush"] = new SolidColorBrush(Color.FromRgb(0xD6, 0xDB, 0xE1));
+
             // Layer cards: resting, hovered, active (selected) and active + hovered.
             dark["RfCardBrush"] = new SolidColorBrush(Color.FromRgb(0x23, 0x28, 0x30));
             dark["RfCardHoverBrush"] = new SolidColorBrush(Color.FromRgb(0x2B, 0x31, 0x3B));
@@ -206,6 +209,39 @@ namespace RasterField
             styles.Add(new Style(x => x.OfType<Button>().Class("icon").Class(":pressed"))
             {
                 Setters = { new Setter(Visual.RenderTransformProperty, new ScaleTransform(0.92, 0.92)) },
+            });
+
+            // A spinner button at its limit (e.g. ▼ at the minimum) fades out instead of turning into a grey box.
+            styles.Add(new Style(x => x.OfType<ButtonSpinner>().Template().OfType<RepeatButton>().Class(":disabled"))
+            {
+                Setters = { new Setter(Visual.OpacityProperty, 0.35) },
+            });
+            styles.Add(new Style(x => x.OfType<ButtonSpinner>().Template().OfType<RepeatButton>().Class(":disabled").Template().OfType<ContentPresenter>())
+            {
+                Setters = { new Setter(ContentPresenter.BackgroundProperty, Brushes.Transparent) },
+            });
+
+            // ---- ghost buttons ("+ Add layer…"): an outline matching the cards, filled only on hover ----
+            styles.Add(new Style(x => x.OfType<Button>().Class("ghost"))
+            {
+                Setters =
+                {
+                    new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent),
+                    new Setter(TemplatedControl.BorderThicknessProperty, new Thickness(1)),
+                    new Setter(TemplatedControl.BorderBrushProperty, new DynamicResourceExtension("RfBorderBrush")),
+                    new Setter(TemplatedControl.CornerRadiusProperty, new CornerRadius(8)),
+                    new Setter(TemplatedControl.ForegroundProperty, new DynamicResourceExtension("RfIconBrush")),
+                    new Setter(Layoutable.MinHeightProperty, 30.0),
+                },
+            });
+            styles.Add(new Style(x => x.OfType<Button>().Class("ghost").Class(":pointerover").Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
+            {
+                Setters =
+                {
+                    new Setter(ContentPresenter.BackgroundProperty, new DynamicResourceExtension("RfCardHoverBrush")),
+                    new Setter(ContentPresenter.BorderBrushProperty, new DynamicResourceExtension("RfBorderBrush")),
+                    new Setter(ContentPresenter.ForegroundProperty, new DynamicResourceExtension("RfIconHoverBrush")),
+                },
             });
 
             // ---- layer cards: the whole card lights up under the pointer; the active one keeps its accent ----

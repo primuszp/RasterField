@@ -55,30 +55,24 @@ namespace RasterField
         private readonly TextBlock _scaleText = new TextBlock { MinWidth = 190 };
         private readonly TextBlock _infoText = new TextBlock { HorizontalAlignment = HorizontalAlignment.Right, TextTrimming = TextTrimming.CharacterEllipsis };
 
-        private readonly Border _clipBar = new Border
+        /// <summary>A tool's floating bar over the map, underlined in the tool's own colour.</summary>
+        private static Border ToolBar(Color line) => new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(220, 0x1A, 0x1A, 0x1E)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(255, 255, 210, 0)),
+            Background = AppTheme.BarBackground,
+            BorderBrush = new SolidColorBrush(line),
             BorderThickness = new Thickness(0, 0, 0, 2),
             Padding = new Thickness(10, 6),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Top,
             IsVisible = false,
         };
+
+        private readonly Border _clipBar = ToolBar(Color.FromRgb(255, 210, 0));
         private readonly TextBlock _clipTitleText = new TextBlock { Text = T("Clip tool —"), FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center };
         private readonly TextBlock _clipInfoText = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
         private readonly Button _clipCropBtn = new Button { Content = T("Crop → new layer"), IsEnabled = false };
 
-        private readonly Border _pathBar = new Border
-        {
-            Background = new SolidColorBrush(Color.FromArgb(220, 0x1A, 0x1A, 0x1E)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(80, 200, 255)),
-            BorderThickness = new Thickness(0, 0, 0, 2),
-            Padding = new Thickness(10, 6),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Top,
-            IsVisible = false,
-        };
+        private readonly Border _pathBar = ToolBar(Color.FromRgb(80, 200, 255));
         private readonly TextBlock _pathTitleText = new TextBlock { FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center };
         private readonly TextBlock _pathInfoText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
 
@@ -112,33 +106,6 @@ namespace RasterField
 
         private readonly AppSettings _settings = AppSettings.Load();
         private MenuItem? _recentMenu;
-
-        // File-picker filters, hoisted to static fields (rather than built fresh in every dialog
-        // call) per CA1861 — they're immutable and shared across every Open/Save dialog that uses them.
-        private static readonly FilePickerFileType ErsHeaderFileType =
-            new("ER Mapper header (*.ers)") { Patterns = new[] { "*.ers" } };
-        private static readonly FilePickerFileType GeoTiffFileType =
-            new("GeoTIFF raster (*.tif, *.tiff)") { Patterns = new[] { "*.tif", "*.tiff" } };
-        private static readonly FilePickerFileType RasterFileType =
-            new("Raster datasets (*.ers, *.tif, *.tiff)") { Patterns = new[] { "*.ers", "*.tif", "*.tiff" } };
-        private static readonly FilePickerFileType[] ErsOpenFileTypeFilter = { RasterFileType, ErsHeaderFileType, GeoTiffFileType, FilePickerFileTypes.All };
-        private static readonly FilePickerFileType[] ErsSaveFileTypeChoices = { ErsHeaderFileType };
-        private static readonly FilePickerFileType[] RasterSaveFileTypeChoices = { ErsHeaderFileType, GeoTiffFileType };
-        private static readonly FilePickerFileType[] PngFileTypeChoices =
-            { new("PNG image (*.png)") { Patterns = new[] { "*.png" } } };
-        private static readonly FilePickerFileType[] PdfFileTypeChoices =
-            { new("PDF document (*.pdf)") { Patterns = new[] { "*.pdf" } } };
-        private static readonly FilePickerFileType[] ErvFileTypeChoices =
-            { new("ER Mapper vector header (*.erv)") { Patterns = new[] { "*.erv" } } };
-        private static readonly FilePickerFileType _ersOrErvFileType =
-            new("Layers (*.ers, *.tif, *.tiff, *.erv, *.geojson, *.json, *.csv)") { Patterns = new[] { "*.ers", "*.tif", "*.tiff", "*.erv", "*.geojson", "*.json", "*.csv" } };
-        private static readonly FilePickerFileType[] LayerOpenFileTypeFilter =
-        {
-            _ersOrErvFileType, RasterFileType, ErsHeaderFileType, GeoTiffFileType, ErvFileTypeChoices[0],
-            new("GeoJSON (*.geojson, *.json)") { Patterns = new[] { "*.geojson", "*.json" } },
-            new("CSV points (*.csv, *.txt)") { Patterns = new[] { "*.csv", "*.txt" } },
-            FilePickerFileTypes.All,
-        };
 
         private bool _syncing;
         private Avalonia.Controls.NativeMenu? _nativeRecentMenu;
@@ -453,7 +420,7 @@ namespace RasterField
                 double worldW = Math.Sqrt(b * b + e * e) * rect.Value.Width;
                 double worldH = Math.Sqrt(c * c + f * f) * rect.Value.Height;
                 string unit = _view.Document.Header.CoordinateSpace.EffectiveUnits;
-                text += string.Format(CultureInfo.InvariantCulture, "  ({0:0.##} × {1:0.##} {2}) — drag the handles to adjust", worldW, worldH, unit);
+                text += L.F("  ({0:0.##} × {1:0.##} {2}) — drag the handles to adjust", worldW, worldH, L.UnitName(unit));
             }
             _clipInfoText.Text = text;
         }
@@ -546,94 +513,19 @@ namespace RasterField
 
         // ---- open ----------------------------------------------------------------
 
-        private async void OpenRecent(string path)
+        /// <summary>
+        /// Opens files however they arrive — command line, drag and drop, the Finder / Dock on
+        /// macOS: a project replaces the session (after the unsaved-layer check); a raster opens
+        /// as the base layer when nothing is loaded and is added on top otherwise; vector files
+        /// (.erv, GeoJSON, CSV points) are added as layers. Unsupported files are skipped.
+        /// </summary>
+        public async Task OpenPathsAsync(IEnumerable<string> paths)
         {
-            try
-            {
-                if (path.EndsWith(".rfproj", StringComparison.OrdinalIgnoreCase)) { if (await ConfirmDiscardAsync(T("Open project"))) await LoadProjectAsync(path); }
-                else if (IsVectorFile(path)) AddVectorFromFile(path);
-                else OpenDataset(path);
-            }
-            catch (Exception ex) { await MessageAsync(T("Could not open"), ex.Message); }
-        }
-
-        /// <summary>Opens a dataset from a path (also used for the command-line argument).</summary>
-        public async void OpenDataset(string path)
-        {
-            try
-            {
-                _view.LoadRaster(path, CurrentPalette());
-                _settings.AddRecentFile(Path.GetFullPath(path));
-                _settings.LastOpenDirectory = Path.GetDirectoryName(Path.GetFullPath(path));
-                _settings.Save();
-                RebuildRecentMenu();
-            }
-            catch (Exception ex)
-            {
-                await MessageAsync(T("Could not open dataset"), ex.Message);
-            }
-        }
-
-        /// <summary>Adds a dataset from a path as a new layer alongside whatever is already loaded (also used for extra command-line arguments).</summary>
-        public async void AddLayer(string path)
-        {
-            try
-            {
-                _view.AddLayerFromPath(path, CurrentPalette());
-                _settings.AddRecentFile(Path.GetFullPath(path));
-                _settings.LastOpenDirectory = Path.GetDirectoryName(Path.GetFullPath(path));
-                _settings.Save();
-                RebuildRecentMenu();
-            }
-            catch (Exception ex)
-            {
-                await MessageAsync(T("Could not add layer"), ex.Message);
-            }
-        }
-
-        /// <summary>Adds a <c>.erv</c> vector dataset as a new vector layer (also used for command-line arguments).</summary>
-        public async void AddVectorLayer(string path)
-        {
-            try
-            {
-                AddVectorFromFile(path);
-                _settings.AddRecentFile(Path.GetFullPath(path));
-                _settings.LastOpenDirectory = Path.GetDirectoryName(Path.GetFullPath(path));
-                _settings.Save();
-                RebuildRecentMenu();
-            }
-            catch (Exception ex)
-            {
-                await MessageAsync(T("Could not add vector layer"), ex.Message);
-            }
-        }
-
-        private async Task OpenDialogAsync()
-        {
-            IStorageFolder? startLocation = null;
-            if (_settings.LastOpenDirectory != null && Directory.Exists(_settings.LastOpenDirectory))
-                startLocation = await StorageProvider.TryGetFolderFromPathAsync(_settings.LastOpenDirectory);
-
-            var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-            {
-                Title = T("Open raster dataset"),
-                AllowMultiple = false,
-                SuggestedStartLocation = startLocation,
-                FileTypeFilter = ErsOpenFileTypeFilter,
-            });
-
-            var path = files.Count > 0 ? files[0].TryGetLocalPath() : null;
-            if (!string.IsNullOrEmpty(path)) OpenDataset(path!);
-        }
-
-        private async void OnDrop(object? sender, DragEventArgs e)
-        {
-            var paths = (e.Data.GetFiles() ?? Enumerable.Empty<IStorageItem>()).Select(f => f.TryGetLocalPath()).Where(p => !string.IsNullOrEmpty(p)).Select(p => p!).ToList();
-            foreach (var path in paths)
+            foreach (string path in paths)
             {
                 try
                 {
-                    if (path.EndsWith(".rfproj", StringComparison.OrdinalIgnoreCase))
+                    if (IsProjectFile(path))
                     {
                         if (await ConfirmDiscardAsync(T("Open project"))) await LoadProjectAsync(path);
                         return;
@@ -641,57 +533,95 @@ namespace RasterField
                     if (IsVectorFile(path)) AddVectorFromFile(path);
                     else if (IsRasterFile(path))
                     {
-                        // Layers already loaded: add this one alongside them rather than replacing everything.
-                        if (_view.DrawOrder.Count == 0) OpenDataset(path);
-                        else AddLayer(path);
-                        continue;
+                        if (_view.DrawOrder.Count == 0) _view.LoadRaster(path, CurrentPalette());
+                        else _view.AddLayerFromPath(path, CurrentPalette());
                     }
                     else continue;
-                    _settings.AddRecentFile(Path.GetFullPath(path));
-                    _settings.Save();
-                    RebuildRecentMenu();
+                    RememberOpened(path);
                 }
-                catch (Exception ex) { await MessageAsync(T("Add layer failed"), $"{Path.GetFileName(path)}: {ex.Message}"); }
+                catch (Exception ex) { await MessageAsync(T("Could not open"), $"{Path.GetFileName(path)}: {ex.Message}"); }
             }
         }
+
+        /// <summary>File ▸ Open recent: a project or raster replaces the session (like File ▸ Open), a vector file is added.</summary>
+        private async void OpenRecent(string path)
+        {
+            try
+            {
+                if (IsProjectFile(path)) { if (await ConfirmDiscardAsync(T("Open project"))) await LoadProjectAsync(path); }
+                else if (IsVectorFile(path)) { AddVectorFromFile(path); RememberOpened(path); }
+                else OpenDataset(path);
+            }
+            catch (Exception ex) { await MessageAsync(T("Could not open"), ex.Message); }
+        }
+
+        /// <summary>Opens a raster as the only layer (File ▸ Open raster).</summary>
+        private async void OpenDataset(string path)
+        {
+            try
+            {
+                _view.LoadRaster(path, CurrentPalette());
+                RememberOpened(path);
+            }
+            catch (Exception ex) { await MessageAsync(T("Could not open dataset"), ex.Message); }
+        }
+
+        /// <summary>Puts a file at the top of Open recent and remembers its folder for the next file dialog.</summary>
+        private void RememberOpened(string path)
+        {
+            string full = Path.GetFullPath(path);
+            _settings.AddRecentFile(full);
+            _settings.LastOpenDirectory = Path.GetDirectoryName(full);
+            _settings.Save();
+            RebuildRecentMenu();
+        }
+
+        /// <summary>The folder file dialogs start in: the last one a file was opened from, when it still exists.</summary>
+        private async Task<IStorageFolder?> StartFolderAsync() =>
+            _settings.LastOpenDirectory != null && Directory.Exists(_settings.LastOpenDirectory)
+                ? await StorageProvider.TryGetFolderFromPathAsync(_settings.LastOpenDirectory)
+                : null;
+
+        private async Task OpenDialogAsync()
+        {
+            var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = T("Open raster dataset"),
+                AllowMultiple = false,
+                SuggestedStartLocation = await StartFolderAsync(),
+                FileTypeFilter = FileTypes.OpenRaster,
+            });
+            var path = files.Count > 0 ? files[0].TryGetLocalPath() : null;
+            if (!string.IsNullOrEmpty(path)) OpenDataset(path!);
+        }
+
+        private async void OnDrop(object? sender, DragEventArgs e) =>
+            await OpenPathsAsync((e.Data.GetFiles() ?? Enumerable.Empty<IStorageItem>())
+                .Select(f => f.TryGetLocalPath()).Where(p => !string.IsNullOrEmpty(p)).Select(p => p!).ToList());
 
         // ---- layers --------------------------------------------------------------
 
         private async Task AddLayerDialogAsync()
         {
-            IStorageFolder? startLocation = null;
-            if (_settings.LastOpenDirectory != null && Directory.Exists(_settings.LastOpenDirectory))
-                startLocation = await StorageProvider.TryGetFolderFromPathAsync(_settings.LastOpenDirectory);
-
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
                 Title = T("Add layer(s) — raster (.ers, .tif, .tiff) or vector (.erv, .geojson, .csv)"),
                 AllowMultiple = true,
-                SuggestedStartLocation = startLocation,
-                FileTypeFilter = LayerOpenFileTypeFilter,
+                SuggestedStartLocation = await StartFolderAsync(),
+                FileTypeFilter = FileTypes.OpenLayer,
             });
-            if (files.Count == 0) return;
-
-            string? lastDir = null;
             foreach (var f in files)
             {
                 var path = f.TryGetLocalPath();
                 if (string.IsNullOrEmpty(path)) continue;
                 try
                 {
-                    if (IsVectorFile(path!))
-                        AddVectorFromFile(path!);
-                    else
-                        _view.AddLayerFromPath(path!, CurrentPalette());
-                    _settings.AddRecentFile(Path.GetFullPath(path));
-                    lastDir = Path.GetDirectoryName(Path.GetFullPath(path));
+                    if (IsVectorFile(path!)) AddVectorFromFile(path!);
+                    else _view.AddLayerFromPath(path!, CurrentPalette());
+                    RememberOpened(path!);
                 }
                 catch (Exception ex) { await MessageAsync(T("Add layer failed"), $"{Path.GetFileName(path)}: {ex.Message}"); }
             }
-
-            if (lastDir != null) _settings.LastOpenDirectory = lastDir;
-            _settings.Save();
-            RebuildRecentMenu();
         }
 
         private bool _layersPanelRebuildQueued;
@@ -733,14 +663,7 @@ namespace RasterField
         private async Task SaveHeaderAsAsync()
         {
             if (_view.Document == null) return;
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = T("Save ER Mapper header"),
-                DefaultExtension = "ers",
-                SuggestedFileName = SuggestName() + ".ers",
-                FileTypeChoices = ErsSaveFileTypeChoices,
-            });
-            var path = file?.TryGetLocalPath();
+            var path = await Dialogs.SavePathAsync(this, T("Save ER Mapper header"), SuggestName() + ".ers", FileTypes.Only(FileTypes.ErsHeader));
             if (string.IsNullOrEmpty(path)) return;
 
             try
@@ -754,14 +677,7 @@ namespace RasterField
         private async Task SaveDatasetAsAsync()
         {
             if (_view.Document == null) return;
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = T("Save raster dataset"),
-                DefaultExtension = "ers",
-                SuggestedFileName = SuggestName() + "_out.ers",
-                FileTypeChoices = RasterSaveFileTypeChoices,
-            });
-            var path = file?.TryGetLocalPath();
+            var path = await Dialogs.SavePathAsync(this, T("Save raster dataset"), SuggestName() + "_out.ers", FileTypes.SaveRaster);
             if (string.IsNullOrEmpty(path)) return;
 
             try
@@ -792,14 +708,7 @@ namespace RasterField
             var image = _view.RenderToImage();
             if (image == null) return;
 
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = T("Export coloured raster as PNG"),
-                DefaultExtension = "png",
-                SuggestedFileName = SuggestName() + ".png",
-                FileTypeChoices = PngFileTypeChoices,
-            });
-            var path = file?.TryGetLocalPath();
+            var path = await Dialogs.SavePathAsync(this, T("Export coloured raster as PNG"), SuggestName() + ".png", FileTypes.Only(FileTypes.Png));
             if (string.IsNullOrEmpty(path)) return;
 
             try
@@ -820,14 +729,7 @@ namespace RasterField
                 return;
             }
 
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = T("Export inspection report as PDF"),
-                DefaultExtension = "pdf",
-                SuggestedFileName = SuggestName() + "_report.pdf",
-                FileTypeChoices = PdfFileTypeChoices,
-            });
-            string? path = file?.TryGetLocalPath();
+            string? path = await Dialogs.SavePathAsync(this, T("Export inspection report as PDF"), SuggestName() + "_report.pdf", FileTypes.Only(FileTypes.Pdf));
             if (string.IsNullOrEmpty(path)) return;
 
             try
@@ -878,7 +780,7 @@ namespace RasterField
                     Band = band,
                     CellType = info.CellType + " · " + layer.Document.Header.ByteOrder,
                     CellSize = string.Format(CultureInfo.CurrentCulture, "{0:g7} × {1:g7} {2}",
-                        info.CellSizeX, info.CellSizeY, coordinateSpace.EffectiveUnits),
+                        info.CellSizeX, info.CellSizeY, L.UnitName(coordinateSpace.EffectiveUnits)),
                     CoordinateReferenceSystem = crs,
                     NoDataValue = noData,
                     Lineage = layer.Lineage,
@@ -1031,12 +933,12 @@ namespace RasterField
             double? gsd = _view.GroundSampleDistance;
             if (gsd == null) { _scaleText.Text = ""; return; }
 
-            string unit = _view.Document?.Header.CoordinateSpace.EffectiveUnits ?? "m";
+            string unit = L.UnitName(_view.Document?.Header.CoordinateSpace.EffectiveUnits ?? "m");
             double dpi = (TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0) * 96.0;
             double? denom = _view.MapScaleDenominator(dpi);
             _scaleText.Text = denom.HasValue
-                ? string.Format(CultureInfo.InvariantCulture, "{0:0.####} {1}/px   1:{2:N0}", gsd.Value, unit, denom.Value)
-                : string.Format(CultureInfo.InvariantCulture, "{0:0.####} {1}/px", gsd.Value, unit);
+                ? string.Format(CultureInfo.CurrentCulture, "{0:0.####} {1}/px   1:{2:N0}", gsd.Value, unit, denom.Value)
+                : string.Format(CultureInfo.CurrentCulture, "{0:0.####} {1}/px", gsd.Value, unit);
         }
 
         private string? UnitLabel()
@@ -1135,61 +1037,26 @@ namespace RasterField
 
         private async Task<(FillMethod Method, int MaxSearchDistance, int SmoothingIterations)?> ShowFillNoDataDialogAsync(long gapCount)
         {
-            var tcs = new TaskCompletionSource<(FillMethod, int, int)?>();
-
             var methodBox = new ComboBox
             {
                 ItemsSource = new[] { T("Inverse-distance weighted (recommended)"), T("Nearest neighbour (fast)") },
                 SelectedIndex = 0,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
             };
-            var distBox = new NumericUpDown { Minimum = 1, Maximum = 100000, Value = 100, Increment = 10, Width = 120, HorizontalAlignment = HorizontalAlignment.Left };
+            var distBox = new NumericUpDown { Minimum = 1, Maximum = 100000, Value = 100, Increment = 10, Width = 130, HorizontalAlignment = HorizontalAlignment.Left };
             var smoothBox = new NumericUpDown { Minimum = 0, Maximum = 10, Value = 1, Increment = 1, Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
+            // The IDW parameters mean nothing for the nearest-cell fill.
+            methodBox.SelectionChanged += (_, _) => distBox.IsEnabled = smoothBox.IsEnabled = methodBox.SelectedIndex == 0;
 
-            var dialog = new Window
-            {
-                Title = T("Fill no-data gaps"),
-                Width = 380,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-
-            var okBtn = new Button { Content = T("Fill"), MinWidth = 80 };
-            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
-            okBtn.Click += (_, _) =>
-            {
-                tcs.TrySetResult((methodBox.SelectedIndex == 0 ? FillMethod.InverseDistanceWeighted : FillMethod.Nearest,
-                    (int)(distBox.Value ?? 100), (int)(smoothBox.Value ?? 0)));
-                dialog.Close();
-            };
-            cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-
-            var buttons = DialogControls.ButtonRow(okBtn, cancelBtn);
-
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 8,
-                Children =
-                {
-                    new TextBlock { Text = L.F("{0:N0} gap cell(s) found within the data's footprint.", gapCount), TextWrapping = TextWrapping.Wrap },
-                    new TextBlock
-                    {
-                        Text = T("Only gaps inside the convex hull of the valid data are ever touched — the no-data margin outside the data's actual footprint (a rotated scene's background corners, a mosaic's missing corner, …) is left exactly as it is. Every in-hull gap is guaranteed to be filled. IDW searches outward along several directions for the nearest valid pixels and takes their inverse-distance-weighted average (the method behind GDAL's FillNodata); Nearest just copies the closest valid cell."),
-                        TextWrapping = TextWrapping.Wrap, Opacity = 0.85, FontSize = 11,
-                    },
-                    methodBox,
-                    new TextBlock { Text = T("Max search distance (cells, IDW only)") },
-                    distBox,
-                    new TextBlock { Text = T("Smoothing passes (IDW only)") },
-                    smoothBox,
-                    buttons,
-                },
-            };
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
+            var body = Dialogs.Stack(
+                Dialogs.Paragraph(L.F("{0:N0} gap cell(s) found within the data's footprint.", gapCount)),
+                Dialogs.Hint(T("Only gaps inside the convex hull of the valid data are ever touched — the no-data margin outside the data's actual footprint (a rotated scene's background corners, a mosaic's missing corner, …) is left exactly as it is. Every in-hull gap is guaranteed to be filled. IDW searches outward along several directions for the nearest valid pixels and takes their inverse-distance-weighted average (the method behind GDAL's FillNodata); Nearest just copies the closest valid cell.")),
+                methodBox,
+                Dialogs.Captioned(T("Max search distance (cells, IDW only)"), distBox),
+                Dialogs.Captioned(T("Smoothing passes (IDW only)"), smoothBox));
+            return await Dialogs.ShowAsync<(FillMethod, int, int)?>(this, T("Fill no-data gaps"), body, Dialogs.Primary(T("Fill")),
+                () => (methodBox.SelectedIndex == 0 ? FillMethod.InverseDistanceWeighted : FillMethod.Nearest, (int)(distBox.Value ?? 100), (int)(smoothBox.Value ?? 0)),
+                null, width: 440);
         }
 
         // ---- clip / cutout tool ---------------------------------------------------
@@ -1220,53 +1087,19 @@ namespace RasterField
         private async Task<(double MinX, double MinY, double MaxX, double MaxY)?> ShowClipExtentDialogAsync(
             (double MinX, double MinY, double MaxX, double MaxY) current)
         {
-            var tcs = new TaskCompletionSource<(double, double, double, double)?>();
-
-            NumericUpDown Box(double v) => new NumericUpDown { Value = (decimal)v, FormatString = "0.###", Increment = 1, Width = 140, HorizontalAlignment = HorizontalAlignment.Left };
+            NumericUpDown Box(double v) => new NumericUpDown { Value = (decimal)v, FormatString = "0.###", Increment = 1, Width = 150, HorizontalAlignment = HorizontalAlignment.Left };
             var minXBox = Box(current.MinX);
             var minYBox = Box(current.MinY);
             var maxXBox = Box(current.MaxX);
             var maxYBox = Box(current.MaxY);
 
-            var dialog = new Window
-            {
-                Title = T("Clip by extent"),
-                Width = 360,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-
-            var okBtn = new Button { Content = T("Clip…"), MinWidth = 80 };
-            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
-            okBtn.Click += (_, _) =>
-            {
-                tcs.TrySetResult(((double)(minXBox.Value ?? 0), (double)(minYBox.Value ?? 0),
-                                   (double)(maxXBox.Value ?? 0), (double)(maxYBox.Value ?? 0)));
-                dialog.Close();
-            };
-            cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-
-            var buttons = DialogControls.ButtonRow(okBtn, cancelBtn);
-
-            TextBlock Label(string t) => AppTheme.Caption(t);
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 6,
-                Children =
-                {
-                    new TextBlock { Text = T("World-coordinate extent to keep (pre-filled with the full raster bounds):"), TextWrapping = TextWrapping.Wrap },
-                    Label(T("Min E (west)")), minXBox,
-                    Label(T("Max E (east)")), maxXBox,
-                    Label(T("Min N (south)")), minYBox,
-                    Label(T("Max N (north)")), maxYBox,
-                    buttons,
-                },
-            };
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
+            var body = Dialogs.Stack(
+                Dialogs.Paragraph(T("World-coordinate extent to keep (pre-filled with the full raster bounds):")),
+                Dialogs.Row(Dialogs.Captioned(T("Min E (west)"), minXBox), Dialogs.Captioned(T("Max E (east)"), maxXBox)),
+                Dialogs.Row(Dialogs.Captioned(T("Min N (south)"), minYBox), Dialogs.Captioned(T("Max N (north)"), maxYBox)));
+            return await Dialogs.ShowAsync<(double, double, double, double)?>(this, T("Clip by extent"), body, Dialogs.Primary(T("Clip")),
+                () => ((double)(minXBox.Value ?? 0), (double)(minYBox.Value ?? 0), (double)(maxXBox.Value ?? 0), (double)(maxYBox.Value ?? 0)),
+                null, width: 380);
         }
 
         private async Task PerformClipAndSaveAsync(ErsDocument clip) => await PerformDerivedSaveAsync(clip, "_clip", "Clip");
@@ -1280,7 +1113,7 @@ namespace RasterField
         {
             string source = _view.ActiveLayer?.Name ?? SuggestName();
             string name = source + suggestedSuffix;
-            AddDerivedRasterLayer(result, name, $"{label} of {source}");
+            AddDerivedRasterLayer(result, name, L.F("{0} of {1}", T(label), source));
             return Task.CompletedTask;
         }
 
@@ -1382,55 +1215,18 @@ namespace RasterField
 
         private async Task<CurvatureType?> ShowCurvatureDialogAsync()
         {
-            var tcs = new TaskCompletionSource<CurvatureType?>();
-
             var typeBox = new ComboBox
             {
                 ItemsSource = new[] { T("General (convex/concave overall shape)"), T("Profile (along the slope — affects flow speed)"), T("Plan (across the slope — affects flow convergence)") },
                 SelectedIndex = 0,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
             };
-
-            var dialog = new Window
-            {
-                Title = T("Curvature"),
-                Width = 380,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-
-            var okBtn = new Button { Content = T("Compute"), MinWidth = 80 };
-            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
-            okBtn.Click += (_, _) =>
-            {
-                var type = typeBox.SelectedIndex switch
-                {
-                    1 => CurvatureType.Profile,
-                    2 => CurvatureType.Plan,
-                    _ => CurvatureType.General,
-                };
-                tcs.TrySetResult(type);
-                dialog.Close();
-            };
-            cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-
-            var buttons = DialogControls.ButtonRow(okBtn, cancelBtn);
-
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 8,
-                Children =
-                {
-                    new TextBlock { Text = T("Positive = convex (dome/ridge); negative = concave (bowl/valley); zero = planar."), TextWrapping = TextWrapping.Wrap, Opacity = 0.85, FontSize = 11 },
-                    typeBox,
-                    buttons,
-                },
-            };
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
+            var body = Dialogs.Stack(
+                Dialogs.Hint(T("Positive = convex (dome/ridge); negative = concave (bowl/valley); zero = planar.")),
+                typeBox);
+            return await Dialogs.ShowAsync<CurvatureType?>(this, T("Curvature"), body, Dialogs.Primary(T("Compute")),
+                () => typeBox.SelectedIndex switch { 1 => CurvatureType.Profile, 2 => CurvatureType.Plan, _ => CurvatureType.General },
+                null, width: 420);
         }
 
         // ---- hydrology --------------------------------------------------------------
@@ -1482,56 +1278,27 @@ namespace RasterField
 
         private async Task<(int ObserverCol, int ObserverRow, double ObserverHeight, double TargetHeight, int? MaxDistanceCells)?> ShowViewshedDialogAsync(int width, int height)
         {
-            var tcs = new TaskCompletionSource<(int, int, double, double, int?)?>();
+            NumericUpDown Box(decimal min, decimal max, decimal value, decimal step, string format) =>
+                new NumericUpDown { Minimum = min, Maximum = max, Value = value, Increment = step, FormatString = format, Width = 140, HorizontalAlignment = HorizontalAlignment.Left };
+            var colBox = Box(0, width - 1, width / 2, 1, "0");
+            var rowBox = Box(0, height - 1, height / 2, 1, "0");
+            var observerHeightBox = Box(0, 10000, 1.8M, 0.5M, "0.#");
+            var targetHeightBox = Box(0, 10000, 0, 0.5M, "0.#");
+            var maxDistBox = Box(0, int.MaxValue, 0, 50, "0");
 
-            var colBox = new NumericUpDown { Minimum = 0, Maximum = width - 1, Value = width / 2, Increment = 1, Width = 120, HorizontalAlignment = HorizontalAlignment.Left };
-            var rowBox = new NumericUpDown { Minimum = 0, Maximum = height - 1, Value = height / 2, Increment = 1, Width = 120, HorizontalAlignment = HorizontalAlignment.Left };
-            var observerHeightBox = new NumericUpDown { Minimum = 0, Maximum = 10000, Value = 1.8M, Increment = 0.5M, FormatString = "0.#", Width = 120, HorizontalAlignment = HorizontalAlignment.Left };
-            var targetHeightBox = new NumericUpDown { Minimum = 0, Maximum = 10000, Value = 0M, Increment = 0.5M, FormatString = "0.#", Width = 120, HorizontalAlignment = HorizontalAlignment.Left };
-            var maxDistBox = new NumericUpDown { Minimum = 0, Maximum = int.MaxValue, Value = 0M, Increment = 50, FormatString = "0", Width = 140, HorizontalAlignment = HorizontalAlignment.Left };
-
-            var dialog = new Window
-            {
-                Title = T("Viewshed"),
-                Width = 360,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-
-            var okBtn = new Button { Content = T("Compute…"), MinWidth = 80 };
-            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
-            okBtn.Click += (_, _) =>
-            {
-                int maxDist = (int)(maxDistBox.Value ?? 0);
-                tcs.TrySetResult((
-                    (int)(colBox.Value ?? 0), (int)(rowBox.Value ?? 0),
-                    (double)(observerHeightBox.Value ?? 1.8M), (double)(targetHeightBox.Value ?? 0M),
-                    maxDist > 0 ? maxDist : (int?)null));
-                dialog.Close();
-            };
-            cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-
-            var buttons = DialogControls.ButtonRow(okBtn, cancelBtn);
-
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 6,
-                Children =
+            var body = Dialogs.Stack(
+                Dialogs.Paragraph(T("Observer location (raster cell — column/row, 0-based):")),
+                Dialogs.Row(Dialogs.Captioned(T("Column"), colBox), Dialogs.Captioned(T("Row"), rowBox)),
+                Dialogs.Row(Dialogs.Captioned(T("Observer eye height above ground"), observerHeightBox), Dialogs.Captioned(T("Target height above ground"), targetHeightBox)),
+                Dialogs.Captioned(T("Max distance in cells (0 = unlimited)"), maxDistBox));
+            return await Dialogs.ShowAsync<(int, int, double, double, int?)?>(this, T("Viewshed"), body, Dialogs.Primary(T("Compute")),
+                () =>
                 {
-                    new TextBlock { Text = T("Observer location (raster cell — column/row, 0-based):"), TextWrapping = TextWrapping.Wrap },
-                    new TextBlock { Text = T("Column") }, colBox,
-                    new TextBlock { Text = T("Row") }, rowBox,
-                    new TextBlock { Text = T("Observer eye height above ground") }, observerHeightBox,
-                    new TextBlock { Text = T("Target height above ground") }, targetHeightBox,
-                    new TextBlock { Text = T("Max distance in cells (0 = unlimited)") }, maxDistBox,
-                    buttons,
+                    int maxDist = (int)(maxDistBox.Value ?? 0);
+                    return ((int)(colBox.Value ?? 0), (int)(rowBox.Value ?? 0), (double)(observerHeightBox.Value ?? 1.8M),
+                        (double)(targetHeightBox.Value ?? 0M), maxDist > 0 ? maxDist : (int?)null);
                 },
-            };
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
+                null, width: 440);
         }
 
         // ---- Swiss-style relief shading -----------------------------------------------
@@ -1606,14 +1373,7 @@ namespace RasterField
 
         private static void SaveImageAsPng(RasterImage image, string path)
         {
-            using var bmp = new WriteableBitmap(new PixelSize(image.Width, image.Height),
-                new Vector(96, 96), Avalonia.Platform.PixelFormat.Bgra8888, Avalonia.Platform.AlphaFormat.Unpremul);
-            using (var fb = bmp.Lock())
-            {
-                for (int y = 0; y < image.Height; y++)
-                    System.Runtime.InteropServices.Marshal.Copy(
-                        image.Pixels, y * image.Stride, fb.Address + y * fb.RowBytes, image.Stride);
-            }
+            using var bmp = RasterView.ToBitmap(image);
             bmp.Save(path);
         }
 
@@ -1637,45 +1397,13 @@ namespace RasterField
 
         private async Task<string?> ShowBandMathDialogAsync(IReadOnlyList<string> bandNames, string initial = "")
         {
-            var tcs = new TaskCompletionSource<string?>();
-
-            var exprBox = new TextBox { Watermark = T("e.g. (b1 - b2) / (b1 + b2)"), Text = initial };
-
-            var dialog = new Window
-            {
-                Title = T("Band math"),
-                Width = 440,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-
-            var okBtn = new Button { Content = T("Compute"), MinWidth = 80 };
-            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
-            okBtn.Click += (_, _) => { tcs.TrySetResult(exprBox.Text); dialog.Close(); };
-            cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-
-            var buttons = DialogControls.ButtonRow(okBtn, cancelBtn);
-
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 8,
-                Children =
-                {
-                    new TextBlock { Text = L.F("Available bands: {0}", string.Join(", ", bandNames)), TextWrapping = TextWrapping.Wrap },
-                    new TextBlock
-                    {
-                        Text = T("Operators + - * / and comparisons (> >= < <= == !=); functions abs, sqrt, exp, log, log10, min, max, pow, iif(cond, a, b); constants pi, e. A cell is no-data in the output if any band it references is no-data there."),
-                        TextWrapping = TextWrapping.Wrap, Opacity = 0.85, FontSize = 11,
-                    },
-                    exprBox,
-                    buttons,
-                },
-            };
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
+            var exprBox = new TextBox { Watermark = T("e.g. (b1 - b2) / (b1 + b2)"), Text = initial, FontFamily = AppTheme.MonospaceFont };
+            var body = Dialogs.Stack(
+                Dialogs.Paragraph(L.F("Available bands: {0}", string.Join(", ", bandNames))),
+                Dialogs.Hint(T("Operators + - * / and comparisons (> >= < <= == !=); functions abs, sqrt, exp, log, log10, min, max, pow, iif(cond, a, b); constants pi, e. A cell is no-data in the output if any band it references is no-data there.")),
+                exprBox);
+            return await Dialogs.ShowAsync<string?>(this, T("Band math"), body, Dialogs.Primary(T("Compute")), () => exprBox.Text, null,
+                width: 460, opened: _ => { exprBox.Focus(); exprBox.SelectAll(); });
         }
 
         // ---- mosaic ----------------------------------------------------------------
@@ -1686,7 +1414,7 @@ namespace RasterField
             {
                 Title = T("Select rasters to mosaic (2 or more)"),
                 AllowMultiple = true,
-                FileTypeFilter = ErsOpenFileTypeFilter,
+                FileTypeFilter = FileTypes.OpenRaster,
             });
 
             var paths = files.Select(f => f.TryGetLocalPath()).Where(p => !string.IsNullOrEmpty(p)).Select(p => p!).ToList();
@@ -1722,7 +1450,7 @@ namespace RasterField
                 catch (Exception ex)
                 {
                     SetBusy(false);
-                    await MessageAsync(T("Mosaic rasters"), $"Could not load one of the selected files: {ex.Message}");
+                    await MessageAsync(T("Mosaic rasters"), L.F("Could not load one of the selected files: {0}", ex.Message));
                     return;
                 }
                 SetBusy(false);
@@ -1751,59 +1479,22 @@ namespace RasterField
         private async Task<(double CellSizeX, double CellSizeY, MosaicOverlapMode OverlapMode)?> ShowMosaicOptionsDialogAsync(
             int fileCount, double defaultCellX, double defaultCellY)
         {
-            var tcs = new TaskCompletionSource<(double, double, MosaicOverlapMode)?>();
-
-            var cellXBox = new NumericUpDown { Value = (decimal)defaultCellX, FormatString = "0.####", Increment = 1, Width = 130, HorizontalAlignment = HorizontalAlignment.Left };
-            var cellYBox = new NumericUpDown { Value = (decimal)defaultCellY, FormatString = "0.####", Increment = 1, Width = 130, HorizontalAlignment = HorizontalAlignment.Left };
+            var cellXBox = new NumericUpDown { Value = (decimal)defaultCellX, FormatString = "0.####", Increment = 1, Width = 140, HorizontalAlignment = HorizontalAlignment.Left };
+            var cellYBox = new NumericUpDown { Value = (decimal)defaultCellY, FormatString = "0.####", Increment = 1, Width = 140, HorizontalAlignment = HorizontalAlignment.Left };
             var overlapBox = new ComboBox
             {
                 ItemsSource = new[] { T("Last wins (later files overwrite)"), T("First wins (earlier files kept)"), T("Average") },
                 SelectedIndex = 0,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
             };
-
-            var dialog = new Window
-            {
-                Title = T("Mosaic rasters"),
-                Width = 380,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-
-            var okBtn = new Button { Content = T("Mosaic…"), MinWidth = 80 };
-            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
-            okBtn.Click += (_, _) =>
-            {
-                var mode = overlapBox.SelectedIndex switch
-                {
-                    1 => MosaicOverlapMode.FirstWins,
-                    2 => MosaicOverlapMode.Average,
-                    _ => MosaicOverlapMode.LastWins,
-                };
-                tcs.TrySetResult(((double)(cellXBox.Value ?? (decimal)defaultCellX), (double)(cellYBox.Value ?? (decimal)defaultCellY), mode));
-                dialog.Close();
-            };
-            cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-
-            var buttons = DialogControls.ButtonRow(okBtn, cancelBtn);
-
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 8,
-                Children =
-                {
-                    new TextBlock { Text = L.F("{0} datasets selected. Output cell size:", fileCount), TextWrapping = TextWrapping.Wrap },
-                    new TextBlock { Text = T("Cell size X") }, cellXBox,
-                    new TextBlock { Text = T("Cell size Y") }, cellYBox,
-                    new TextBlock { Text = T("Where datasets overlap") }, overlapBox,
-                    buttons,
-                },
-            };
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
+            var body = Dialogs.Stack(
+                Dialogs.Paragraph(L.F("{0} datasets selected. Output cell size:", fileCount)),
+                Dialogs.Row(Dialogs.Captioned(T("Cell size X"), cellXBox), Dialogs.Captioned(T("Cell size Y"), cellYBox)),
+                Dialogs.Captioned(T("Where datasets overlap"), overlapBox));
+            return await Dialogs.ShowAsync<(double, double, MosaicOverlapMode)?>(this, T("Mosaic rasters"), body, Dialogs.Primary(T("Mosaic")),
+                () => ((double)(cellXBox.Value ?? (decimal)defaultCellX), (double)(cellYBox.Value ?? (decimal)defaultCellY),
+                    overlapBox.SelectedIndex switch { 1 => MosaicOverlapMode.FirstWins, 2 => MosaicOverlapMode.Average, _ => MosaicOverlapMode.LastWins }),
+                null, width: 400);
         }
 
         // ---- misc -------------------------------------------------------------
@@ -1822,37 +1513,44 @@ namespace RasterField
 
         private void Flash(string message) => _infoText.Text = message;
 
-        internal async Task ShowAboutAsync() => await MessageAsync(T("About RasterField"), T(
-            "RasterField — a cross-platform raster viewer and terrain-analysis workspace.\n" +
-            "Open and save ER Mapper (.ers + BIL) and GeoTIFF datasets.\n\n" +
-            "Built with Avalonia, RasterField.Core and GDAL: windowed I/O, georeferencing,\n" +
-            "palette rendering, terrain tools, ΔZ comparison and cut/fill volume analysis.\n\n" +
-            "Drag to pan · wheel to zoom · arrows / +/- · 0 or F to fit."));
-
-        private async Task MessageAsync(string title, string message)
+        /// <summary>The About panel: icon, name and version, what the app does, and what it is built on.</summary>
+        internal async Task ShowAboutAsync()
         {
-            var dialog = new Window
+            var assembly = typeof(MainWindow).Assembly;
+            string version = (Attribute.GetCustomAttribute(assembly, typeof(System.Reflection.AssemblyInformationalVersionAttribute))
+                as System.Reflection.AssemblyInformationalVersionAttribute)?.InformationalVersion?.Split('+')[0]
+                ?? assembly.GetName().Version?.ToString(3) ?? "";
+            var icon = new Image
             {
-                Title = title,
-                Width = 460,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
+                Source = new Bitmap(Avalonia.Platform.AssetLoader.Open(new Uri("avares://RasterField/Assets/RasterField-256.png"))),
+                Width = 96, Height = 96, HorizontalAlignment = HorizontalAlignment.Center,
             };
-            var ok = new Button { Content = T("OK"), HorizontalAlignment = HorizontalAlignment.Right, MinWidth = 80 };
-            ok.Click += (_, _) => dialog.Close();
-            dialog.Content = new StackPanel
+            var body = new StackPanel
             {
-                Margin = new Thickness(16),
-                Spacing = 12,
+                Spacing = 6,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
                 Children =
                 {
-                    new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
-                    ok,
+                    icon,
+                    new TextBlock { Text = "RasterField", FontSize = 18, FontWeight = FontWeight.SemiBold, HorizontalAlignment = HorizontalAlignment.Center },
+                    new TextBlock { Text = L.F("Version {0}", version), Foreground = AppTheme.TextSecondary, HorizontalAlignment = HorizontalAlignment.Center },
+                    new TextBlock
+                    {
+                        Text = T("A raster viewer and terrain-analysis workspace for ER Mapper (.ers + BIL) and GeoTIFF data."),
+                        TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 8, 0, 0),
+                    },
+                    new TextBlock
+                    {
+                        Text = T("Built with Avalonia, RasterField.Core and GDAL."),
+                        TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center,
+                        Foreground = AppTheme.TextSecondary, FontSize = AppTheme.FontCaption,
+                    },
                 },
             };
-            await dialog.ShowDialog(this);
+            await Dialogs.InfoAsync(this, T("About RasterField"), body, width: 360);
         }
+
+        private Task MessageAsync(string title, string message) => Dialogs.MessageAsync(this, title, message);
 
         private string SuggestName()
         {

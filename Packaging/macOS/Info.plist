@@ -18,6 +18,17 @@
     <string>__VERSION__</string>
     <key>CFBundleVersion</key>
     <string>__VERSION__</string>
+    <!-- English and Hungarian UI: lets macOS show its own panels (Open/Save, menus it adds)
+         in the user's language, and lets Finder list the app as localised. -->
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+        <string>hu</string>
+    </array>
+    <key>CFBundleAllowMixedLocalizations</key>
+    <true/>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSApplicationCategoryType</key>
@@ -40,11 +51,19 @@
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
-            <string>ER Mapper dataset</string>
+            <string>ER Mapper raster dataset</string>
             <key>CFBundleTypeRole</key>
-            <string>Viewer</string>
+            <string>Editor</string>
             <key>CFBundleTypeExtensions</key>
-            <array><string>ers</string><string>erv</string></array>
+            <array><string>ers</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>ER Mapper vector dataset</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>erv</string></array>
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
@@ -61,6 +80,16 @@
             <string>Viewer</string>
             <key>CFBundleTypeExtensions</key>
             <array><string>geojson</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>CSV points</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>csv</string></array>
         </dict>
     </array>
 </dict>

@@ -18,8 +18,6 @@ namespace RasterField
     /// </summary>
     public sealed class PaletteEditorWindow : Window
     {
-        private static readonly FilePickerFileType[] PalFileTypes =
-            { new("DigiTerra palette (*.pal)") { Patterns = new[] { "*.pal" } } };
 
         private readonly PaletteEditorControl _editor = new PaletteEditorControl();
         private readonly TextBox _nameBox = new TextBox { Watermark = T("Palette name") };
@@ -31,7 +29,7 @@ namespace RasterField
         private readonly NumericUpDown _rBox = new NumericUpDown { Minimum = 0, Maximum = 255, Increment = 1, Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
         private readonly NumericUpDown _gBox = new NumericUpDown { Minimum = 0, Maximum = 255, Increment = 1, Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
         private readonly NumericUpDown _bBox = new NumericUpDown { Minimum = 0, Maximum = 255, Increment = 1, Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
-        private readonly TextBox _hexBox = new TextBox { Watermark = T("#RRGGBB"), Width = 90, VerticalContentAlignment = VerticalAlignment.Center, TextAlignment = Avalonia.Media.TextAlignment.Center };
+        private readonly TextBox _hexBox = new TextBox { Watermark = "#RRGGBB", Width = 90, VerticalContentAlignment = VerticalAlignment.Center, TextAlignment = Avalonia.Media.TextAlignment.Center };
         private readonly ComboBox _startFromBox = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
 
         private readonly PaletteLibrary _library;
@@ -84,11 +82,11 @@ namespace RasterField
             void Col(Control c, int i) { Grid.SetColumn(c, i); editRow.Children.Add(c); }
             Col(new TextBlock { Text = T("Pos %"), VerticalAlignment = VerticalAlignment.Center }, 0);
             Col(_posBox, 1);
-            Col(new TextBlock { Text = T("R"), VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 2);
+            Col(new TextBlock { Text = "R", VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 2);
             Col(_rBox, 3);
-            Col(new TextBlock { Text = T("G"), VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 4);
+            Col(new TextBlock { Text = "G", VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 4);
             Col(_gBox, 5);
-            Col(new TextBlock { Text = T("B"), VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 6);
+            Col(new TextBlock { Text = "B", VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 6);
             Col(_bBox, 7);
             Col(new TextBlock { Text = T("Hex"), VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 8);
             Col(_hexBox, 9);
@@ -196,14 +194,7 @@ namespace RasterField
 
         private async Task SaveAsFileAsync()
         {
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = T("Save palette"),
-                DefaultExtension = "pal",
-                SuggestedFileName = CurrentName() + ".pal",
-                FileTypeChoices = PalFileTypes,
-            });
-            var path = file?.TryGetLocalPath();
+            var path = await Dialogs.SavePathAsync(this, T("Save palette"), CurrentName() + ".pal", FileTypes.Only(FileTypes.Palette));
             if (string.IsNullOrEmpty(path)) return;
 
             var palette = _editor.Bake(CurrentName());

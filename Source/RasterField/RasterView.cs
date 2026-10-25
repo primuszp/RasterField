@@ -1397,14 +1397,19 @@ namespace RasterField
         {
             var bmp = new WriteableBitmap(new PixelSize(Math.Max(1, image.Width), Math.Max(1, image.Height)), new Vector(96, 96),
                 PixelFormat.Bgra8888, AlphaFormat.Unpremul);
-            using ILockedFramebuffer fb = bmp.Lock();
+            using (ILockedFramebuffer fb = bmp.Lock()) CopyInto(image, fb);
+            return bmp;
+        }
+
+        /// <summary>Copies a rendered BGRA image into a locked bitmap (row by row when the strides differ).</summary>
+        internal static void CopyInto(RasterImage image, ILockedFramebuffer fb)
+        {
             int srcStride = image.Stride, dstStride = fb.RowBytes;
             if (srcStride == dstStride)
                 Marshal.Copy(image.Pixels, 0, fb.Address, image.Pixels.Length);
             else
                 for (int y = 0; y < image.Height; y++)
                     Marshal.Copy(image.Pixels, y * srcStride, fb.Address + y * dstStride, srcStride);
-            return bmp;
         }
 
         // ---- loading ----------------------------------------------------------------
@@ -1873,20 +1878,7 @@ namespace RasterField
                     AlphaFormat.Unpremul);
             }
 
-            using (ILockedFramebuffer fb = layer.Bitmap.Lock())
-            {
-                int srcStride = image.Stride;
-                int dstStride = fb.RowBytes;
-                if (srcStride == dstStride)
-                {
-                    Marshal.Copy(image.Pixels, 0, fb.Address, image.Pixels.Length);
-                }
-                else
-                {
-                    for (int y = 0; y < image.Height; y++)
-                        Marshal.Copy(image.Pixels, y * srcStride, fb.Address + y * dstStride, srcStride);
-                }
-            }
+            using (ILockedFramebuffer fb = layer.Bitmap.Lock()) CopyInto(image, fb);
 
             InvalidateVisual();
         }
@@ -1948,13 +1940,13 @@ namespace RasterField
             if (comparisonValid)
                 DrawComparisonOverlay(context);
 
-            string hintText = $"zoom {_scale:0.###}×  ·  {_layers.Count} layer{(_layers.Count == 1 ? "" : "s")}";
-            if (_vectorLayers.Count > 0) hintText += $" + {_vectorLayers.Count} vector";
-            if (active.IsStreaming) hintText += _streamRefreshBusy ? "  (streaming · loading…)" : "  (streaming)";
+            string hintText = L.F("zoom {0:0.###}×", _scale) + "  ·  " + L.F(_layers.Count == 1 ? "{0} layer" : "{0} layers", _layers.Count);
+            if (_vectorLayers.Count > 0) hintText += " " + L.F("+ {0} vector", _vectorLayers.Count);
+            if (active.IsStreaming) hintText += "  " + (_streamRefreshBusy ? L.T("(streaming · loading…)") : L.T("(streaming)"));
             double? gsd = GroundSampleDistance;
             if (gsd.HasValue)
             {
-                string unit = active.Document.Header.CoordinateSpace.EffectiveUnits;
+                string unit = L.UnitName(active.Document.Header.CoordinateSpace.EffectiveUnits);
                 hintText += $"   ·   {FormatDistance(gsd.Value)} {unit}/px";
                 double? denom = MapScaleDenominator(EffectiveDpi());
                 if (denom.HasValue) hintText += $"   ·   1 : {FormatScale(denom.Value)}";
@@ -2311,7 +2303,7 @@ namespace RasterField
                 var (_, b, c, _, e, f) = Document.GeoReference.GeoTransform;
                 double worldW = Math.Sqrt(b * b + e * e) * w;
                 double worldH = Math.Sqrt(c * c + f * f) * h;
-                string unit = Document.Header.CoordinateSpace.EffectiveUnits;
+                string unit = L.UnitName(Document.Header.CoordinateSpace.EffectiveUnits);
                 label += $"   ({FormatDistance(worldW)} × {FormatDistance(worldH)} {unit})";
             }
 
@@ -2371,7 +2363,7 @@ namespace RasterField
 
             if (pts.Count >= 2)
             {
-                string unit = active.Document.Header.CoordinateSpace.EffectiveUnits;
+                string unit = L.UnitName(active.Document.Header.CoordinateSpace.EffectiveUnits);
                 string label = FormatDistance(Measurement.Length(_path)) + " " + unit;
                 if (polygon && _path.Count >= 3)
                     label += "   ·   " + FormatDistance(Measurement.Area(_path)) + " " + unit + "²";
@@ -2415,13 +2407,15 @@ namespace RasterField
 
         private static string FormatDistance(double metersPerPixel) =>
             metersPerPixel >= 1
-                ? metersPerPixel.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)
-                : metersPerPixel.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+                ? metersPerPixel.ToString("0.##", System.Globalization.CultureInfo.CurrentCulture)
+                : metersPerPixel.ToString("0.####", System.Globalization.CultureInfo.CurrentCulture);
 
         private static string FormatScale(double denominator) =>
-            denominator >= 1000
-                ? $"{denominator / 1000.0:0.#}k"
-                : denominator.ToString("0", System.Globalization.CultureInfo.InvariantCulture);
+            denominator >= 1_000_000
+                ? (denominator / 1_000_000.0).ToString("0.##", System.Globalization.CultureInfo.CurrentCulture) + "M"
+                : denominator >= 1000
+                ? (denominator / 1000.0).ToString("0.#", System.Globalization.CultureInfo.CurrentCulture) + "k"
+                : denominator.ToString("0", System.Globalization.CultureInfo.CurrentCulture);
 
         private void DrawGrid(DrawingContext context, RasterLayer active)
         {

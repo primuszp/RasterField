@@ -32,20 +32,43 @@ namespace RasterField
 
         private sealed class Cmd
         {
-            public Cmd(string header, Action? run = null, KeyGesture? gesture = null, Func<bool>? isChecked = null, bool radio = false)
+            public Cmd(string header, Action? run = null, KeyGesture? gesture = null, Func<bool>? isChecked = null, bool radio = false,
+                Key? toolKey = null, KeyGesture? macGesture = null)
             {
-                Header = header; Run = run; Gesture = gesture; IsChecked = isChecked; Radio = radio;
+                Header = header; Run = run; Gesture = gesture; IsChecked = isChecked; Radio = radio; ToolKey = toolKey; MacGesture = macGesture;
             }
 
             public string Header { get; }
             public Action? Run { get; }
+
+            /// <summary>The shortcut, declared with Ctrl (shown and matched as ⌘ on macOS — see <see cref="Shortcuts"/>).</summary>
             public KeyGesture? Gesture { get; }
+
+            /// <summary>A macOS-specific shortcut used verbatim there, where the platform convention differs (e.g. Redo = ⇧⌘Z).</summary>
+            public KeyGesture? MacGesture { get; }
+
+            /// <summary>
+            /// A plain-letter tool shortcut (I, P, M…): shown in the menus and the shortcut list,
+            /// handled by <see cref="HandleToolKey"/> only outside text fields — never registered as a
+            /// macOS menu key equivalent, which would fire while typing.
+            /// </summary>
+            public Key? ToolKey { get; }
+
+            /// <summary>The shortcut for this platform.</summary>
+            public KeyGesture? PlatformGesture => Shortcuts.ForPlatform(Gesture, MacGesture);
             public Func<bool>? IsChecked { get; }
             public bool Radio { get; }
             public List<Cmd?> Children { get; } = new List<Cmd?>(); // null = separator
 
             public Cmd Add(params Cmd?[] items) { Children.AddRange(items); return this; }
         }
+
+        /// <summary>The File ▸ Open recent submenu, filled separately by <see cref="RebuildRecentMenu"/>.</summary>
+        private const string RecentMenuHeader = "Open _recent";
+
+        /// <summary>A menu header as plain text: translated, without access-key underscores.</summary>
+        private static string MenuText(string header) =>
+            T(header).Replace("_", string.Empty, StringComparison.Ordinal).Replace("&&", "&", StringComparison.Ordinal);
 
         private readonly List<(MenuItem Item, Func<bool> IsChecked)> _menuChecks = new();
         private readonly List<(NativeMenuItem Item, Func<bool> IsChecked)> _nativeMenuChecks = new();
@@ -72,7 +95,7 @@ namespace RasterField
                 new Cmd("Open _project…", () => _ = OpenProjectDialogAsync()),
                 new Cmd("_Open raster…", () => _ = OpenDialogAsync(), Ctrl(Key.O)),
                 new Cmd("_Add layer(s)…", () => _ = AddLayerDialogAsync(), Ctrl(Key.O, shift: true)),
-                new Cmd("Open _recent"), // filled by RebuildRecentMenu
+                new Cmd(RecentMenuHeader),
                 null,
                 new Cmd("_Save project", () => _ = SaveProjectAsync(false), Ctrl(Key.S)),
                 new Cmd("Save project _as…", () => _ = SaveProjectAsync(true)),
@@ -86,9 +109,11 @@ namespace RasterField
 
             var edit = new Cmd("_Edit").Add(
                 new Cmd("_Undo", Undo, Ctrl(Key.Z)),
-                new Cmd("_Redo", Redo, Ctrl(Key.Y)),
+                new Cmd("_Redo", Redo, Ctrl(Key.Y), macGesture: new KeyGesture(Key.Z, KeyModifiers.Meta | KeyModifiers.Shift)),
                 null,
                 new Cmd("_Command palette…", () => _ = ShowCommandPaletteAsync(), Ctrl(Key.K)));
+            // macOS keeps Settings… in the application menu (see App); elsewhere it ends the Edit menu.
+            if (!mac) edit.Add(null, new Cmd("_Settings…", () => _ = ShowSettingsAsync(), Ctrl(Key.OemComma)));
 
             var magnification = new Cmd("_Magnification").Add(
                 new Cmd("_Nearest (crisp cells)", () => SetDisplayResampling(DisplayResampling.Nearest), isChecked: () => _view.DisplayResampling == DisplayResampling.Nearest, radio: true),
@@ -121,21 +146,15 @@ namespace RasterField
                 bookmarks,
                 null,
                 magnification,
-                new Cmd("Show cell _grid", () => { _view.ShowGrid = !_view.ShowGrid; _view.InvalidateVisual(); RefreshMenuChecks(); }, isChecked: () => _view.ShowGrid),
+                new Cmd("Show cell _grid", () => { _view.ShowGrid = !_view.ShowGrid; _view.InvalidateVisual(); RefreshMenuChecks(); }, isChecked: () => _view.ShowGrid, toolKey: Key.G),
                 comparison,
                 null,
                 new Cmd("_Layers && analysis panel", ToggleLeftDock, new KeyGesture(Key.F9), isChecked: () => _leftDockVisible),
                 new Cmd("_Properties panel", ToggleRightDock, new KeyGesture(Key.F10), isChecked: () => _rightDockVisible),
-                new Cmd("_Map only", ToggleMapOnly, new KeyGesture(Key.F11), isChecked: () => !_leftDockVisible && !_rightDockVisible),
-                null,
-                new Cmd("_Theme").Add(
-                    new Cmd("_System", () => SetThemeMode(ThemeMode.System), isChecked: () => _settings.Theme == ThemeMode.System, radio: true),
-                    new Cmd("_Light", () => SetThemeMode(ThemeMode.Light), isChecked: () => _settings.Theme == ThemeMode.Light, radio: true),
-                    new Cmd("_Dark", () => SetThemeMode(ThemeMode.Dark), isChecked: () => _settings.Theme == ThemeMode.Dark, radio: true)),
-                new Cmd("_Language").Add(
-                    new Cmd("_Automatic (system)", () => SetLanguage("auto"), isChecked: () => _settings.Language == "auto", radio: true),
-                    new Cmd("_English", () => SetLanguage("en"), isChecked: () => _settings.Language == "en", radio: true),
-                    new Cmd("_Magyar", () => SetLanguage("hu"), isChecked: () => _settings.Language == "hu", radio: true)));
+                new Cmd("_Map only", ToggleMapOnly, new KeyGesture(Key.F11), isChecked: () => !_leftDockVisible && !_rightDockVisible));
+            // macOS: full screen lives in the View menu with the system's ⌃⌘F (theme and language are in Settings…).
+            if (mac) view.Add(null, new Cmd("Enter _full screen", ToggleFullScreen, macGesture: new KeyGesture(Key.F, KeyModifiers.Control | KeyModifiers.Meta),
+                isChecked: () => WindowState == WindowState.FullScreen));
 
             var layer = new Cmd("_Layer").Add(
                 new Cmd("_Add layer(s)…", () => _ = AddLayerDialogAsync()),
@@ -183,11 +202,11 @@ namespace RasterField
                 new Cmd("Generate _contours…", () => _ = GenerateContoursAsync()));
 
             var tools = new Cmd("T_ools").Add(
-                new Cmd("_Identify (click the map)", () => SetIdentifyToolActive(!_view.IdentifyMode), isChecked: () => _view.IdentifyMode),
-                new Cmd("_Profile (multi-point path)", () => SetPathTool(_view.PathToolMode == PathTool.Profile ? PathTool.None : PathTool.Profile), isChecked: () => _view.PathToolMode == PathTool.Profile),
-                new Cmd("_Measure distance / area", () => SetPathTool(_view.PathToolMode == PathTool.Measure ? PathTool.None : PathTool.Measure), isChecked: () => _view.PathToolMode == PathTool.Measure),
-                new Cmd("_Zone (zonal statistics)", () => SetPathTool(_view.PathToolMode == PathTool.Zone ? PathTool.None : PathTool.Zone), isChecked: () => _view.PathToolMode == PathTool.Zone),
-                new Cmd("_Clip tool (drag a rectangle)", () => SetClipToolActive(!_view.SelectionMode), isChecked: () => _view.SelectionMode));
+                new Cmd("_Identify (click the map)", () => SetIdentifyToolActive(!_view.IdentifyMode), isChecked: () => _view.IdentifyMode, toolKey: Key.I),
+                new Cmd("_Profile (multi-point path)", () => SetPathTool(_view.PathToolMode == PathTool.Profile ? PathTool.None : PathTool.Profile), isChecked: () => _view.PathToolMode == PathTool.Profile, toolKey: Key.P),
+                new Cmd("_Measure distance / area", () => SetPathTool(_view.PathToolMode == PathTool.Measure ? PathTool.None : PathTool.Measure), isChecked: () => _view.PathToolMode == PathTool.Measure, toolKey: Key.M),
+                new Cmd("_Zone (zonal statistics)", () => SetPathTool(_view.PathToolMode == PathTool.Zone ? PathTool.None : PathTool.Zone), isChecked: () => _view.PathToolMode == PathTool.Zone, toolKey: Key.Z),
+                new Cmd("_Clip tool (drag a rectangle)", () => SetClipToolActive(!_view.SelectionMode), isChecked: () => _view.SelectionMode, toolKey: Key.C));
 
             var help = new Cmd("_Help").Add(new Cmd("_Keyboard shortcuts…", () => _ = ShowShortcutsAsync()));
             if (!mac) help.Add(null, new Cmd("_About…", () => _ = ShowAboutAsync()));
@@ -205,6 +224,9 @@ namespace RasterField
 
         private void ToggleMaximized() =>
             WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+        private void ToggleFullScreen() =>
+            WindowState = WindowState == WindowState.FullScreen ? WindowState.Normal : WindowState.FullScreen;
 
         /// <summary>Rebuilds both menus (after a language change or a bookmark edit).</summary>
         private void RebuildMenus()
@@ -242,13 +264,48 @@ namespace RasterField
             Flash(L.F("Redone: {0}", T(label ?? "")));
         }
 
-        private async void SetLanguage(string code)
+        private void SetLanguage(string code)
         {
             _settings.Language = code;
             _settings.Save();
             L.SetLanguage(code);
             RebuildMenus();
-            await MessageAsync(T("Language"), T("The menus switch immediately; restart RasterField to switch every panel and dialog."));
+            (Application.Current as App)?.BuildApplicationMenu();
+        }
+
+        /// <summary>
+        /// Settings… (⌘, in the macOS application menu, Ctrl+, in Edit elsewhere): the interface
+        /// language and the appearance, both applied at once.
+        /// </summary>
+        internal async Task ShowSettingsAsync()
+        {
+            string startLanguage = L.Language;
+            RadioButton Choice(string text, string group, bool isChecked, Action apply)
+            {
+                var radio = new RadioButton { Content = text, GroupName = group, IsChecked = isChecked };
+                radio.IsCheckedChanged += (_, _) => { if (radio.IsChecked == true) apply(); };
+                return radio;
+            }
+            var restartHint = Dialogs.Hint(T("Menus switch at once; restart RasterField to switch every panel and dialog."));
+            restartHint.IsVisible = false;
+            void Language(string code)
+            {
+                SetLanguage(code);
+                restartHint.IsVisible = L.Language != startLanguage;
+            }
+
+            var body = Dialogs.Stack(
+                AppTheme.SectionLabel(T("Language")),
+                Choice(T("Automatic (system)"), "lang", _settings.Language == "auto", () => Language("auto")),
+                Choice("English", "lang", _settings.Language == "en", () => Language("en")),
+                Choice("Magyar", "lang", _settings.Language == "hu", () => Language("hu")),
+                restartHint,
+                AppTheme.SectionLabel(T("Appearance")),
+                Choice(T("System"), "theme", _settings.Theme == ThemeMode.System, () => SetThemeMode(ThemeMode.System)),
+                Choice(T("Light"), "theme", _settings.Theme == ThemeMode.Light, () => SetThemeMode(ThemeMode.Light)),
+                Choice(T("Dark"), "theme", _settings.Theme == ThemeMode.Dark, () => SetThemeMode(ThemeMode.Dark)));
+            await Dialogs.InfoAsync(this, T("Settings"), body, width: 360);
+            RefreshMenuChecks();
         }
 
         /// <summary>The horizontal in-window menu strip (Windows/Linux).</summary>
@@ -262,8 +319,8 @@ namespace RasterField
         private MenuItem ToMenuItem(Cmd cmd)
         {
             var mi = new MenuItem { Header = T(cmd.Header) };
-            if (cmd.Header == "Open _recent") _recentMenu = mi;
-            if (cmd.Gesture != null) mi.InputGesture = cmd.Gesture;
+            if (cmd.Header == RecentMenuHeader) _recentMenu = mi;
+            mi.InputGesture = cmd.PlatformGesture ?? (cmd.ToolKey is Key key ? new KeyGesture(key) : null);
             if (cmd.IsChecked != null)
             {
                 mi.ToggleType = cmd.Radio ? MenuItemToggleType.Radio : MenuItemToggleType.CheckBox;
@@ -294,14 +351,8 @@ namespace RasterField
 
         private NativeMenuItem ToNativeMenuItem(Cmd cmd)
         {
-            string header = T(cmd.Header).Replace("_", string.Empty, StringComparison.Ordinal).Replace("&&", "&", StringComparison.Ordinal);
-            var mi = new NativeMenuItem(header);
-            if (cmd.Gesture != null)
-            {
-                var mods = cmd.Gesture.KeyModifiers;
-                if (mods.HasFlag(KeyModifiers.Control)) mods = (mods & ~KeyModifiers.Control) | KeyModifiers.Meta;
-                mi.Gesture = new KeyGesture(cmd.Gesture.Key, mods);
-            }
+            var mi = new NativeMenuItem(MenuText(cmd.Header));
+            if (cmd.PlatformGesture is { } gesture) mi.Gesture = gesture;
             if (cmd.IsChecked != null)
             {
                 mi.ToggleType = cmd.Radio ? NativeMenuItemToggleType.Radio : NativeMenuItemToggleType.CheckBox;
@@ -313,7 +364,7 @@ namespace RasterField
                 var run = cmd.Run;
                 mi.Click += (_, _) => { run(); RefreshMenuChecks(); };
             }
-            if (cmd.Header == "Open _recent")
+            if (cmd.Header == RecentMenuHeader)
             {
                 mi.Menu = new NativeMenu();
                 _nativeRecentMenu = mi.Menu;
@@ -350,14 +401,14 @@ namespace RasterField
             if (e.KeyModifiers != KeyModifiers.None) return false;
             if (FocusManager?.GetFocusedElement() is TextBox or NumericUpDown or ComboBox) return false;
             bool pathActive = _view.PathToolMode != PathTool.None;
+            if (Flatten(BuildMenuModel()).FirstOrDefault(c => c.ToolKey == e.Key && c.Run != null) is { } tool)
+            {
+                tool.Run!();
+                RefreshMenuChecks();
+                return true;
+            }
             switch (e.Key)
             {
-                case Key.I: SetIdentifyToolActive(!_view.IdentifyMode); break;
-                case Key.P: SetPathTool(_view.PathToolMode == PathTool.Profile ? PathTool.None : PathTool.Profile); break;
-                case Key.M: SetPathTool(_view.PathToolMode == PathTool.Measure ? PathTool.None : PathTool.Measure); break;
-                case Key.Z: SetPathTool(_view.PathToolMode == PathTool.Zone ? PathTool.None : PathTool.Zone); break;
-                case Key.C: SetClipToolActive(!_view.SelectionMode); break;
-                case Key.G: _view.ShowGrid = !_view.ShowGrid; _view.InvalidateVisual(); break;
                 case Key.B: SetDisplayResampling(_view.DisplayResampling == DisplayResampling.Bezier ? DisplayResampling.Nearest : DisplayResampling.Bezier); break;
                 case Key.Tab when ReferenceEquals(FocusManager?.GetFocusedElement(), _view): CycleActiveLayer(); break;
                 case Key.Back when pathActive: _view.RemoveLastPathVertex(); break;
@@ -375,17 +426,11 @@ namespace RasterField
         private bool HandleMenuGesture(KeyEventArgs e)
         {
             if (e.KeyModifiers == KeyModifiers.None && e.Key is not (Key.F9 or Key.F10 or Key.F11)) return false;
-            if (e.KeyModifiers == KeyModifiers.Control && e.Key is Key.Z or Key.Y && FocusManager?.GetFocusedElement() is TextBox) return false;
+            // A focused text field keeps its own undo/redo.
+            if (e.Key is Key.Z or Key.Y && FocusManager?.GetFocusedElement() is TextBox) return false;
             foreach (var cmd in Flatten(BuildMenuModel()))
             {
-                var g = cmd.Gesture;
-                if (g == null || cmd.Run == null) continue;
-                bool match = g.Key == e.Key && g.KeyModifiers == e.KeyModifiers
-                    || (e.Key == Key.Add && g.Key == Key.OemPlus && g.KeyModifiers == e.KeyModifiers)
-                    || (e.Key == Key.Subtract && g.Key == Key.OemMinus && g.KeyModifiers == e.KeyModifiers)
-                    || (OperatingSystem.IsMacOS() && g.KeyModifiers.HasFlag(KeyModifiers.Control) && g.Key == e.Key
-                        && e.KeyModifiers == ((g.KeyModifiers & ~KeyModifiers.Control) | KeyModifiers.Meta));
-                if (!match) continue;
+                if (cmd.PlatformGesture is not { } g || cmd.Run == null || !Shortcuts.Matches(g, e)) continue;
                 cmd.Run();
                 RefreshMenuChecks();
                 return true;
@@ -411,14 +456,54 @@ namespace RasterField
             _view.SetActiveLayer(real[(i + 1) % real.Count]);
         }
 
-        private async Task ShowShortcutsAsync() => await MessageAsync(T("Keyboard shortcuts"), T(
-            "Ctrl+S  save project · Ctrl+O  open · Ctrl+Shift+O  add layer · Ctrl+Shift+S  save dataset as\n" +
-            "Ctrl+Z / Ctrl+Y  undo / redo · Ctrl+K  command palette · Ctrl+B  Bézier subdivision\n" +
-            "Ctrl+Shift+D  add bookmark · Ctrl+1…9  go to bookmark · F9 / F10 / F11  panels / map only\n" +
-            "Ctrl+0 / F  zoom to fit · Ctrl+± / wheel  zoom · arrows  pan\n" +
-            "I  identify · P  profile · M  measure · Z  zone · C  clip · G  cell grid · B  Bézier display smoothing\n" +
-            "Path tools: click adds a point, drag moves it, dragging a segment midpoint inserts one, double-click / Enter finishes, Backspace removes the last point, Esc clears\n" +
-            "Tab (on the map)  next raster layer"));
+        /// <summary>
+        /// The shortcut list, generated from the menu model (so it never goes stale and shows the
+        /// platform's notation — ⌘ on macOS), plus the map's own keys and mouse gestures.
+        /// </summary>
+        private async Task ShowShortcutsAsync()
+        {
+            var rows = new List<(string, Control)>();
+            void Section(string title)
+            {
+                var label = AppTheme.SectionLabel(title);
+                label.Tag = "section";
+                rows.Add((string.Empty, label));
+            }
+            void Row(string keys, string action) => rows.Add((keys, new TextBlock { Text = action, TextWrapping = TextWrapping.Wrap }));
+
+            foreach (var top in BuildMenuModel())
+            {
+                var withKeys = Flatten(top.Children).Where(c => c.Run != null && (c.PlatformGesture != null || c.ToolKey != null)).ToList();
+                if (withKeys.Count == 0) continue;
+                Section(MenuText(top.Header));
+                foreach (var cmd in withKeys)
+                    Row(cmd.PlatformGesture is { } g ? Shortcuts.Text(g) : Shortcuts.KeyText(cmd.ToolKey!.Value), MenuText(cmd.Header));
+            }
+            Section(T("Map"));
+            Row("B", T("Bézier display smoothing on / off"));
+            Row(Shortcuts.KeyText(Key.Tab), T("Next raster layer (map focused)"));
+            Row(T("Drag · wheel · arrows"), T("Pan · zoom · pan"));
+            Section(T("Path tools (profile, measure, zone)"));
+            Row(T("Click"), T("Add a point"));
+            Row(T("Drag"), T("Move a point · drag a segment's midpoint to insert one"));
+            Row(T("Double-click") + " / " + Shortcuts.KeyText(Key.Enter), T("Finish"));
+            Row(Shortcuts.KeyText(Key.Back), T("Remove the last point"));
+            Row(Shortcuts.KeyText(Key.Escape), T("Clear the path, then close the tool"));
+
+            var form = Dialogs.Form(rows.ToArray());
+            foreach (var header in form.Children.OfType<TextBlock>().Where(t => Equals(t.Tag, "section")).ToList())
+            {
+                Grid.SetColumn(header, 0); // section titles span both columns
+                Grid.SetColumnSpan(header, 2);
+            }
+            foreach (var child in form.Children.OfType<TextBlock>().Where(t => Grid.GetColumn(t) == 0))
+            {
+                child.FontFeatures = new FontFeatureCollection { FontFeature.Parse("tnum") };
+                child.Foreground = AppTheme.TextSecondary;
+                child.MinWidth = 90;
+            }
+            await Dialogs.InfoAsync(this, T("Keyboard shortcuts"), new ScrollViewer { Content = form, MaxHeight = 560 }, width: 520);
+        }
 
     }
 }

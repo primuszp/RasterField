@@ -57,8 +57,6 @@ namespace RasterField
         private int _zoneGeneration;
         private DockPanel? _mainShell;
 
-        private static readonly FilePickerFileType[] CsvTypes = { new("CSV (*.csv)") { Patterns = new[] { "*.csv" } } };
-        private static readonly FilePickerFileType[] GeoJsonTypes = { new("GeoJSON (*.geojson)") { Patterns = new[] { "*.geojson", "*.json" } } };
         private static readonly LayerBlendMode[] BlendModes = Enum.GetValues<LayerBlendMode>();
 
         // ---- layout -----------------------------------------------------------------
@@ -129,7 +127,14 @@ namespace RasterField
 
         private Border BuildLeftDock()
         {
-            var addLayerBtn = new Button { Content = T("+ Add layer…"), HorizontalAlignment = HorizontalAlignment.Stretch };
+            var addLayerBtn = new Button
+            {
+                Content = T("+ Add layer…"),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 4, 0, 0),
+            };
+            addLayerBtn.Classes.Add("ghost");
             addLayerBtn.Click += async (_, _) => await AddLayerDialogAsync();
 
             var layersStack = new StackPanel { Spacing = 2, Margin = new Thickness(10, 0, 10, 8) };
@@ -337,13 +342,18 @@ namespace RasterField
             var scroll = new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
 
             var legendGroup = new DockPanel { Margin = new Thickness(8, 0, 8, 8) };
+            // The legend sits below a hairline, its label aligned with the section labels above.
             var legendLabel = AppTheme.SectionLabel(T("Legend"));
-            legendLabel.Margin = new Thickness(4, 8, 0, 4);
-            DockPanel.SetDock(_legend, Dock.Bottom);
-            DockPanel.SetDock(legendLabel, Dock.Bottom);
+            legendLabel.Margin = new Thickness(14, 10, 0, 4);
             _legend.Height = 136;
-            legendGroup.Children.Add(_legend);
-            legendGroup.Children.Add(legendLabel);
+            var legendBox = new DockPanel();
+            DockPanel.SetDock(legendLabel, Dock.Top);
+            legendBox.Children.Add(legendLabel);
+            legendBox.Children.Add(_legend);
+            var legendFrame = new Border { BorderThickness = new Thickness(0, 1, 0, 0), Child = legendBox };
+            legendFrame.Bind(Border.BorderBrushProperty, legendFrame.GetResourceObservable("RfBorderBrush"));
+            DockPanel.SetDock(legendFrame, Dock.Bottom);
+            legendGroup.Children.Add(legendFrame);
             legendGroup.Children.Add(scroll);
 
             return new Border { Background = AppTheme.PanelBackground, BorderBrush = AppTheme.Border, BorderThickness = new Thickness(1, 0, 0, 0), Child = legendGroup };
@@ -451,7 +461,7 @@ namespace RasterField
             }
         }
 
-        private string DistanceUnit() => _view.Document?.Header.CoordinateSpace.EffectiveUnits ?? "m";
+        private string DistanceUnit() => L.UnitName(_view.Document?.Header.CoordinateSpace.EffectiveUnits ?? "m");
 
         private static readonly Color[] SeriesColors =
         {
@@ -530,27 +540,9 @@ namespace RasterField
             foreach (ProfileLayerRequest request in requests)
             {
                 token.ThrowIfCancellationRequested();
-                IReadOnlyList<ProfileSample> samples;
-                if (request.Raster != null)
-                {
-                    samples = RasterProfiler.SamplePolylineWorld(request.Raster, request.GeoReference, path, spacing);
-                }
-                else
-                {
-                    IRasterSource? ownedSource = null;
-                    try
-                    {
-                        IRasterSource source = request.SourceFactory != null
-                            ? ownedSource = request.SourceFactory()
-                            : request.Source!;
-                        samples = RasterProfiler.SamplePolylineWorld(
-                            source, request.GeoReference, path, spacing, request.Band, cancellationToken: token);
-                    }
-                    finally
-                    {
-                        ownedSource?.Dispose();
-                    }
-                }
+                IReadOnlyList<ProfileSample> samples = ReadLayer(request.Raster, request.Source, request.SourceFactory,
+                    raster => RasterProfiler.SamplePolylineWorld(raster, request.GeoReference, path, spacing),
+                    source => RasterProfiler.SamplePolylineWorld(source, request.GeoReference, path, spacing, request.Band, cancellationToken: token));
 
                 series.Add(new ProfileSeries(request.Name, samples, request.Color));
                 if (!request.IsActive) continue;
@@ -683,27 +675,9 @@ namespace RasterField
             foreach (ZoneLayerRequest request in requests)
             {
                 token.ThrowIfCancellationRequested();
-                ZonalResult result;
-                if (request.Raster != null)
-                {
-                    result = ZonalStatistics.Compute(request.Raster, request.GeoReference, path, token);
-                }
-                else
-                {
-                    IRasterSource? ownedSource = null;
-                    try
-                    {
-                        IRasterSource source = request.SourceFactory != null
-                            ? ownedSource = request.SourceFactory()
-                            : request.Source!;
-                        result = ZonalStatistics.Compute(
-                            source, request.GeoReference, path, request.Band, cancellationToken: token);
-                    }
-                    finally
-                    {
-                        ownedSource?.Dispose();
-                    }
-                }
+                ZonalResult result = ReadLayer(request.Raster, request.Source, request.SourceFactory,
+                    raster => ZonalStatistics.Compute(raster, request.GeoReference, path, token),
+                    source => ZonalStatistics.Compute(source, request.GeoReference, path, request.Band, cancellationToken: token));
                 results.Add(new ZoneLayerResult(request.Name, result));
             }
             return results;
@@ -717,6 +691,20 @@ namespace RasterField
                 : L.F("  cells {0:N0} (+{1:N0} no-data) · min {2:g6} · max {3:g6}\n  mean {4:g6} · σ {5:g6} · sum {6:g6}",
                     result.Count, result.NoDataCount, result.Minimum, result.Maximum,
                     result.Mean, result.StandardDeviation, result.Sum));
+        }
+
+        /// <summary>
+        /// Runs a computation on a layer captured for a background thread: on its in-memory raster
+        /// when loaded, otherwise on its streaming source — a fresh one from the factory when there
+        /// is one (closed afterwards), so the worker never shares the view's own reader.
+        /// </summary>
+        private static TResult ReadLayer<TResult>(Raster? raster, IRasterSource? source, Func<IRasterSource>? sourceFactory,
+            Func<Raster, TResult> loaded, Func<IRasterSource, TResult> streamed)
+        {
+            if (raster != null) return loaded(raster);
+            IRasterSource? owned = null;
+            try { return streamed(sourceFactory != null ? owned = sourceFactory() : source!); }
+            finally { owned?.Dispose(); }
         }
 
         private sealed record ZoneLayerRequest(string Name, Raster? Raster, IRasterSource? Source,
@@ -821,36 +809,22 @@ namespace RasterField
                 text.AppendLine(L.F("#{0} {1}: n={2:N0}  min {3:g5}  max {4:g5}  mean {5:g5}  σ {6:g5}", i, item.Attribute ?? "", z.Count, z.Minimum, z.Maximum, z.Mean, z.StandardDeviation));
             }
 
-            var dialog = new Window
-            {
-                Title = L.F("Zonal statistics — {0} × {1}", raster.Name, layer.Name),
-                Width = 640, Height = 420, WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            };
-            var export = new Button { Content = T("Export CSV…") };
+            var export = Dialogs.Secondary(T("Export CSV…"));
             export.Click += async (_, _) =>
             {
-                var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-                {
-                    Title = T("Export zonal statistics"), DefaultExtension = "csv", SuggestedFileName = "zonal.csv",
-                    FileTypeChoices = CsvTypes,
-                });
-                var path = file?.TryGetLocalPath();
+                var path = await Dialogs.SavePathAsync(this, T("Export zonal statistics"), "zonal.csv", FileTypes.Only(FileTypes.Csv));
                 if (!string.IsNullOrEmpty(path)) File.WriteAllLines(path!, rows);
             };
-            var close = new Button { Content = T("Close") };
-            close.Click += (_, _) => dialog.Close();
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(12), Children = { export, close } };
-            var root = new DockPanel();
-            DockPanel.SetDock(buttons, Dock.Bottom);
-            root.Children.Add(buttons);
-            root.Children.Add(new ScrollViewer
-            {
-                Margin = new Thickness(12, 12, 12, 0),
-                Content = new SelectableTextBlock { Text = text.ToString(), FontFamily = new FontFamily("monospace"), FontSize = 12 },
-            });
-            dialog.Content = root;
-            await dialog.ShowDialog(this);
+            await Dialogs.InfoAsync(this, L.F("Zonal statistics — {0} × {1}", raster.Name, layer.Name), MonospaceText(text.ToString()),
+                width: 640, height: 420, export);
         }
+
+        /// <summary>A scrollable, selectable block of fixed-width text (headers, tables).</summary>
+        private static ScrollViewer MonospaceText(string text) => new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+            Content = new SelectableTextBlock { Text = text, FontFamily = AppTheme.MonospaceFont, FontSize = 12 },
+        };
 
         private static string Inv(double v) => double.IsNaN(v) ? "" : v.ToString("g9", CultureInfo.InvariantCulture);
 
@@ -906,7 +880,7 @@ namespace RasterField
                 ? "—"
                 : L.F("data {0:g4} … {1:g4}  (µ {2:g4}, σ {3:g4}){4}", stats.Minimum, stats.Maximum, stats.Mean, stats.StandardDeviation,
                     _view.IsStreaming ? T(", approx.") : "");
-            _infoText.Text = string.Format(CultureInfo.InvariantCulture,
+            _infoText.Text = string.Format(CultureInfo.CurrentCulture,
                 "{0}  |  {1}×{2}  {3}  {4}  |  {5}{6}",
                 active.Name, header.RasterInfo.NrOfCellsPerLine, header.RasterInfo.NrOfLines,
                 header.RasterInfo.CellType, crs, statsText, _view.IsStreaming ? "  |  " + T("streaming (large dataset)") : "");
@@ -914,7 +888,7 @@ namespace RasterField
             _metaText.Text = L.F("{0}\n{1}×{2} cells · {3} band(s) · {4} · {5}\ncell {6:g6} × {7:g6} {8} · rotation {9:g4}°\n{10}\n{11}",
                 active.Name, header.RasterInfo.NrOfCellsPerLine, header.RasterInfo.NrOfLines, active.BandCount,
                 header.RasterInfo.CellType, header.ByteOrder, header.RasterInfo.CellSizeX, header.RasterInfo.CellSizeY,
-                header.CoordinateSpace.EffectiveUnits, header.CoordinateSpace.Rotation.Degrees, crs,
+                L.UnitName(header.CoordinateSpace.EffectiveUnits), header.CoordinateSpace.Rotation.Degrees, crs,
                 active.Document.HeaderPath ?? T("(in memory — not saved)"));
 
             _derivationGroup.IsVisible = active.Lineage != null || active.IsUnsaved;
@@ -936,11 +910,11 @@ namespace RasterField
                 _coordText.Text = _cellText.Text = _valueText.Text = "";
                 return;
             }
-            _coordText.Text = string.Format(CultureInfo.InvariantCulture, "E {0:0.###}   N {1:0.###}", r.WorldX, r.WorldY);
+            _coordText.Text = L.F("E {0:0.###}   N {1:0.###}", r.WorldX, r.WorldY);
             if (_view.ActiveLayer?.IsFrame == true) { _cellText.Text = _valueText.Text = ""; return; }
             _cellText.Text = r.InsideRaster ? L.F("cell [{0}, {1}]", r.Column, r.Row) : T("cell —");
             _valueText.Text = r.Value.HasValue
-                ? T("value") + " " + r.Value.Value.ToString("g6", CultureInfo.InvariantCulture)
+                ? T("value") + " " + L.Num(r.Value.Value)
                 : (r.InsideRaster ? T("value (no-data)") : T("value —"));
         }
 
@@ -954,19 +928,7 @@ namespace RasterField
         {
             var doc = _view.Document;
             if (doc == null || _view.ActiveLayer?.IsFrame == true) return;
-            var dialog = new Window { Title = T("ERS header") + " — " + _view.ActiveLayer!.Name, Width = 620, Height = 560, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-            var close = new Button { Content = T("Close"), HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(12) };
-            close.Click += (_, _) => dialog.Close();
-            var root = new DockPanel();
-            DockPanel.SetDock(close, Dock.Bottom);
-            root.Children.Add(close);
-            root.Children.Add(new ScrollViewer
-            {
-                Margin = new Thickness(12, 12, 12, 0),
-                Content = new SelectableTextBlock { Text = doc.Header.ToErsText(), FontFamily = new FontFamily("monospace"), FontSize = 12 },
-            });
-            dialog.Content = root;
-            await dialog.ShowDialog(this);
+            await Dialogs.InfoAsync(this, T("ERS header") + " — " + _view.ActiveLayer!.Name, MonospaceText(doc.Header.ToErsText()), width: 620, height: 560);
         }
 
         // ---- layer cards --------------------------------------------------------------------
@@ -1306,14 +1268,7 @@ namespace RasterField
         private async Task ExportVectorAsync(VectorLayer layer, string format)
         {
             bool csv = format == "csv";
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = csv ? T("Export points as CSV") : T("Export GeoJSON"),
-                DefaultExtension = csv ? "csv" : "geojson",
-                SuggestedFileName = SafeFileName(layer.Name) + (csv ? ".csv" : ".geojson"),
-                FileTypeChoices = csv ? CsvTypes : GeoJsonTypes,
-            });
-            var path = file?.TryGetLocalPath();
+            var path = await Dialogs.SavePathAsync(this, csv ? T("Export points as CSV") : T("Export GeoJSON"), SafeFileName(layer.Name) + (csv ? ".csv" : ".geojson"), csv ? FileTypes.Only(FileTypes.Csv) : FileTypes.Only(FileTypes.GeoJson));
             if (string.IsNullOrEmpty(path)) return;
             try
             {
@@ -1328,39 +1283,46 @@ namespace RasterField
 
         private async Task ShowCommandPaletteAsync()
         {
-            var commands = new List<(string Path, Action Run)>();
+            var commands = new List<(string Path, string Keys, Action Run)>();
             void Walk(Cmd cmd, string prefix)
             {
-                string name = T(cmd.Header).Replace("_", string.Empty, StringComparison.Ordinal).Replace("&&", "&", StringComparison.Ordinal);
+                string name = MenuText(cmd.Header);
                 string path = prefix.Length == 0 ? name : prefix + " ▸ " + name;
-                if (cmd.Run != null) commands.Add((path, cmd.Run));
+                string keys = cmd.PlatformGesture is { } g ? Shortcuts.Text(g) : cmd.ToolKey is Key k ? Shortcuts.KeyText(k) : "";
+                if (cmd.Run != null) commands.Add((path, keys, cmd.Run));
                 foreach (var child in cmd.Children) if (child != null) Walk(child, path);
             }
             foreach (var top in BuildMenuModel()) Walk(top, "");
 
             var box = new TextBox { Watermark = T("Type a command… (e.g. contour, bézier, undo)") };
-            var list = new ListBox { Height = 320 };
-            var dialog = new Window
+            var list = new ListBox { Height = 340 };
+            list.ItemTemplate = new Avalonia.Controls.Templates.FuncDataTemplate<(string Path, string Keys, Action Run)>((c, _) =>
             {
-                Title = T("Command palette"), Width = 520, SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner, CanResize = false,
-            };
+                var row = new DockPanel();
+                var keys = new TextBlock { Text = c.Keys, Foreground = AppTheme.TextSecondary, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+                DockPanel.SetDock(keys, Dock.Right);
+                row.Children.Add(keys);
+                row.Children.Add(new TextBlock { Text = c.Path, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center });
+                return row;
+            });
+            var empty = Dialogs.Hint(T("No matching command."));
+            var window = Dialogs.CreateWindow(T("Command palette"), 560);
 
-            List<(string Path, Action Run)> shown = commands;
+            List<(string Path, string Keys, Action Run)> shown = commands;
             void Filter()
             {
-                string q = Fold(box.Text ?? "");
-                var words = q.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var words = Fold(box.Text ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 shown = commands.Where(c => words.All(w => Fold(c.Path).Contains(w, StringComparison.Ordinal))).ToList();
-                list.ItemsSource = shown.Select(c => c.Path).ToList();
+                list.ItemsSource = shown;
                 if (shown.Count > 0) list.SelectedIndex = 0;
+                empty.IsVisible = shown.Count == 0;
             }
             void Run()
             {
                 int i = list.SelectedIndex;
                 if (i < 0 || i >= shown.Count) return;
                 var action = shown[i].Run;
-                dialog.Close();
+                window.Close();
                 Dispatcher.UIThread.Post(() => { action(); RefreshMenuChecks(); });
             }
             box.TextChanged += (_, _) => Filter();
@@ -1369,15 +1331,15 @@ namespace RasterField
                 if (e.Key == Key.Down && list.ItemCount > 0) { list.SelectedIndex = Math.Min(list.ItemCount - 1, list.SelectedIndex + 1); e.Handled = true; }
                 else if (e.Key == Key.Up && list.ItemCount > 0) { list.SelectedIndex = Math.Max(0, list.SelectedIndex - 1); e.Handled = true; }
                 else if (e.Key == Key.Enter) { Run(); e.Handled = true; }
-                else if (e.Key == Key.Escape) dialog.Close();
+                else if (e.Key == Key.Escape) window.Close();
             };
             list.DoubleTapped += (_, _) => Run();
-            list.KeyDown += (_, e) => { if (e.Key == Key.Enter) Run(); };
+            list.KeyDown += (_, e) => { if (e.Key == Key.Enter) Run(); else if (e.Key == Key.Escape) window.Close(); };
 
-            dialog.Content = new StackPanel { Margin = new Thickness(12), Spacing = 8, Children = { box, list } };
-            dialog.Opened += (_, _) => box.Focus();
+            window.Content = new StackPanel { Margin = new Thickness(16), Spacing = 8, Children = { box, empty, list } };
+            window.Opened += (_, _) => box.Focus();
             Filter();
-            await dialog.ShowDialog(this);
+            await window.ShowDialog(this);
         }
 
         /// <summary>Lower-case, accent-free text for forgiving matching ("bezier" finds "Bézier", "szintvonal" finds "Szintvonal").</summary>

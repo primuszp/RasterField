@@ -1,7 +1,10 @@
+using System;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
-using Avalonia.Themes.Fluent;
+using Avalonia.Input;
+using Avalonia.Platform.Storage;
 
 namespace RasterField
 {
@@ -18,22 +21,11 @@ namespace RasterField
             AppStyles.AddResources(Resources);
             L.SetLanguage(AppSettings.Load().Language);
 
-            // macOS application menu: must be set here, before the platform builds the menu bar,
-            // to replace Avalonia's default "About Avalonia" item (too late once startup has
-            // completed). The system appends its standard Services / Hide / Quit items.
-            if (System.OperatingSystem.IsMacOS())
-            {
-                var about = new NativeMenuItem(L.T("About RasterField…"));
-                about.Click += (_, _) =>
-                {
-                    if ((ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow is MainWindow main)
-                        _ = main.ShowAboutAsync();
-                };
-                NativeMenu.SetMenu(this, new NativeMenu { about });
-            }
+            // Must be set here, before the platform builds the menu bar.
+            BuildApplicationMenu();
 
             // Follow the OS light/dark setting by default (live — FluentTheme reacts to it
-            // automatically), unless the user has explicitly forced one from View ▸ Theme.
+            // automatically), unless the user has explicitly chosen one in Settings.
             RequestedThemeVariant = AppSettings.Load().Theme switch
             {
                 ThemeMode.Light => Avalonia.Styling.ThemeVariant.Light,
@@ -42,27 +34,54 @@ namespace RasterField
             };
         }
 
+        private MainWindow? Main => (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow as MainWindow;
+
+        /// <summary>
+        /// The macOS application menu, localised like the rest of the app (Avalonia's default items
+        /// are English-only, so they are switched off in <see cref="Program.BuildAvaloniaApp"/>):
+        /// About, Settings… (⌘,), Hide (⌘H) and Quit (⌘Q) — Quit goes through the main window's
+        /// close, so the warning about unsaved layers still applies. Rebuilt after a language change.
+        /// </summary>
+        public void BuildApplicationMenu()
+        {
+            if (!OperatingSystem.IsMacOS()) return;
+            NativeMenuItem Item(string header, Action run, KeyGesture? gesture = null)
+            {
+                var item = new NativeMenuItem(header) { Gesture = gesture };
+                item.Click += (_, _) => run();
+                return item;
+            }
+            var menu = new NativeMenu
+            {
+                Item(L.T("About RasterField…"), () => _ = Main?.ShowAboutAsync()),
+                new NativeMenuItemSeparator(),
+                Item(L.T("Settings…"), () => _ = Main?.ShowSettingsAsync(), new KeyGesture(Key.OemComma, KeyModifiers.Meta)),
+                new NativeMenuItemSeparator(),
+                Item(L.T("Hide RasterField"), () => (TryGetFeature(typeof(IActivatableLifetime)) as IActivatableLifetime)?.TryEnterBackground(), new KeyGesture(Key.H, KeyModifiers.Meta)),
+                new NativeMenuItemSeparator(),
+                Item(L.T("Quit RasterField"), () => Main?.Close(), new KeyGesture(Key.Q, KeyModifiers.Meta)),
+            };
+            NativeMenu.SetMenu(this, menu);
+        }
+
         public override void OnFrameworkInitializationCompleted()
         {
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
                 var window = new MainWindow();
                 desktop.MainWindow = window;
+                if (Program.StartupPaths.Count > 0)
+                    window.Opened += async (_, _) => await window.OpenPathsAsync(Program.StartupPaths);
 
-                if (Program.StartupProject != null)
-                    window.Opened += async (_, _) => await window.LoadProjectAsync(Program.StartupProject);
-                else if (Program.StartupFiles.Length > 0 || Program.StartupVectorFiles.Length > 0)
+                // macOS: files opened from the Finder, dropped on the Dock icon or chosen with
+                // "Open With" arrive as an activation (they are not command-line arguments there).
+                if (TryGetFeature(typeof(IActivatableLifetime)) is IActivatableLifetime activatable)
                 {
-                    window.Opened += (_, _) =>
+                    activatable.Activated += async (_, e) =>
                     {
-                        if (Program.StartupFiles.Length > 0)
-                        {
-                            window.OpenDataset(Program.StartupFiles[0]);
-                            for (int i = 1; i < Program.StartupFiles.Length; i++)
-                                window.AddLayer(Program.StartupFiles[i]);
-                        }
-                        foreach (var path in Program.StartupVectorFiles)
-                            window.AddVectorLayer(path);
+                        if (e is not FileActivatedEventArgs files) return;
+                        var paths = files.Files.Select(f => f.TryGetLocalPath()).Where(p => !string.IsNullOrEmpty(p)).Select(p => p!).ToList();
+                        if (paths.Count > 0) await window.OpenPathsAsync(paths);
                     };
                 }
             }

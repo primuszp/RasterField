@@ -62,14 +62,7 @@ namespace RasterField
 
         private async Task SaveRasterLayerAsync(RasterLayer layer)
         {
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = L.F("Save raster layer “{0}”", layer.Name),
-                DefaultExtension = "ers",
-                SuggestedFileName = SafeFileName(layer.Name) + ".ers",
-                FileTypeChoices = RasterSaveFileTypeChoices,
-            });
-            var path = file?.TryGetLocalPath();
+            var path = await Dialogs.SavePathAsync(this, L.F("Save raster layer “{0}”", layer.Name), SafeFileName(layer.Name) + ".ers", FileTypes.SaveRaster);
             if (string.IsNullOrEmpty(path)) return;
 
             try
@@ -91,14 +84,7 @@ namespace RasterField
 
         private async Task SaveVectorLayerAsync(VectorLayer layer)
         {
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = L.F("Save vector layer “{0}”", layer.Name),
-                DefaultExtension = "erv",
-                SuggestedFileName = SafeFileName(layer.Name) + ".erv",
-                FileTypeChoices = ErvFileTypeChoices,
-            });
-            var path = file?.TryGetLocalPath();
+            var path = await Dialogs.SavePathAsync(this, L.F("Save vector layer “{0}”", layer.Name), SafeFileName(layer.Name) + ".erv", FileTypes.Only(FileTypes.ErvHeader));
             if (string.IsNullOrEmpty(path)) return;
 
             try
@@ -129,12 +115,8 @@ namespace RasterField
                 return;
             }
 
-            var names = layers.Select(l => l.Name).ToList();
-            int secondDefault = layers.IndexOf(_view.ActiveLayer!);
-            if (secondDefault < 0) secondDefault = layers.Count - 1;
-            int firstDefault = secondDefault == 0 ? 1 : 0;
-            var firstBox = new ComboBox { ItemsSource = names, SelectedIndex = firstDefault, HorizontalAlignment = HorizontalAlignment.Stretch };
-            var secondBox = new ComboBox { ItemsSource = names, SelectedIndex = secondDefault, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var start = Dialogs.Primary(T("Start comparison"));
+            var pair = new LayerPairPicker(layers, _view.ActiveLayer, start);
             var value = new NumericUpDown
             {
                 Minimum = mode == RasterComparisonMode.Swipe ? 2 : 100,
@@ -145,47 +127,18 @@ namespace RasterField
                 Width = 150,
                 HorizontalAlignment = HorizontalAlignment.Left,
             };
-            var tcs = new TaskCompletionSource<(int First, int Second, int Value)?>();
-            var dialog = new Window
-            {
-                Title = mode == RasterComparisonMode.Swipe ? T("Swipe comparison") : T("Blink comparison"),
-                Width = 420,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-            var start = new Button { Content = T("Start comparison"), MinWidth = 120 };
-            var cancel = new Button { Content = T("Cancel"), MinWidth = 80 };
-            start.Click += (_, _) =>
-            {
-                tcs.TrySetResult((firstBox.SelectedIndex, secondBox.SelectedIndex, (int)(value.Value ?? 0)));
-                dialog.Close();
-            };
-            cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 8,
-                Children =
-                {
-                    new TextBlock { Text = mode == RasterComparisonMode.Swipe
-                        ? T("The first layer is shown left of the draggable divider; the second is shown on the right.")
-                        : T("The display alternates between the first and second layer."), TextWrapping = TextWrapping.Wrap, Opacity = 0.85 },
-                    new TextBlock { Text = T("First layer") }, firstBox,
-                    new TextBlock { Text = T("Second layer") }, secondBox,
-                    new TextBlock { Text = mode == RasterComparisonMode.Swipe ? T("Initial divider position (%)") : T("Blink interval (milliseconds)") }, value,
-                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { start, cancel } },
-                },
-            };
-            await dialog.ShowDialog(this);
-            var choice = await tcs.Task;
+            var body = Dialogs.Stack(
+                Dialogs.Hint(mode == RasterComparisonMode.Swipe
+                    ? T("The first layer is shown left of the draggable divider; the second is shown on the right.")
+                    : T("The display alternates between the first and second layer.")),
+                Dialogs.Captioned(T("First layer"), pair.First),
+                Dialogs.Captioned(T("Second layer"), pair.Second),
+                pair.Warning,
+                Dialogs.Captioned(mode == RasterComparisonMode.Swipe ? T("Initial divider position (%)") : T("Blink interval (milliseconds)"), value));
+            var choice = await Dialogs.ShowAsync<(int First, int Second, int Value)?>(this,
+                mode == RasterComparisonMode.Swipe ? T("Swipe comparison") : T("Blink comparison"), body, start,
+                () => (pair.First.SelectedIndex, pair.Second.SelectedIndex, (int)(value.Value ?? 0)), null, width: 420);
             if (choice == null) return;
-            if (choice.Value.First == choice.Value.Second)
-            {
-                await MessageAsync(T("Visual comparison"), T("Choose two different raster layers."));
-                return;
-            }
 
             RasterLayer first = layers[choice.Value.First];
             RasterLayer second = layers[choice.Value.Second];
@@ -208,21 +161,16 @@ namespace RasterField
                 return;
             }
 
-            var names = layers.Select(l => l.Name).ToList();
-            int secondDefault = layers.IndexOf(_view.ActiveLayer!);
-            if (secondDefault < 0) secondDefault = layers.Count - 1;
-            int firstDefault = secondDefault == 0 ? 1 : 0;
             bool zoneAvailable = _view.IsPathFinished && _view.CurrentPath.Count >= 3;
-
-            var firstBox = new ComboBox { ItemsSource = names, SelectedIndex = firstDefault, HorizontalAlignment = HorizontalAlignment.Stretch };
-            var secondBox = new ComboBox { ItemsSource = names, SelectedIndex = secondDefault, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var run = Dialogs.Primary(T("Compare → new ΔZ layer"));
+            var pair = new LayerPairPicker(layers, _view.ActiveLayer, run);
             var thresholdBox = new NumericUpDown
             {
                 Value = 0,
                 Minimum = 0,
                 FormatString = "0.###",
                 Increment = 0.1m,
-                Width = 180,
+                Width = 160,
                 HorizontalAlignment = HorizontalAlignment.Left,
             };
             var zoneBox = new CheckBox
@@ -231,65 +179,28 @@ namespace RasterField
                 IsChecked = zoneAvailable,
                 IsEnabled = zoneAvailable,
             };
-            var tcs = new TaskCompletionSource<(int First, int Second, double Threshold, bool Zone)?>();
-            var dialog = new Window
-            {
-                Title = T("Compare rasters — ΔZ and volume"),
-                Width = 450,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-            var run = new Button { Content = T("Compare → new ΔZ layer"), MinWidth = 150 };
-            var cancel = new Button { Content = T("Cancel"), MinWidth = 80 };
-            var streamingHint = new TextBlock
-            {
-                Text = T("Large streamed layers produce statistics and volumes without creating an in-memory ΔZ layer."),
-                TextWrapping = TextWrapping.Wrap,
-                Foreground = AppTheme.TextSecondary,
-                IsVisible = false,
-            };
+            var streamingHint = Dialogs.Hint(T("Large streamed layers produce statistics and volumes without creating an in-memory ΔZ layer."));
             void UpdateComparisonMode()
             {
-                bool streaming = firstBox.SelectedIndex >= 0 && secondBox.SelectedIndex >= 0 &&
-                    (layers[firstBox.SelectedIndex].Raster == null || layers[secondBox.SelectedIndex].Raster == null);
+                bool streaming = pair.First.SelectedIndex >= 0 && pair.Second.SelectedIndex >= 0 &&
+                    (layers[pair.First.SelectedIndex].Raster == null || layers[pair.Second.SelectedIndex].Raster == null);
                 run.Content = streaming ? T("Compare → statistics") : T("Compare → new ΔZ layer");
                 streamingHint.IsVisible = streaming;
             }
-            firstBox.SelectionChanged += (_, _) => UpdateComparisonMode();
-            secondBox.SelectionChanged += (_, _) => UpdateComparisonMode();
+            pair.First.SelectionChanged += (_, _) => UpdateComparisonMode();
+            pair.Second.SelectionChanged += (_, _) => UpdateComparisonMode();
             UpdateComparisonMode();
-            run.Click += (_, _) =>
-            {
-                tcs.TrySetResult((firstBox.SelectedIndex, secondBox.SelectedIndex,
-                    (double)(thresholdBox.Value ?? 0), zoneBox.IsChecked == true));
-                dialog.Close();
-            };
-            cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 8,
-                Children =
-                {
-                    new TextBlock { Text = T("ΔZ is calculated as second raster minus first raster. The grids must match exactly."), TextWrapping = TextWrapping.Wrap, Opacity = 0.85 },
-                    new TextBlock { Text = T("First (baseline)") }, firstBox,
-                    new TextBlock { Text = T("Second (newer)") }, secondBox,
-                    new TextBlock { Text = T("Absolute change threshold") }, thresholdBox,
-                    zoneBox,
-                    streamingHint,
-                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { run, cancel } },
-                },
-            };
-            await dialog.ShowDialog(this);
-            var choice = await tcs.Task;
+            var body = Dialogs.Stack(
+                Dialogs.Hint(T("ΔZ is calculated as second raster minus first raster. The grids must match exactly.")),
+                Dialogs.Captioned(T("First (baseline)"), pair.First),
+                Dialogs.Captioned(T("Second (newer)"), pair.Second),
+                pair.Warning,
+                Dialogs.Captioned(T("Absolute change threshold"), thresholdBox),
+                zoneBox,
+                streamingHint);
+            var choice = await Dialogs.ShowAsync<(int First, int Second, double Threshold, bool Zone)?>(this, T("Compare rasters — ΔZ and volume"), body, run,
+                () => (pair.First.SelectedIndex, pair.Second.SelectedIndex, (double)(thresholdBox.Value ?? 0), zoneBox.IsChecked == true), null, width: 460);
             if (choice == null) return;
-            if (choice.Value.First == choice.Value.Second)
-            {
-                await MessageAsync(T("Compare rasters"), T("Choose two different raster layers."));
-                return;
-            }
 
             RasterLayer first = layers[choice.Value.First];
             RasterLayer second = layers[choice.Value.Second];
@@ -323,8 +234,7 @@ namespace RasterField
                 }
                 SetBusy(false);
 
-                string unit = first.Document.Header.CoordinateSpace.EffectiveUnits;
-                if (string.IsNullOrWhiteSpace(unit)) unit = T("map unit");
+                string unit = L.UnitName(first.Document.Header.CoordinateSpace.EffectiveUnits);
                 string scope = polygon == null ? T("Entire aligned grid") : T("Finished map zone");
                 if (materialized != null)
                 {
@@ -409,13 +319,12 @@ namespace RasterField
 
         private async Task<BezierChoice?> ShowBezierDialogAsync(RasterLayer layer, BezierChoice? initial = null)
         {
-            var tcs = new TaskCompletionSource<BezierChoice?>();
             int w = layer.DatasetWidth, h = layer.DatasetHeight;
             double cellX = layer.Document.Header.RasterInfo.CellSizeX, cellY = layer.Document.Header.RasterInfo.CellSizeY;
             string unit = layer.Document.Header.CoordinateSpace.EffectiveUnits;
             var viewWindow = _view.VisibleCellWindow();
 
-            var factorBox = new ComboBox { ItemsSource = new[] { T("×2"), T("×3"), T("×4"), T("×8") }, SelectedIndex = 2, Width = 90 };
+            var factorBox = new ComboBox { ItemsSource = new[] { "×2", "×3", "×4", "×8" }, SelectedIndex = 2, Width = 90 };
             var customFactor = new NumericUpDown { Minimum = 1, Maximum = 32, Value = 4, Increment = 1, Width = 110, FormatString = "0" };
             var customCheck = new CheckBox { Content = T("custom") };
             var areaFull = new RadioButton { Content = T("Whole layer"), IsChecked = true, GroupName = "bzArea" };
@@ -426,8 +335,7 @@ namespace RasterField
             var strict = new CheckBox { Content = T("Leave no-data where the 4×4 neighbourhood is incomplete (instead of bilinear fallback)") };
             var sizeText = new TextBlock { TextWrapping = TextWrapping.Wrap };
             var warnText = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = AppTheme.Danger };
-            var okBtn = new Button { Content = T("Apply → new layer"), MinWidth = 120 };
-            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
+            var okBtn = Dialogs.Primary(initial != null ? T("Recompute") : T("Apply → new layer"));
 
             var originalImage = new Image { Width = 200, Height = 200, Stretch = Stretch.Fill };
             var bezierImage = new Image { Width = 200, Height = 200, Stretch = Stretch.Fill };
@@ -451,21 +359,21 @@ namespace RasterField
             void Update()
             {
                 int k = Factor();
-                tensionText.Text = tension.Value.ToString("0.00", CultureInfo.InvariantCulture);
+                tensionText.Text = L.Num(tension.Value, "0.00");
                 bool view = areaView.IsChecked == true && viewWindow != null;
                 int sw = view ? viewWindow!.Value.Width : w, sh = view ? viewWindow!.Value.Height : h;
                 long cells = (long)sw * k * sh * k;
                 int bands = Math.Max(1, layer.BandCount);
                 double mb = cells * 4.0 * bands / (1024 * 1024);
-                sizeText.Text = string.Format(CultureInfo.InvariantCulture,
-                    "{0:0.###} × {1:0.###} {2} cells → {3:0.###} × {4:0.###} {2}  ·  {5}×{6} → {7:N0}×{8:N0}  ·  ≈ {9:0.#} MB in memory ({10} band{11})",
-                    cellX, cellY, unit, cellX / k, cellY / k, sw, sh, (long)sw * k, (long)sh * k, mb, bands, bands == 1 ? "" : "s");
+                sizeText.Text = L.F("{0:0.###} × {1:0.###} {2} cells → {3:0.###} × {4:0.###} {2}  ·  {5}×{6} → {7:N0}×{8:N0}  ·  ≈ {9:0.#} MB in memory ({10} band(s))",
+                    cellX, cellY, L.UnitName(unit), cellX / k, cellY / k, sw, sh, (long)sw * k, (long)sh * k, mb, bands);
 
                 bool tooBig = cells > int.MaxValue || mb > 2048;
                 warnText.Text = tooBig
                     ? T("Too large for one in-memory layer — choose a smaller factor or “Current view only” (or clip first).")
                     : layer.IsStreaming && !view ? T("Large streaming dataset: the whole raster has to be read. Consider “Current view only”.") : "";
                 okBtn.IsEnabled = !tooBig;
+                warnText.IsVisible = !string.IsNullOrEmpty(warnText.Text);
 
                 if (previewSource != null && layer.Colorizer != null)
                 {
@@ -486,27 +394,6 @@ namespace RasterField
             monotone.IsCheckedChanged += (_, _) => Update();
             strict.IsCheckedChanged += (_, _) => Update();
 
-            var dialog = new Window
-            {
-                Title = T("Bézier-patch subdivision"),
-                Width = 520,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-            okBtn.Click += (_, _) =>
-            {
-                tcs.TrySetResult(new BezierChoice(Factor(), tension.Value, monotone.IsChecked == true,
-                    strict.IsChecked == true ? BezierNoDataMode.NoData : BezierNoDataMode.FallbackBilinear,
-                    areaView.IsChecked == true && viewWindow != null));
-                dialog.Close();
-            };
-            cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-
-            TextBlock H(string t) => AppTheme.SectionLabel(t);
-            StackPanel Row(params Control[] c) { var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; foreach (var x in c) p.Children.Add(x); return p; }
-            StackPanel Captioned(string caption, Control c) { var p = new StackPanel { Spacing = 2 }; p.Children.Add(new TextBlock { Text = caption, Opacity = 0.8, FontSize = 11 }); p.Children.Add(c); return p; }
-
             var advanced = new Expander
             {
                 Header = T("Advanced"),
@@ -516,34 +403,34 @@ namespace RasterField
                     Spacing = 6,
                     Children =
                     {
-                        Row(new TextBlock { Text = T("Tension τ"), VerticalAlignment = VerticalAlignment.Center, Width = 70 }, tension, tensionText),
-                        new TextBlock { Text = T("1 = Catmull-Rom tangents (smooth, C¹) · 0 = exactly bilinear"), Opacity = 0.7, FontSize = 11 },
+                        Dialogs.Row(new TextBlock { Text = T("Tension τ"), VerticalAlignment = VerticalAlignment.Center, MinWidth = 70 }, tension, tensionText),
+                        Dialogs.Hint(T("1 = Catmull-Rom tangents (smooth, C¹) · 0 = exactly bilinear")),
                         monotone,
                         strict,
                     },
                 },
             };
 
-            dialog.Content = new StackPanel
+            sizeText.FontSize = AppTheme.FontCaption;
+            sizeText.Foreground = AppTheme.TextSecondary;
+            var body = new StackPanel
             {
-                Margin = new Thickness(16),
                 Spacing = 6,
                 Children =
                 {
-                    new TextBlock { Text = L.F("Source: {0}  ({1}×{2}, {3} band(s))", layer.Name, w, h, Math.Max(1, layer.BandCount)), TextWrapping = TextWrapping.Wrap },
-                    H("Subdivision"),
-                    Row(factorBox, customCheck, customFactor),
+                    Dialogs.Paragraph(L.F("Source: {0}  ({1}×{2}, {3} band(s))", layer.Name, w, h, Math.Max(1, layer.BandCount))),
+                    AppTheme.SectionLabel(T("Subdivision")),
+                    Dialogs.Row(factorBox, customCheck, customFactor),
                     sizeText,
-                    H("Area"),
-                    Row(areaFull, areaView),
+                    AppTheme.SectionLabel(T("Area")),
+                    Dialogs.Row(areaFull, areaView),
                     advanced,
-                    H(T("Preview (centre of the view, 16×16 cells)")),
+                    AppTheme.SectionLabel(T("Preview (centre of the view, 16×16 cells)")),
                     previewSource == null
-                        ? new TextBlock { Text = T("No preview for streaming or RGB layers."), Opacity = 0.7 }
-                        : Row(Captioned("original", originalImage), Captioned("Bézier", bezierImage)),
-                    new TextBlock { Text = T("ⓘ Interpolation smooths the surface — it does not add measured information."), Opacity = 0.75, FontSize = 11, TextWrapping = TextWrapping.Wrap },
+                        ? Dialogs.Hint(T("No preview for streaming or RGB layers."))
+                        : Dialogs.Row(Dialogs.Captioned(T("Original"), originalImage), Dialogs.Captioned(T("Bézier"), bezierImage)),
+                    Dialogs.Hint(T("ⓘ Interpolation smooths the surface — it does not add measured information.")),
                     warnText,
-                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { okBtn, cancelBtn } },
                 },
             };
             if (initial != null)
@@ -555,12 +442,13 @@ namespace RasterField
                 monotone.IsChecked = initial.Monotone;
                 strict.IsChecked = initial.NoData == BezierNoDataMode.NoData;
                 if (initial.ViewOnly) { areaView.IsEnabled = true; areaView.IsChecked = true; }
-                okBtn.Content = T("Recompute");
             }
             Update();
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
+            return await Dialogs.ShowAsync<BezierChoice?>(this, T("Bézier-patch subdivision"), body, okBtn,
+                () => new BezierChoice(Factor(), tension.Value, monotone.IsChecked == true,
+                    strict.IsChecked == true ? BezierNoDataMode.NoData : BezierNoDataMode.FallbackBilinear,
+                    areaView.IsChecked == true && viewWindow != null),
+                null, width: 540);
         }
 
         private async Task ShowBezierDisplaySettingsAsync()
@@ -570,39 +458,18 @@ namespace RasterField
             var monotone = new CheckBox { Content = T("Monotone (no overshoot)"), IsChecked = o.Monotone };
             var enable = new CheckBox { Content = T("Use Bézier display smoothing now"), IsChecked = _view.DisplayResampling == DisplayResampling.Bezier };
 
-            var dialog = new Window
-            {
-                Title = T("Bézier display smoothing"),
-                Width = 380,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-            var ok = new Button { Content = T("OK"), MinWidth = 80 };
-            ok.Click += (_, _) =>
-            {
-                o.Tension = tension.Value;
-                o.Monotone = monotone.IsChecked == true;
-                SetDisplayResampling(enable.IsChecked == true ? DisplayResampling.Bezier : (_view.DisplayResampling == DisplayResampling.Bezier ? DisplayResampling.Nearest : _view.DisplayResampling));
-                if (_view.ActiveLayer != null) _view.ActiveLayer.SmoothKey = null; // force a rebuild with the new options
-                _view.ZoomBy(1.0);
-                dialog.Close();
-            };
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 8,
-                Children =
-                {
-                    new TextBlock { Text = T("When magnified, the active layer's visible window is drawn as a bicubic Bézier-patch surface. Display only — the data is not changed."), TextWrapping = TextWrapping.Wrap },
-                    enable,
-                    new TextBlock { Text = T("Tension τ (1 = smooth Catmull-Rom, 0 = bilinear)") },
-                    tension,
-                    monotone,
-                    new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Children = { ok } },
-                },
-            };
-            await dialog.ShowDialog(this);
+            var body = Dialogs.Stack(
+                Dialogs.Paragraph(T("When magnified, the active layer's visible window is drawn as a bicubic Bézier-patch surface. Display only — the data is not changed.")),
+                enable,
+                Dialogs.Captioned(T("Tension τ (1 = smooth Catmull-Rom, 0 = bilinear)"), tension),
+                monotone);
+            bool apply = await Dialogs.ShowAsync(this, T("Bézier display smoothing"), body, Dialogs.Primary(T("OK")), () => true, false, width: 420);
+            if (!apply) return;
+            o.Tension = tension.Value;
+            o.Monotone = monotone.IsChecked == true;
+            SetDisplayResampling(enable.IsChecked == true ? DisplayResampling.Bezier : (_view.DisplayResampling == DisplayResampling.Bezier ? DisplayResampling.Nearest : _view.DisplayResampling));
+            if (_view.ActiveLayer != null) _view.ActiveLayer.SmoothKey = null; // force a rebuild with the new options
+            _view.ZoomBy(1.0);
         }
 
         // ---- contours ------------------------------------------------------------------
@@ -620,96 +487,43 @@ namespace RasterField
 
         private async Task<ContourChoice?> ShowContourDialogAsync(double dataMin, double dataMax, ContourChoice? initial = null)
         {
-            var tcs = new TaskCompletionSource<ContourChoice?>();
-
             double niceInterval = NiceInterval((dataMax - dataMin) / 12.0);
             NumericUpDown Num(double v, double min = double.MinValue) => new NumericUpDown
             {
                 Value = (decimal)v, FormatString = "0.###", Increment = (decimal)Math.Max(niceInterval, 1e-6),
-                Minimum = min == double.MinValue ? decimal.MinValue : (decimal)min, Width = 130, HorizontalAlignment = HorizontalAlignment.Left,
+                Minimum = min == double.MinValue ? decimal.MinValue : (decimal)min, Width = 140, HorizontalAlignment = HorizontalAlignment.Left,
             };
             var minBox = Num(Math.Floor(dataMin / niceInterval) * niceInterval);
             var maxBox = Num(Math.Ceiling(dataMax / niceInterval) * niceInterval);
             var intervalBox = Num(niceInterval, 1e-6);
-            var indexBox = new NumericUpDown { Value = 5, Minimum = 0, Maximum = 100, Increment = 1, FormatString = "0", Width = 130, HorizontalAlignment = HorizontalAlignment.Left };
-            var sourceBox = new ComboBox { ItemsSource = new[] { T("Original grid"), T("Bézier ×2 surface"), T("Bézier ×4 surface") }, SelectedIndex = 0, Width = 180 };
-            var smoothBox = new ComboBox { ItemsSource = new[] { T("None"), T("Chaikin 1×"), T("Chaikin 2×"), T("Chaikin 3×") }, SelectedIndex = 0, Width = 180 };
-            var minLenBox = new NumericUpDown { Value = 0, Minimum = 0, Increment = 10, FormatString = "0.##", Width = 130, HorizontalAlignment = HorizontalAlignment.Left };
-            var countText = new TextBlock { Opacity = 0.8 };
+            var indexBox = new NumericUpDown { Value = 5, Minimum = 0, Maximum = 100, Increment = 1, FormatString = "0", Width = 140, HorizontalAlignment = HorizontalAlignment.Left };
+            var sourceBox = new ComboBox { ItemsSource = new[] { T("Original grid"), T("Bézier ×2 surface"), T("Bézier ×4 surface") }, SelectedIndex = 0, MinWidth = 180 };
+            var smoothBox = new ComboBox { ItemsSource = new[] { T("None"), T("Chaikin 1×"), T("Chaikin 2×"), T("Chaikin 3×") }, SelectedIndex = 0, MinWidth = 180 };
+            var minLenBox = new NumericUpDown { Value = 0, Minimum = 0, Increment = 10, FormatString = "0.##", Width = 140, HorizontalAlignment = HorizontalAlignment.Left };
+            var countText = Dialogs.Hint("");
+            var okBtn = Dialogs.Primary(initial != null ? T("Recompute") : T("Apply → new layer"));
 
+            ContourOptions Options() => new ContourOptions
+            {
+                Minimum = (double)(minBox.Value ?? 0),
+                Maximum = (double)(maxBox.Value ?? 0),
+                Interval = (double)(intervalBox.Value ?? (decimal)niceInterval),
+                IndexEvery = (int)(indexBox.Value ?? 0),
+                SmoothingIterations = smoothBox.SelectedIndex,
+                MinimumLength = (double)(minLenBox.Value ?? 0),
+            };
             void UpdateCount()
             {
-                double i = (double)(intervalBox.Value ?? 0), lo = (double)(minBox.Value ?? 0), hi = (double)(maxBox.Value ?? 0);
-                int n = ContourGenerator.BuildLevels(lo, hi, i).Count;
-                countText.Text = n > 0 ? $"{n} level(s)" : "no levels in this range";
+                var o = Options();
+                int n = o.Interval > 0 ? ContourGenerator.BuildLevels(o.Minimum, o.Maximum, o.Interval).Count : 0;
+                countText.Text = n > 0 ? L.F("{0} level(s)", n) : T("⚠ no levels fall within this range/interval");
+                countText.Foreground = n > 0 ? AppTheme.TextSecondary : AppTheme.Danger;
+                okBtn.IsEnabled = n > 0;
             }
             minBox.ValueChanged += (_, _) => UpdateCount();
             maxBox.ValueChanged += (_, _) => UpdateCount();
             intervalBox.ValueChanged += (_, _) => UpdateCount();
 
-            var dialog = new Window
-            {
-                Title = T("Generate contours"),
-                Width = 420,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                CanResize = false,
-            };
-            var okBtn = new Button { Content = T("Apply → new layer"), MinWidth = 120 };
-            var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
-            okBtn.Click += (_, _) =>
-            {
-                var options = new ContourOptions
-                {
-                    Minimum = (double)(minBox.Value ?? 0),
-                    Maximum = (double)(maxBox.Value ?? 0),
-                    Interval = (double)(intervalBox.Value ?? (decimal)niceInterval),
-                    IndexEvery = (int)(indexBox.Value ?? 0),
-                    SmoothingIterations = smoothBox.SelectedIndex,
-                    MinimumLength = (double)(minLenBox.Value ?? 0),
-                };
-                if (!(options.Interval > 0) || ContourGenerator.BuildLevels(options.Minimum, options.Maximum, options.Interval).Count == 0)
-                {
-                    countText.Text = T("⚠ no levels fall within this range/interval");
-                    return;
-                }
-                tcs.TrySetResult(new ContourChoice(options, sourceBox.SelectedIndex switch { 1 => 2, 2 => 4, _ => 1 }));
-                dialog.Close();
-            };
-            cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-
-            Grid Form(params (string Label, Control Field)[] rows)
-            {
-                var g = new Grid { ColumnDefinitions = new ColumnDefinitions("150,*"), RowSpacing = 6 };
-                for (int r = 0; r < rows.Length; r++)
-                {
-                    g.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
-                    var label = new TextBlock { Text = rows[r].Label, VerticalAlignment = VerticalAlignment.Center };
-                    Grid.SetRow(label, r); Grid.SetRow(rows[r].Field, r); Grid.SetColumn(rows[r].Field, 1);
-                    g.Children.Add(label); g.Children.Add(rows[r].Field);
-                }
-                return g;
-            }
-
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 8,
-                Children =
-                {
-                    new TextBlock { Text = L.F("Data range: {0:g6} … {1:g6}", dataMin, dataMax) },
-                    Form((T("Minimum level"), minBox), (T("Maximum level"), maxBox), (T("Interval"), intervalBox), (T("Index contour every"), indexBox)),
-                    countText,
-                    new Expander
-                    {
-                        Header = T("Advanced"),
-                        HorizontalAlignment = HorizontalAlignment.Stretch,
-                        Content = Form((T("Source surface"), sourceBox), (T("Line smoothing"), smoothBox), (T("Min. line length"), minLenBox)),
-                    },
-                    new TextBlock { Text = T("Tip: a Bézier surface gives stair-free contours on coarse grids."), Opacity = 0.7, FontSize = 11, TextWrapping = TextWrapping.Wrap },
-                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { okBtn, cancelBtn } },
-                },
-            };
             if (initial != null)
             {
                 var o0 = initial.Options;
@@ -717,12 +531,22 @@ namespace RasterField
                 indexBox.Value = o0.IndexEvery; smoothBox.SelectedIndex = Math.Clamp(o0.SmoothingIterations, 0, 3);
                 minLenBox.Value = (decimal)o0.MinimumLength;
                 sourceBox.SelectedIndex = initial.SourceFactor switch { 2 => 1, 4 => 2, _ => 0 };
-                okBtn.Content = T("Recompute");
             }
             UpdateCount();
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
+
+            var body = Dialogs.Stack(
+                Dialogs.Paragraph(L.F("Data range: {0:g6} … {1:g6}", dataMin, dataMax)),
+                Dialogs.Form((T("Minimum level"), minBox), (T("Maximum level"), maxBox), (T("Interval"), intervalBox), (T("Index contour every"), indexBox)),
+                countText,
+                new Expander
+                {
+                    Header = T("Advanced"),
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    Content = Dialogs.Form((T("Source surface"), sourceBox), (T("Line smoothing"), smoothBox), (T("Min. line length"), minLenBox)),
+                },
+                Dialogs.Hint(T("Tip: a Bézier surface gives stair-free contours on coarse grids.")));
+            return await Dialogs.ShowAsync<ContourChoice?>(this, T("Generate contours"), body, okBtn,
+                () => new ContourChoice(Options(), sourceBox.SelectedIndex switch { 1 => 2, 2 => 4, _ => 1 }), null, width: 460);
         }
 
         /// <summary>Rounds a raw step to 1, 2, 2.5 or 5 × 10ⁿ — a contour interval people would pick.</summary>
@@ -747,27 +571,10 @@ namespace RasterField
 
         private async Task<double?> AskNumberAsync(string title, string explanation, string label, double value, double minimum)
         {
-            var tcs = new TaskCompletionSource<double?>();
             var box = new NumericUpDown { Value = (decimal)value, Minimum = (decimal)minimum, FormatString = "0.###", Increment = 10, Width = 160, HorizontalAlignment = HorizontalAlignment.Left };
-            var dialog = new Window { Title = title, Width = 380, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner, CanResize = false };
-            var ok = new Button { Content = T("Apply → new layer"), MinWidth = 120 };
-            var cancel = new Button { Content = T("Cancel"), MinWidth = 80 };
-            ok.Click += (_, _) => { tcs.TrySetResult((double)(box.Value ?? (decimal)value)); dialog.Close(); };
-            cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
-            dialog.Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Spacing = 8,
-                Children =
-                {
-                    new TextBlock { Text = explanation, TextWrapping = TextWrapping.Wrap, Opacity = 0.85 },
-                    new TextBlock { Text = label }, box,
-                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { ok, cancel } },
-                },
-            };
-            dialog.Closed += (_, _) => tcs.TrySetResult(null);
-            await dialog.ShowDialog(this);
-            return await tcs.Task;
+            var body = Dialogs.Stack(Dialogs.Hint(explanation), Dialogs.Captioned(label, box));
+            return await Dialogs.ShowAsync<double?>(this, title, body, Dialogs.Primary(T("Apply → new layer")),
+                () => (double)(box.Value ?? (decimal)value), null, width: 400);
         }
 
         // ---- identify --------------------------------------------------------------------
@@ -776,14 +583,14 @@ namespace RasterField
         {
             if (active) { SetClipToolActive(false); SetPathTool(PathTool.None); _analysisTabs.SelectedIndex = 0; }
             _view.IdentifyMode = active;
-            Flash(active ? "Identify: click the map to list every visible layer's value there (Esc to stop)." : "");
+            Flash(active ? T("Identify: click the map to list every visible layer's value there (Esc to stop).") : "");
             RefreshMenuChecks();
         }
 
         private async void OnIdentifyRequested(object? sender, RasterReadoutEventArgs e)
         {
             var sb = new StringBuilder();
-            sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "E {0:0.###}   N {1:0.###}", e.WorldX, e.WorldY));
+            sb.AppendLine(L.F("E {0:0.###}   N {1:0.###}", e.WorldX, e.WorldY));
             sb.AppendLine();
 
             foreach (var item in _view.DrawOrder.Reverse())
@@ -808,10 +615,10 @@ namespace RasterField
         {
             var geo = layer.Document.GeoReference;
             string name = "▣ " + layer.Name + (layer.IsUnsaved ? " ●" : "");
-            if (!geo.IsInvertible) return name + ": (no georeference)";
+            if (!geo.IsInvertible) return name + ": " + T("(no georeference)");
             var (col, row) = geo.WorldToPixel(wx, wy);
             int c = (int)Math.Floor(col), r = (int)Math.Floor(row);
-            if (c < 0 || r < 0 || c >= layer.DatasetWidth || r >= layer.DatasetHeight) return name + ": outside";
+            if (c < 0 || r < 0 || c >= layer.DatasetWidth || r >= layer.DatasetHeight) return name + ": " + T("outside the raster");
 
             var parts = new List<string>();
             if (layer.Document.Bands.Count > 0)
@@ -820,13 +627,13 @@ namespace RasterField
                 {
                     float? v = layer.Document.Bands[b].GetValueOrNull(r, c);
                     string prefix = layer.Document.Bands.Count > 1 ? $"b{b + 1} " : "";
-                    parts.Add(prefix + (v.HasValue ? v.Value.ToString("g6", CultureInfo.InvariantCulture) : "no-data"));
+                    parts.Add(prefix + (v.HasValue ? L.Num(v.Value) : T("no-data")));
                 }
                 var band = layer.Document.Bands[Math.Min(layer.ActiveBand, layer.Document.Bands.Count - 1)];
                 float? bil = RasterProfiler.BilinearSample(band, col, row);
                 float? bez = BezierPatchInterpolator.Sample(band, col, row, new BezierPatchOptions());
-                if (bil.HasValue) parts.Add("bilinear " + bil.Value.ToString("g6", CultureInfo.InvariantCulture));
-                if (bez.HasValue) parts.Add("Bézier " + bez.Value.ToString("g6", CultureInfo.InvariantCulture) + " (interpolated)");
+                if (bil.HasValue) parts.Add(L.F("bilinear {0}", L.Num(bil.Value)));
+                if (bez.HasValue) parts.Add(L.F("Bézier {0} (interpolated)", L.Num(bez.Value)));
             }
             else if (layer.Source != null)
             {
@@ -834,11 +641,11 @@ namespace RasterField
                 {
                     var single = layer.Source.ReadWindow(c, r, 1, 1, band: layer.ActiveBand);
                     float? v = single.Width == 1 ? single.GetValueOrNull(0, 0) : null;
-                    parts.Add(v.HasValue ? v.Value.ToString("g6", CultureInfo.InvariantCulture) : "no-data");
+                    parts.Add(v.HasValue ? L.Num(v.Value) : T("no-data"));
                 }
-                catch (IOException ex) { parts.Add("read error: " + ex.Message); }
+                catch (IOException ex) { parts.Add(L.F("read error: {0}", ex.Message)); }
             }
-            return $"{name}  [cell {c}, {r}]: " + string.Join(" · ", parts);
+            return L.F("{0}  [cell {1}, {2}]: ", name, c, r) + string.Join(" · ", parts);
         }
 
         private static string DescribeVectorNear(VectorLayer layer, double wx, double wy)
@@ -863,8 +670,8 @@ namespace RasterField
             }
             string name = "▤ " + layer.Name + (layer.IsUnsaved ? " ●" : "");
             return attribute == null
-                ? name + ": (empty)"
-                : string.Format(CultureInfo.InvariantCulture, "{0}: nearest “{1}” at {2:0.##}", name, attribute, Math.Sqrt(best));
+                ? name + ": " + T("(empty)")
+                : L.F("{0}: nearest “{1}” at {2:0.##}", name, attribute, Math.Sqrt(best));
         }
 
         // ---- statistics & histogram ------------------------------------------------------
@@ -891,23 +698,35 @@ namespace RasterField
             }
 
             var chart = new HistogramControl(bins, layer.Colorizer) { Height = 140, Margin = new Thickness(0, 6) };
-            var info = new TextBlock
+            string N(double v) => v.ToString("g6", CultureInfo.CurrentCulture);
+            var rows = new List<(string, Control)>
             {
-                TextWrapping = TextWrapping.Wrap,
-                Text = string.Format(CultureInfo.InvariantCulture,
-                    "{0}{1}\n{2}×{3} cells · {4} band(s) · {5}\n\nmin {6:g6} · max {7:g6}\nmean {8:g6} · σ {9:g6}\nvalid {10:N0} · no-data {11:N0}{12}{13}",
-                    layer.Name, layer.IsStreaming ? " (statistics of the streamed window — approximate)" : "",
-                    layer.DatasetWidth, layer.DatasetHeight, layer.BandCount, layer.Document.Header.RasterInfo.CellType,
-                    stats.Minimum, stats.Maximum, stats.Mean, stats.StandardDeviation, stats.ValidCount, noData,
-                    gapsInHull >= 0 ? $" ({gapsInHull:N0} inside the data footprint)" : "",
-                    layer.Lineage != null ? "\n\nMade from: " + layer.Lineage : ""),
+                (T("Dimensions"), Value(L.F("{0} × {1} cells", layer.DatasetWidth.ToString("N0", CultureInfo.CurrentCulture), layer.DatasetHeight.ToString("N0", CultureInfo.CurrentCulture)))),
+                (T("Bands"), Value(layer.BandCount.ToString(CultureInfo.CurrentCulture))),
+                (T("Cell type"), Value(layer.Document.Header.RasterInfo.CellType.ToString())),
+                (T("Minimum"), Value(N(stats.Minimum))),
+                (T("Maximum"), Value(N(stats.Maximum))),
+                (T("Mean"), Value(N(stats.Mean))),
+                (T("Std. deviation (σ)"), Value(N(stats.StandardDeviation))),
+                (T("Valid cells"), Value(stats.ValidCount.ToString("N0", CultureInfo.CurrentCulture))),
+                (T("No-data cells"), Value(gapsInHull >= 0
+                    ? L.F("{0} ({1} inside the data footprint)", noData.ToString("N0", CultureInfo.CurrentCulture), gapsInHull.ToString("N0", CultureInfo.CurrentCulture))
+                    : noData.ToString("N0", CultureInfo.CurrentCulture))),
             };
+            if (layer.Lineage != null) rows.Add((T("Made from:"), Value(layer.Lineage)));
+            var body = Dialogs.Stack(
+                new TextBlock { Text = layer.Name, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis },
+                layer.IsStreaming ? Dialogs.Hint(T("Statistics of the streamed window — approximate.")) : new Control { IsVisible = false },
+                Dialogs.Form(rows.ToArray()),
+                chart);
+            await Dialogs.InfoAsync(this, T("Statistics & histogram"), body, width: 480);
 
-            var dialog = new Window { Title = T("Statistics & histogram"), Width = 460, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-            var close = new Button { Content = T("Close"), MinWidth = 80, HorizontalAlignment = HorizontalAlignment.Right };
-            close.Click += (_, _) => dialog.Close();
-            dialog.Content = new StackPanel { Margin = new Thickness(16), Spacing = 6, Children = { info, chart, close } };
-            await dialog.ShowDialog(this);
+            static SelectableTextBlock Value(string text) => new SelectableTextBlock
+            {
+                Text = text,
+                TextWrapping = TextWrapping.Wrap,
+                FontFeatures = new FontFeatureCollection { FontFeature.Parse("tnum") },
+            };
         }
 
         /// <summary>A small bar histogram, bars tinted with the layer's own palette and the current stretch marked.</summary>
@@ -936,8 +755,47 @@ namespace RasterField
                     }
                     context.FillRectangle(brush, new Rect(i * bw, h - bh, Math.Max(1, bw - 1), bh));
                 }
-                var label = new FormattedText("log scale", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Typeface.Default, 10, AppTheme.TextPrimary);
+                var label = new FormattedText(T("log scale"), CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Typeface.Default, 10, AppTheme.TextPrimary);
                 context.DrawText(label, new Point(w - label.Width - 4, 2));
+            }
+        }
+
+        /// <summary>
+        /// Two raster-layer combo boxes for "compare A with B" dialogs: sensible defaults (the
+        /// active layer second, another first) and the dialog's primary button disabled, with a
+        /// short warning, while both name the same layer.
+        /// </summary>
+        private sealed class LayerPairPicker
+        {
+            public LayerPairPicker(IReadOnlyList<RasterLayer> layers, RasterLayer? active, Button primary)
+            {
+                var names = layers.Select(l => l.Name).ToList();
+                int second = active != null ? IndexOf(layers, active) : -1;
+                if (second < 0) second = layers.Count - 1;
+                int first = second == 0 ? 1 : 0;
+                First = new ComboBox { ItemsSource = names, SelectedIndex = first, HorizontalAlignment = HorizontalAlignment.Stretch };
+                Second = new ComboBox { ItemsSource = names, SelectedIndex = second, HorizontalAlignment = HorizontalAlignment.Stretch };
+                Warning = Dialogs.Hint(T("Choose two different raster layers."));
+                Warning.Foreground = AppTheme.Danger;
+                void Validate()
+                {
+                    bool same = First.SelectedIndex == Second.SelectedIndex;
+                    Warning.IsVisible = same;
+                    primary.IsEnabled = !same;
+                }
+                First.SelectionChanged += (_, _) => Validate();
+                Second.SelectionChanged += (_, _) => Validate();
+                Validate();
+            }
+
+            public ComboBox First { get; }
+            public ComboBox Second { get; }
+            public TextBlock Warning { get; }
+
+            private static int IndexOf(IReadOnlyList<RasterLayer> layers, RasterLayer layer)
+            {
+                for (int i = 0; i < layers.Count; i++) if (ReferenceEquals(layers[i], layer)) return i;
+                return -1;
             }
         }
     }

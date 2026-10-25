@@ -19,6 +19,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp -R "$PUBLISH_DIR"/. "$APP/Contents/MacOS/"
 chmod +x "$APP/Contents/MacOS/RasterField"
 cp "$ROOT/Source/RasterField/Assets/RasterField.icns" "$APP/Contents/Resources/RasterField.icns"
+# Localisation folders (with CFBundleLocalizations in Info.plist) so macOS shows its own
+# panels — Open/Save, services — in English or Hungarian, matching the app's interface.
+for lang in en hu; do
+  mkdir -p "$APP/Contents/Resources/$lang.lproj"
+  printf '"CFBundleDisplayName" = "RasterField";\n"CFBundleName" = "RasterField";\n' > "$APP/Contents/Resources/$lang.lproj/InfoPlist.strings"
+done
 sed "s/__VERSION__/$VERSION/g" "$HERE/Info.plist" > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 echo "Created $APP"

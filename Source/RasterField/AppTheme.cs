@@ -91,6 +91,13 @@ namespace RasterField
         // ---- typography ------------------------------------------------------------------
         // A small, fixed scale: body 12.5, captions 11, section labels 10.5 (upper-case, tracked).
 
+        /// <summary>
+        /// Fixed-width text (ERS headers, matrices, tables): the platform's own monospaced face —
+        /// Menlo on macOS, Consolas on Windows, DejaVu Sans Mono on Linux — rather than the generic
+        /// "monospace", which macOS does not resolve and silently replaces with a proportional font.
+        /// </summary>
+        public static FontFamily MonospaceFont { get; } = new FontFamily("Menlo, Consolas, DejaVu Sans Mono, Liberation Mono, monospace");
+
         /// <summary>Body text size (controls, menus, cards).</summary>
         public const double FontBody = 12.5;
 
