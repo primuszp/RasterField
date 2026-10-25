@@ -922,7 +922,7 @@ namespace RasterField
             _paramsBtn.IsVisible = active.Recipe != null;
             _saveLayerBtn.IsVisible = active.IsUnsaved;
 
-            ApplyMode();
+            // Reflect the model without writing the UI's preset class counts back into it.
             _legend.SetColorizer(c, UnitLabel());
             _histogram.SetData(active.ActiveRaster, c);
             UpdateScaleText();

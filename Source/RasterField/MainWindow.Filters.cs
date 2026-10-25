@@ -36,7 +36,7 @@ namespace RasterField
         private sealed record FilterSpec(FilterKind Kind, int Size, double Azimuth, double Radius,
             string KernelText, double Divisor, double Offset, bool Strict)
         {
-            public static FilterSpec Default { get; } = new(FilterKind.Emboss, 3, 315, 10, "", 1, 0, false);
+            public static FilterSpec Default { get; } = new(FilterKind.Emboss, 5, 315, 10, "", 1, 0, false);
 
             private ConvolutionNoData NoData => Strict ? ConvolutionNoData.Propagate : ConvolutionNoData.FillFromCentre;
 

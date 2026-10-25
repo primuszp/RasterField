@@ -1089,6 +1089,7 @@ namespace RasterField
                 case VectorLayer v: v.IsUnsaved = false; v.Name = name; break;
                 default: return;
             }
+            if (ReferenceEquals(layer, ActiveLayer)) RasterLoaded?.Invoke(this, EventArgs.Empty);
             LayersChanged?.Invoke(this, EventArgs.Empty);
         }
 

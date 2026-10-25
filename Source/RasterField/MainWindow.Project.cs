@@ -258,7 +258,15 @@ namespace RasterField
             switch (recipe.Operation)
             {
                 case "filter":
-                    if (FilterDisplay(FilterSpec.FromRecipe(recipe), raster) is { } display)
+                    var filter = FilterSpec.FromRecipe(recipe);
+                    // Emboss is an illumination overlay over the source's existing colours.
+                    // Set compositing before ApplyDisplaySettings publishes the final display state.
+                    if (filter.Kind == FilterKind.Emboss)
+                    {
+                        _view.SetLayerOpacity(layer, 0.7);
+                        _view.SetLayerBlendMode(layer, LayerBlendMode.Overlay);
+                    }
+                    if (FilterDisplay(filter, raster) is { } display)
                         _view.ApplyDisplaySettings(layer, display.Palette, display.Min, display.Max);
                     else if (recipe.Source is RasterLayer source)
                         _view.CopyDisplaySettings(source, layer); // smoothing / sharpening: same values, same look
@@ -514,6 +522,9 @@ namespace RasterField
                     _view.SetActiveLayer(ar);
                 if (project.View is { } v) _view.SetViewState(v.CenterX, v.CenterY, v.WorldPerPixel);
                 _bookmarks.AddRange(project.Bookmarks);
+                // SetActiveLayer is a no-op when the final loaded layer is already active.
+                // Refresh only after all persisted display properties have been restored.
+                OnRasterLoaded();
             }
             finally
             {
