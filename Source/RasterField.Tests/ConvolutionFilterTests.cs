@@ -254,5 +254,78 @@ namespace RasterField.Tests
             Assert.Equal((float)(sum / total), ConvolutionFilter.Gaussian(raster, 1)[4, 4], 5);
         }
 
+        [Theory]
+        [InlineData(1, 1)]
+        [InlineData(1, 9)]
+        [InlineData(9, 1)]
+        [InlineData(2, 2)]
+        [InlineData(3, 3)]
+        [InlineData(41, 35)]
+        [InlineData(100, 70)]
+        public void Terrain_filters_remove_tilt_at_every_edge_and_corner(int width, int height)
+        {
+            var plane = Plane(width, height, (x, y) => 500 + 3 * x - 2 * y);
+            Assert.All(ConvolutionFilter.Laplace(plane).Samples, value => Assert.Equal(0, value, 5));
+            Assert.All(ConvolutionFilter.LocalRelief(plane, 9).Samples, value => Assert.InRange(value, -1e-8, 1e-8));
+        }
+
+        [Theory]
+        [InlineData(false, -10)]
+        [InlineData(true, -30)]
+        public void Laplace_preserves_quadratic_curvature_at_the_boundary(bool diagonals, double expected)
+        {
+            var curved = Plane(12, 11, (x, y) => 100 + 2 * x * x + 3 * y * y + x * y);
+            Assert.All(ConvolutionFilter.Laplace(curved, diagonals).Samples,
+                value => Assert.Equal(expected, value, 5));
+        }
+
+        [Fact]
+        public void Laplace_interior_still_matches_the_documented_matrix()
+        {
+            var terrain = Plane(13, 11, (x, y) => Math.Sin(x) * 20 + y * y);
+            var actual = ConvolutionFilter.Laplace(terrain);
+            var matrix = ConvolutionFilter.Convolve(terrain, ConvolutionKernel.Laplace(true));
+            for (int y = 1; y < 10; y++)
+                for (int x = 1; x < 12; x++) Assert.Equal(matrix[y, x], actual[y, x]);
+        }
+
+        [Fact]
+        public void Local_relief_preserves_a_plane_even_beside_missing_samples()
+        {
+            var plane = Plane(31, 27, (x, y) => 500 + 3 * x - 2 * y, -9999);
+            plane.SetValueFast(0, 0, -9999);
+            plane.SetValueFast(1, 2, -9999);
+            plane.SetValueFast(12, 15, -9999);
+            var actual = ConvolutionFilter.LocalRelief(plane, 7);
+            for (int i = 0; i < plane.Samples.Length; i++)
+                if (plane.IsNoData(plane.Samples[i])) Assert.True(float.IsNaN(actual.Samples[i]));
+                else Assert.InRange(actual.Samples[i], -1e-8, 1e-8);
+        }
+
+        [Fact]
+        public void Laplace_extrapolation_honours_missing_support_in_strict_mode()
+        {
+            var plane = Plane(9, 9, (x, y) => 500 + 3 * x - 2 * y, -9999);
+            plane.SetValueFast(0, 2, -9999);
+            var strict = ConvolutionFilter.Laplace(plane, noData: ConvolutionNoData.Propagate);
+            Assert.True(float.IsNaN(strict[0, 0])); // Extrapolation needs the third edge sample.
+            Assert.True(float.IsNaN(strict[0, 2]));
+            Assert.Equal(0, strict[8, 8]);
+            Assert.False(float.IsNaN(ConvolutionFilter.Laplace(plane)[0, 0]));
+        }
+
+        [Fact]
+        public void Local_relief_keeps_real_edge_features_and_matches_gaussian_away_from_edges()
+        {
+            var terrain = Plane(61, 51, (x, y) => 500 + 0.5 * x + (x == 0 || x == 30 ? -2 : 0));
+            var result = ConvolutionFilter.LocalRelief(terrain, 9);
+            Assert.True(result[25, 0] < -0.5); // A real ditch at the boundary must survive.
+            Assert.True(result[25, 30] < -1.5);
+            var smooth = ConvolutionFilter.Gaussian(terrain, 3);
+            for (int y = 10; y < 41; y++)
+                for (int x = 10; x < 51; x++)
+                    Assert.InRange(Math.Abs(terrain[y, x] - smooth[y, x] - result[y, x]), 0, 4e-5); // Gaussian's float output rounds the trend.
+        }
+
     }
 }

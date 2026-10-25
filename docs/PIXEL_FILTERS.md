@@ -36,19 +36,29 @@ nem tartalmazza. A szél- és NoData-kezelés azonossága sem bizonyított.
   cellára korlátozódnak. Hiányzó szomszéd helyett alapból a középérték
   szerepel; szigorú módban a nem nulla súlyú hiányzó szomszéd NoData-t ad.
   A hiányzó középpont mindig hiányzó marad.
-- Folytonos Gauss-simítás és a helyi dombormű trendje: a hiányzó cellák
-  kimaradnak a normalizált súlyozásból. A sugár háromszorosa a szigmának.
+- Folytonos Gauss-simítás: a hiányzó cellák kimaradnak a normalizált
+  súlyozásból. A sugár háromszorosa a szigmának.
+- Helyi dombormű: Gauss-súlyozott helyi egyenesillesztés két egymás utáni,
+  vízszintes és függőleges menetben. A középpontra illesztett trendet vonja
+  le a felszínből. Teljes, szimmetrikus és hiánymentes ablakban ez a korábbi
+  Gauss-átlag; csonka ablaknál a lejtésből eredő eltolódást is korrigálja.
+  A hiányzó középpont hiányzó marad, a hiányzó szomszédok kimaradnak.
 - Sobel: emelkedés cellánként; vízszintes síkon nulla, egyenletes lejtőn
   nem nulla. Nem fokban vagy méter/méterben számított lejtés.
 - Laplace: az alkalmazott előjel szerint pozitív a domború, negatív a
   homorú rész. A helyi dombormű a bemenet és a simított trend különbsége.
-- A szélső cellák ismétlése a deriváltaknál és trendlevonásnál peremsávot
-  okozhat. Ez nem valódi tereptörés; elemzéskor a szűrő félablakának
-  megfelelő peremsávot külön kell kezelni.
+- A Laplace-előbeállítás a határon másodfokú folytatást használ a három
+  legközelebbi belső mintából (3, −3, 1). A sarkokban mindkét tengelyen
+  alkalmazza. Kétcellás tengelyen lineáris, egycelláson konstans a folytatás.
+  Szigorú NoData-módban a szükséges folytatási minták hiánya is NoData-t ad.
+  A belső cellák számítása az eredeti 4/8 szomszédos mátrixszal azonos.
+- Az egyéni mátrixok és a többi lineáris előbeállítás továbbra is a
+  legközelebbi szélső cellát használják. Az egyéni Laplace-mátrix ezért
+  a határon eltérhet a peremjavított Laplace-előbeállítástól.
 - Nem véges mátrixsúly, eltolás, illetve nulla/nem véges osztó elutasítva.
   Az előbeállítások szöveges mátrixa teljes double pontossággal kerül átadásra.
 
-## Ellenőrzés – 2026-10-25
+## Első ellenőrzés – 2026-10-25, a peremjavítás előtt
 
 A futó macOS alkalmazásban a P_00_01 640×450 cellás raszteren, külön-külön
 az eredeti forrásból létrehozott rétegekkel:
@@ -85,3 +95,41 @@ osztó/eltolás, hibás bemenet, Gauss független kétdimenziós referencia alap
 NoData-val; továbbá mind a nyolc nem domborító szűrő réteglétrehozása,
 láthatósága, átlátszatlansága, sorrendje, undo/redo és projekt-visszatöltése.
 Külön regressziós teszt ellenőrzi a szűrőváltás utáni nevet és értéktartományt.
+
+
+## Peremhatás javítása és ismételt ellenőrzés – 2026-10-25
+
+A javítás a számított trendet és a perem menti deriváltat korrigálja;
+nincs levágott vagy átlátszó peremsáv, a raszter mérete és illesztése megmarad.
+A Laplace a belső cellákon bitazonos a korábbi mátrixos számítással.
+A helyi dombormű a teljes szimmetrikus ablakokban a korábbi Gauss-trendet
+adja, double köztes értékekkel; a szél és a NoData környezetében változik.
+
+Ismételt próba ugyanazon P_00_01 modellen, helyi dombormű sugara 10 cella:
+
+| Mérés a legkülső sor/oszlop celláin, a sarkokat egyszer számítva | Korábban | Javítva |
+|---|---:|---:|
+| Laplace: abszolút érték átlaga | 1.397985 | 0.059203 |
+| Laplace: legnagyobb abszolút érték | 4.148804 | 0.205933 |
+| Helyi dombormű: abszolút érték átlaga | 1.094034 | 0.038152 |
+| Helyi dombormű: legnagyobb abszolút érték | 3.235809 | 0.155894 |
+
+Ez 95.8%, illetve 96.5% csökkenés a külső cellák átlagos abszolút értékében;
+ezek a mintaterep megfigyelései, nem általános hibabecslések.
+A futó macOS alkalmazásban az eredeti projekt receptjeinek újraszámolása után,
+az eredeti megjelenítési tartományokkal is eltűnt a keretszerű sáv.
+A terepformák a szélig folytatódnak. A két réteg kapcsolható és külön menthető.
+
+Mentett ellenőrzési fájlok a RasterField-ellenorzes-20261025 mappában:
+`Laplace_peremjavitas.ers`, `Helyi_dombormu_r10_peremjavitas.ers`,
+`Peremjavitas_ellenorzes.rfproj`, valamint a két `*-perem-javitva.png` képernyőkép.
+
+343 sikeres teszt, köztük teljes lejtős sík minden szélen és sarokban,
+1/2/3 cellás tengelyek, másodfokú görbület megtartása, valódi széli árok
+megőrzése, NoData és szigorú mód, valamint a belső cellák összevetése a
+korábbi képlettel. A projekt-visszatöltés tesztjei is az új számítást használják.
+
+A polinomiális peremkezelés általános elvéhez lásd a
+[SciPy Savitzky–Golay dokumentáció interp módját](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.savgol_filter.html).
+A RasterField itt saját másodfokú peremfolytatást és Gauss-súlyozott helyi
+lineáris trendet használ; ez nem Savitzky–Golay-implementáció.

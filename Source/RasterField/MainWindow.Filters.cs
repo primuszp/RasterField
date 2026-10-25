@@ -69,6 +69,7 @@ namespace RasterField
             public Raster Apply(Raster source, CancellationToken cancellationToken = default) => Kind switch
             {
                 FilterKind.Gaussian => ConvolutionFilter.Gaussian(source, Radius / 3.0, cancellationToken),
+                FilterKind.Laplace => ConvolutionFilter.Laplace(source, diagonals: true, NoData, cancellationToken),
                 FilterKind.Sobel => ConvolutionFilter.SobelMagnitude(source, NoData, cancellationToken),
                 FilterKind.LocalRelief => ConvolutionFilter.LocalRelief(source, Radius, cancellationToken),
                 FilterKind.Custom => ConvolutionFilter.Convolve(source, ConvolutionKernel.Parse(KernelText, Divisor, Offset), NoData, cancellationToken),

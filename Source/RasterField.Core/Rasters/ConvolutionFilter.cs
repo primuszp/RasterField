@@ -220,6 +220,15 @@ namespace RasterField.Rasters
         /// <summary>Applies <paramref name="kernel"/> to every cell.</summary>
         public static Raster Convolve(Raster source, ConvolutionKernel kernel, ConvolutionNoData noData = ConvolutionNoData.FillFromCentre,
             CancellationToken cancellationToken = default)
+            => ConvolveCore(source, kernel, noData, cancellationToken, extrapolate: false);
+
+        /// <summary>Negative Laplacian with quadratic edge continuation: preserves planes and curvature at the raster boundary.</summary>
+        public static Raster Laplace(Raster source, bool diagonals = true,
+            ConvolutionNoData noData = ConvolutionNoData.FillFromCentre, CancellationToken cancellationToken = default)
+            => ConvolveCore(source, ConvolutionKernel.Laplace(diagonals), noData, cancellationToken, extrapolate: true);
+
+        private static Raster ConvolveCore(Raster source, ConvolutionKernel kernel, ConvolutionNoData noData,
+            CancellationToken cancellationToken, bool extrapolate)
         {
             if (source == null) throw new ArgumentNullException(nameof(source));
             if (kernel == null) throw new ArgumentNullException(nameof(kernel));
@@ -246,8 +255,11 @@ namespace RasterField.Rasters
                             double wt = weights[(dy + ry) * kernel.Width + dx + rx];
                             if (wt == 0) continue;
                             int xx = Math.Min(w - 1, Math.Max(0, x + dx));
-                            float v = src[yy * w + xx];
-                            if (source.IsNoData(v))
+                            bool outside = extrapolate && ((uint)(x + dx) >= (uint)w || (uint)(y + dy) >= (uint)h);
+                            double v = outside
+                                ? EdgeSample(source, x + dx, y + dy, centre, noData)
+                                : src[yy * w + xx];
+                            if (double.IsNaN(v) || (!outside && source.IsNoData((float)v)))
                             {
                                 if (noData == ConvolutionNoData.Propagate) { missing = true; break; }
                                 v = centre;
@@ -264,18 +276,47 @@ namespace RasterField.Rasters
             return output;
         }
 
+        // Only one cell outside is needed by the 3×3 Laplacian. Tensor-product continuation
+        // uses 3,-3,1 (quadratic), 2,-1 (two samples), or the sole sample on a singleton axis.
+        private static double EdgeSample(Raster source, int x, int y, double centre, ConvolutionNoData noData)
+        {
+            double Value(int xx, int yy)
+            {
+                float v = source.Samples[yy * source.Width + xx];
+                return source.IsNoData(v) ? noData == ConvolutionNoData.Propagate ? double.NaN : centre : v;
+            }
+            double Row(int yy)
+            {
+                if ((uint)x < (uint)source.Width) return Value(x, yy);
+                int edge = x < 0 ? 0 : source.Width - 1, step = x < 0 ? 1 : -1;
+                double a = Value(edge, yy);
+                if (source.Width == 1) return a;
+                double b = Value(edge + step, yy);
+                return source.Width == 2 ? 2 * a - b : 3 * a - 3 * b + Value(edge + 2 * step, yy);
+            }
+            if ((uint)y < (uint)source.Height) return Row(y);
+            int edgeY = y < 0 ? 0 : source.Height - 1, stepY = y < 0 ? 1 : -1;
+            double first = Row(edgeY);
+            if (source.Height == 1) return first;
+            double second = Row(edgeY + stepY);
+            return source.Height == 2 ? 2 * first - second : 3 * first - 3 * second + Row(edgeY + 2 * stepY);
+        }
+
         /// <summary>
         /// Gaussian smoothing with standard deviation <paramref name="sigma"/> cells (window ±3σ),
         /// computed separably. No-data cells are left out and the weights renormalised, so a gap
         /// neither darkens nor spreads; a no-data centre stays no-data.
         /// </summary>
         public static Raster Gaussian(Raster source, double sigma, CancellationToken cancellationToken = default)
+            => Separable(source, GaussianWeights(sigma), cancellationToken);
+
+        private static double[] GaussianWeights(double sigma)
         {
             if (!(sigma > 0) || double.IsInfinity(sigma) || sigma > (int.MaxValue - 3) / 6.0) throw new ArgumentOutOfRangeException(nameof(sigma), "Sigma must be positive.");
             int radius = Math.Max(1, (int)Math.Ceiling(3 * sigma));
             var weights = new double[2 * radius + 1];
-            for (int i = -radius; i <= radius; i++) weights[i + radius] = Math.Exp(-((double)i * i) / (2 * sigma * sigma));
-            return Separable(source, weights, cancellationToken);
+            for (int i = -radius; i <= radius; i++) weights[i + radius] = Math.Exp(-0.5 * (i / sigma) * (i / sigma));
+            return weights;
         }
 
         /// <summary>Box (mean) smoothing over a (2·<paramref name="radius"/>+1)² window, separably and no-data aware.</summary>
@@ -286,7 +327,7 @@ namespace RasterField.Rasters
         }
 
         /// <summary>
-        /// Local relief model: the surface minus its Gaussian-smoothed trend over ±<paramref name="radius"/>
+        /// Local relief model: the surface minus its Gaussian-weighted local linear trend over ±<paramref name="radius"/>
         /// cells (σ = radius / 3). Removes the regional slope and keeps features smaller than the
         /// radius (ditches, banks, field boundaries, old channels) as positive/negative relief.
         /// </summary>
@@ -294,13 +335,50 @@ namespace RasterField.Rasters
         {
             if (source == null) throw new ArgumentNullException(nameof(source));
             if (!(radius >= 1)) throw new ArgumentOutOfRangeException(nameof(radius), "The radius must be at least 1 cell.");
-            var trend = Gaussian(source, radius / 3.0, cancellationToken);
+            var trend = LinearTrend(source, GaussianWeights(radius / 3.0), cancellationToken);
             var output = NewOutput(source);
-            float[] src = source.Samples, t = trend.Samples, dst = output.Samples;
+            float[] src = source.Samples, dst = output.Samples;
             for (int i = 0; i < src.Length; i++)
-                dst[i] = source.IsNoData(src[i]) || float.IsNaN(t[i]) ? float.NaN : src[i] - t[i];
+                dst[i] = source.IsNoData(src[i]) || double.IsNaN(trend[i]) ? float.NaN : (float)(src[i] - trend[i]);
             output.InvalidateStatistics();
             return output;
+        }
+
+        // Separable Gaussian-weighted local linear regression. In a complete symmetric window
+        // its intercept is the ordinary Gaussian mean. At a clipped edge (or gap) the fitted
+        // slope removes the first-order bias. Double intermediates avoid false relief from rounding.
+        private static double[] LinearTrend(Raster source, double[] weights, CancellationToken cancellationToken)
+        {
+            int w = source.Width, h = source.Height, radius = weights.Length / 2;
+            var input = Array.ConvertAll(source.Samples, v => source.IsNoData(v) ? double.NaN : (double)v);
+            double[] Pass(double[] values, bool horizontal)
+            {
+                var result = new double[values.Length];
+                ForRows(h, y =>
+                {
+                    for (int x = 0; x < w; x++)
+                    {
+                        int index = y * w + x;
+                        double centre = values[index];
+                        if (double.IsNaN(centre)) { result[index] = double.NaN; continue; }
+                        double s0 = 0, s1 = 0, s2 = 0, v0 = 0, v1 = 0;
+                        int position = horizontal ? x : y, length = horizontal ? w : h;
+                        for (int k = Math.Max(-radius, -position); k <= Math.Min(radius, length - 1 - position); k++)
+                        {
+                            double value = values[index + (horizontal ? k : k * w)];
+                            if (double.IsNaN(value)) continue;
+                            double wt = weights[k + radius], difference = value - centre;
+                            s0 += wt; s1 += wt * k; s2 += wt * k * k;
+                            v0 += wt * difference; v1 += wt * difference * k;
+                        }
+                        double determinant = s0 * s2 - s1 * s1;
+                        result[index] = centre + (determinant > 1e-12 * s0 * s2
+                            ? (v0 * s2 - v1 * s1) / determinant : v0 / s0);
+                    }
+                }, cancellationToken);
+                return result;
+            }
+            return Pass(Pass(input, horizontal: true), horizontal: false);
         }
 
         /// <summary>Sobel gradient magnitude, √(gx² + gy²), in rise per cell: high on steep slopes, 0 on horizontal surfaces.</summary>
