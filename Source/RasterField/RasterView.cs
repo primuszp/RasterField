@@ -1206,7 +1206,7 @@ namespace RasterField
         // ---- derived layer recompute / view state --------------------------------------------
 
         /// <summary>Replaces a raster layer's content in place (a recomputed derived layer), keeping its display settings.</summary>
-        public void ReplaceLayerDocument(RasterLayer layer, ErsDocument document, string? lineage = null, LayerRecipe? recipe = null)
+        public void ReplaceLayerDocument(RasterLayer layer, ErsDocument document, string? lineage = null, LayerRecipe? recipe = null, string? name = null)
         {
             ArgumentNullException.ThrowIfNull(layer);
             ArgumentNullException.ThrowIfNull(document);
@@ -1215,6 +1215,7 @@ namespace RasterField
             layer.DisposeSource();
             layer.DisposeSmooth();
             layer.Document = document;
+            if (name != null) layer.Name = name;
             layer.SourceFactory = null;
             if (document.Bands.Count == 0)
             {

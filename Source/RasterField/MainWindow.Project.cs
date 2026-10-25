@@ -325,12 +325,28 @@ namespace RasterField
             {
                 var r = await ComputeRecipeAsync(updated, cancellation?.Token ?? CancellationToken.None);
                 SetBusy(false);
-                if (layer is RasterLayer rl && r.Raster != null) _view.ReplaceLayerDocument(rl, r.Raster, r.Lineage, updated);
+                if (layer is RasterLayer rl && r.Raster != null) ApplyRecomputedRaster(rl, r.Raster, r.Name, r.Lineage, updated);
                 else if (layer is VectorLayer vl && r.Vector != null) _view.ReplaceVectorDocument(vl, r.Vector, r.Widths, r.Labels, r.Lineage, updated);
                 Flash(L.F("Recomputed: {0}", r.Lineage));
             }
             catch (OperationCanceledException) { SetBusy(false); Flash(T("Operation cancelled.")); }
             catch (Exception ex) { SetBusy(false); await MessageAsync(T("Operation failed"), ex.Message); }
+        }
+
+        // Keep a user's name/style for parameter-only edits, but reset an incompatible filter scale.
+        private void ApplyRecomputedRaster(RasterLayer layer, ErsDocument document, string name, string lineage, LayerRecipe updated)
+        {
+            var old = layer.Recipe;
+            var before = old?.Operation == "filter" ? FilterSpec.FromRecipe(old) : null;
+            var after = updated.Operation == "filter" ? FilterSpec.FromRecipe(updated) : null;
+            string? newName = before != null && old!.Source is RasterLayer source &&
+                layer.Name == $"{source.Name} · {before.Label()}" ? name : null;
+            _view.ReplaceLayerDocument(layer, document, lineage, updated, newName);
+            if (before != null && after != null &&
+                (before.Kind != after.Kind || before.KeepsValues != after.KeepsValues))
+            {
+                ApplyDerivedStyle(layer, updated);
+            }
         }
 
         private async Task<LayerRecipe?> AskBezierRecipeAsync(RasterLayer src, LayerRecipe? initial)

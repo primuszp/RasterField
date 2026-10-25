@@ -182,5 +182,77 @@ namespace RasterField.Tests
             Assert.Throws<ArgumentOutOfRangeException>(() => ConvolutionKernel.Emboss(azimuth));
         }
 
+        [Fact]
+        public void DigiTerra_documented_matrix_has_unit_gain_and_the_expected_impulse_response()
+        {
+            var kernel = ConvolutionKernel.DigiTerraGaussian5();
+            Assert.Equal(121, kernel.Sum);
+            Assert.Equal(121, kernel.Divisor);
+            var impulse = Plane(9, 9, (x, y) => x == 4 && y == 4 ? 121 : 0);
+            var result = ConvolutionFilter.Convolve(impulse, kernel);
+            Assert.Equal(17, result[4, 4]);
+            Assert.Equal(11, result[4, 3]);
+            Assert.Equal(7, result[3, 3]);
+            Assert.Equal(1, result[2, 2]);
+            Assert.All(ConvolutionFilter.Convolve(Plane(9, 9, (_, _) => 42), kernel).Samples,
+                value => Assert.Equal(42, value));
+        }
+
+        [Fact]
+        public void Rectangular_matrices_respect_row_column_orientation_divisor_and_offset()
+        {
+            var plane = Plane(9, 9, (x, y) => 10 * y + x);
+            var horizontal = ConvolutionKernel.Parse("-1 0 1", 2, 7);
+            var vertical = ConvolutionKernel.Parse("-1;0;1", 2, 7);
+            Assert.Equal(3, horizontal.Width);
+            Assert.Equal(1, horizontal.Height);
+            Assert.Equal(1, vertical.Width);
+            Assert.Equal(3, vertical.Height);
+            Assert.Equal(8, ConvolutionFilter.Convolve(plane, horizontal)[4, 4]);
+            Assert.Equal(17, ConvolutionFilter.Convolve(plane, vertical)[4, 4]);
+            Assert.Equal(vertical.Weights, ConvolutionKernel.Parse(vertical.Format()).Weights);
+            var fractional = ConvolutionKernel.Parse("1/3");
+            Assert.Equal(fractional.Weights, ConvolutionKernel.Parse(fractional.Format()).Weights);
+        }
+
+        [Theory]
+        [InlineData("NaN")]
+        [InlineData("Infinity")]
+        [InlineData("1/0")]
+        [InlineData("0/0")]
+        public void Custom_filter_rejects_non_finite_weights(string matrix) =>
+            Assert.ThrowsAny<ArgumentException>(() => ConvolutionKernel.Parse(matrix));
+
+        [Theory]
+        [InlineData(double.NaN)]
+        [InlineData(double.PositiveInfinity)]
+        [InlineData(double.NegativeInfinity)]
+        public void Non_finite_filter_parameters_are_rejected(double value)
+        {
+            var flat = Plane(3, 3, (_, _) => 1);
+            Assert.Throws<ArgumentOutOfRangeException>(() => ConvolutionFilter.Gaussian(flat, value));
+            Assert.Throws<ArgumentOutOfRangeException>(() => ConvolutionKernel.Sharpen(amount: value));
+            Assert.Throws<ArgumentOutOfRangeException>(() => ConvolutionKernel.Parse("1", offset: value));
+        }
+
+        [Fact]
+        public void Gaussian_matches_direct_two_dimensional_weights_around_missing_cells()
+        {
+            var raster = Plane(9, 9, (x, y) => x * x + y);
+            raster.SetValueFast(4, 3, float.NaN);
+            raster.SetValueFast(3, 4, float.NaN);
+            double sum = 0, total = 0;
+            for (int y = -3; y <= 3; y++)
+                for (int x = -3; x <= 3; x++)
+                {
+                    float value = raster[4 + y, 4 + x];
+                    if (float.IsNaN(value)) continue;
+                    double weight = Math.Exp(-(x * x + y * y) / 2.0);
+                    sum += value * weight;
+                    total += weight;
+                }
+            Assert.Equal((float)(sum / total), ConvolutionFilter.Gaussian(raster, 1)[4, 4], 5);
+        }
+
     }
 }

@@ -20,7 +20,7 @@ namespace RasterField
     /// </summary>
     public sealed partial class MainWindow
     {
-        private enum FilterKind { Emboss, Gaussian, Mean, Sharpen, Sobel, Laplace, LocalRelief, Custom }
+        private enum FilterKind { Emboss, Gaussian, Mean, Sharpen, Sobel, Laplace, LocalRelief, Custom, DigiTerraGaussian }
 
         private static readonly FilterKind[] FilterKinds = Enum.GetValues<FilterKind>();
 
@@ -43,7 +43,7 @@ namespace RasterField
             /// <summary>Smoothing / sharpening / a normalised custom matrix keep the data's values and unit.</summary>
             public bool KeepsValues => Kind switch
             {
-                FilterKind.Gaussian or FilterKind.Mean or FilterKind.Sharpen => true,
+                FilterKind.Gaussian or FilterKind.Mean or FilterKind.Sharpen or FilterKind.DigiTerraGaussian => true,
                 FilterKind.Custom => TryKernel() is { } k && Math.Abs(k.Sum / k.Divisor - 1) < 1e-6 && Offset == 0,
                 _ => false,
             };
@@ -56,6 +56,7 @@ namespace RasterField
                     {
                         FilterKind.Emboss => ConvolutionKernel.Emboss(Azimuth, Size),
                         FilterKind.Mean => ConvolutionKernel.Mean(Size),
+                        FilterKind.DigiTerraGaussian => ConvolutionKernel.DigiTerraGaussian5(),
                         FilterKind.Sharpen => ConvolutionKernel.Sharpen(Size),
                         FilterKind.Laplace => ConvolutionKernel.Laplace(diagonals: true),
                         FilterKind.Custom => ConvolutionKernel.Parse(KernelText, Divisor, Offset),
@@ -83,7 +84,8 @@ namespace RasterField
                 FilterKind.Sobel => T("Sobel edges"),
                 FilterKind.Laplace => T("Laplace"),
                 FilterKind.LocalRelief => L.F("Local relief r {0:g4}", Radius),
-                _ => L.F("Custom matrix {0}×{0}", TryKernel()?.Size ?? 0),
+                FilterKind.DigiTerraGaussian => T("DigiTerra Map Gaussian 5×5"),
+                _ => L.F("Custom matrix {0}×{1}", TryKernel()?.Height ?? 0, TryKernel()?.Width ?? 0),
             };
 
             public Dictionary<string, string> ToParameters() => new()
@@ -115,6 +117,7 @@ namespace RasterField
         {
             FilterKind.Emboss => T("Emboss (relief effect)"),
             FilterKind.Gaussian => T("Smoothing — Gaussian"),
+            FilterKind.DigiTerraGaussian => T("Smoothing — DigiTerra Map 5×5"),
             FilterKind.Mean => T("Smoothing — mean"),
             FilterKind.Sharpen => T("Sharpen"),
             FilterKind.Sobel => T("Edges — Sobel magnitude"),
@@ -126,13 +129,14 @@ namespace RasterField
         private static string FilterKindHelp(FilterKind kind) => kind switch
         {
             FilterKind.Emboss => T("Directional difference towards the light: slopes facing the light turn bright, the others dark — a quick relief effect on any raster (DEM, orthophoto, single band). Result: rise per cell."),
+            FilterKind.DigiTerraGaussian => T("The 5×5 Gauss matrix from the DigiTerra Map reference manual: integer weights, divisor 121, offset 0. Preserves the source values and palette."),
             FilterKind.Gaussian => T("Weighted average of the neighbourhood (σ = radius / 3): removes noise, keeps the values and unit. Gaps are left out, not smeared."),
-            FilterKind.Mean => T("Plain average of the window: stronger, blockier smoothing than Gaussian."),
+            FilterKind.Mean => T("Plain average of the window: every neighbour has equal weight; preserves constant values."),
             FilterKind.Sharpen => T("Adds the difference from the local mean back to each cell: crisper edges, more noise."),
-            FilterKind.Sobel => T("Gradient strength (rise per cell) from the Sobel operator: bright on edges, banks and break lines, 0 on flat or evenly sloping ground."),
+            FilterKind.Sobel => T("Gradient strength (rise per cell) from the Sobel operator: bright on edges, banks and break lines, 0 on horizontal ground, non-zero on an even slope."),
             FilterKind.Laplace => T("Second derivative: positive on convex spots (ridges, bank tops), negative in concave ones (ditches, pits), 0 on planes."),
             FilterKind.LocalRelief => T("The surface minus its smoothed trend over the radius: removes the regional slope and keeps smaller features (ditches, banks, field boundaries, old channels). The most telling view of flat LiDAR terrain."),
-            _ => T("Type an odd, square matrix: one row per line (or separated by ;), values by spaces; decimal comma allowed. Output = Σ weight·value / divisor + offset."),
+            _ => T("Type a matrix with odd row and column counts: one row per line (or separated by ;), values by spaces; decimal comma allowed. Output = Σ weight·value / divisor + offset."),
         };
 
         private async Task FilterAsync()
@@ -180,7 +184,7 @@ namespace RasterField
             var offsetBox = new NumericUpDown { Value = (decimal)seed.Offset, Increment = 1, FormatString = "0.####", Width = 130 };
             var strictBox = new CheckBox { Content = T("No-data wherever the window touches a gap (otherwise the centre value fills it)"), IsChecked = seed.Strict };
             var errorText = new TextBlock { Foreground = AppTheme.Danger, FontSize = AppTheme.FontCaption, TextWrapping = TextWrapping.Wrap };
-            var okBtn = new Button { Content = T("Apply → new layer"), MinWidth = 80 };
+            var okBtn = new Button { Content = T(initial == null ? "Apply → new layer" : "Recompute"), MinWidth = 80 };
             var cancelBtn = new Button { Content = T("Cancel"), MinWidth = 80 };
 
             StackPanel Captioned(string caption, Control c) => new StackPanel { Spacing = 2, Children = { new TextBlock { Text = caption, Opacity = 0.8, FontSize = 11 }, c } };
