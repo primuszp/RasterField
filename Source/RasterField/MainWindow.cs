@@ -1165,9 +1165,7 @@ namespace RasterField
             };
             cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
 
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
-            buttons.Children.Add(okBtn);
-            buttons.Children.Add(cancelBtn);
+            var buttons = DialogControls.ButtonRow(okBtn, cancelBtn);
 
             dialog.Content = new StackPanel
             {
@@ -1249,9 +1247,7 @@ namespace RasterField
             };
             cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
 
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
-            buttons.Children.Add(okBtn);
-            buttons.Children.Add(cancelBtn);
+            var buttons = DialogControls.ButtonRow(okBtn, cancelBtn);
 
             TextBlock Label(string t) => AppTheme.Caption(t);
             dialog.Content = new StackPanel
@@ -1419,9 +1415,7 @@ namespace RasterField
             };
             cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
 
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
-            buttons.Children.Add(okBtn);
-            buttons.Children.Add(cancelBtn);
+            var buttons = DialogControls.ButtonRow(okBtn, cancelBtn);
 
             dialog.Content = new StackPanel
             {
@@ -1518,9 +1512,7 @@ namespace RasterField
             };
             cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
 
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
-            buttons.Children.Add(okBtn);
-            buttons.Children.Add(cancelBtn);
+            var buttons = DialogControls.ButtonRow(okBtn, cancelBtn);
 
             dialog.Content = new StackPanel
             {
@@ -1663,9 +1655,7 @@ namespace RasterField
             okBtn.Click += (_, _) => { tcs.TrySetResult(exprBox.Text); dialog.Close(); };
             cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
 
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
-            buttons.Children.Add(okBtn);
-            buttons.Children.Add(cancelBtn);
+            var buttons = DialogControls.ButtonRow(okBtn, cancelBtn);
 
             dialog.Content = new StackPanel
             {
@@ -1796,9 +1786,7 @@ namespace RasterField
             };
             cancelBtn.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
 
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
-            buttons.Children.Add(okBtn);
-            buttons.Children.Add(cancelBtn);
+            var buttons = DialogControls.ButtonRow(okBtn, cancelBtn);
 
             dialog.Content = new StackPanel
             {

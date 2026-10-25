@@ -101,18 +101,10 @@ namespace RasterField.Rasters
             {
                 ThrowIfDisposed();
 
-                int x0 = Math.Max(0, x);
-                int y0 = Math.Max(0, y);
-                int x1 = Math.Min(Width, x + Math.Max(0, width));
-                int y1 = Math.Min(Height, y + Math.Max(0, height));
-                int spanW = x1 - x0;
-                int spanH = y1 - y0;
-
-                if (spanW <= 0 || spanH <= 0)
-                    return new Raster(0, 0, NoDataValue);
-
-                int outWidth = (spanW + stepX - 1) / stepX;
-                int outHeight = (spanH + stepY - 1) / stepY;
+                var window = RasterReadWindow.Create(Width, Height, x, y, width, height, stepX, stepY);
+                int x0 = window.X, y0 = window.Y, spanW = window.Width;
+                int outWidth = window.OutputWidth, outHeight = window.OutputHeight;
+                if (outWidth == 0 || outHeight == 0) return new Raster(0, 0, NoDataValue);
                 var result = new Raster(outWidth, outHeight, NoDataValue);
 
                 long lineBytes = (long)Width * BandCount * _sampleSize;
@@ -151,12 +143,7 @@ namespace RasterField.Rasters
         /// </summary>
         public Raster ReadOverview(int maxWidth, int maxHeight, int band = 0)
         {
-            if (maxWidth < 1) throw new ArgumentOutOfRangeException(nameof(maxWidth));
-            if (maxHeight < 1) throw new ArgumentOutOfRangeException(nameof(maxHeight));
-
-            int stepX = Math.Max(1, (Width + maxWidth - 1) / maxWidth);
-            int stepY = Math.Max(1, (Height + maxHeight - 1) / maxHeight);
-            int step = Math.Max(stepX, stepY);
+            int step = RasterReadWindow.OverviewStep(Width, Height, maxWidth, maxHeight);
             return ReadWindow(0, 0, Width, Height, step, step, band);
         }
 

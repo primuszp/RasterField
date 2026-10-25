@@ -47,20 +47,8 @@ namespace RasterField.Rasters
         public static IReadOnlyList<ProfileSample> Sample(Raster raster, double x0, double y0, double x1, double y1, int sampleCount)
         {
             if (raster == null) throw new ArgumentNullException(nameof(raster));
-            if (sampleCount < 2) throw new ArgumentOutOfRangeException(nameof(sampleCount), "At least 2 samples are required.");
-
-            double totalDistance = Math.Sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
-            var result = new List<ProfileSample>(sampleCount);
-
-            for (int i = 0; i < sampleCount; i++)
-            {
-                double t = i / (double)(sampleCount - 1);
-                double x = x0 + (x1 - x0) * t;
-                double y = y0 + (y1 - y0) * t;
-                float? value = BilinearSample(raster, x, y);
-                result.Add(new ProfileSample(totalDistance * t, x, y, value));
-            }
-            return result;
+            return SampleLineCore(x0, y0, x1, y1, sampleCount,
+                (x, y) => BilinearSample(raster, x, y));
         }
 
         /// <summary>
@@ -71,21 +59,28 @@ namespace RasterField.Rasters
         public static IReadOnlyList<ProfileSample> SampleWorld(
             Raster raster, RasterGeoReference geoReference, double worldX0, double worldY0, double worldX1, double worldY1, int sampleCount)
         {
+            if (raster == null) throw new ArgumentNullException(nameof(raster));
             if (geoReference == null) throw new ArgumentNullException(nameof(geoReference));
             if (!geoReference.IsInvertible) throw new InvalidOperationException("The georeference is not invertible.");
-            if (sampleCount < 2) throw new ArgumentOutOfRangeException(nameof(sampleCount));
+            return SampleLineCore(worldX0, worldY0, worldX1, worldY1, sampleCount, (wx, wy) =>
+            {
+                var (col, row) = geoReference.WorldToPixel(wx, wy);
+                return BilinearSample(raster, col, row);
+            });
+        }
 
-            double totalDistance = Math.Sqrt((worldX1 - worldX0) * (worldX1 - worldX0) + (worldY1 - worldY0) * (worldY1 - worldY0));
+        private static IReadOnlyList<ProfileSample> SampleLineCore(
+            double x0, double y0, double x1, double y1, int sampleCount, Func<double, double, float?> sample)
+        {
+            if (sampleCount < 2) throw new ArgumentOutOfRangeException(nameof(sampleCount), "At least 2 samples are required.");
+            double dx = x1 - x0, dy = y1 - y0;
+            double totalDistance = Math.Sqrt(dx * dx + dy * dy);
             var result = new List<ProfileSample>(sampleCount);
-
             for (int i = 0; i < sampleCount; i++)
             {
                 double t = i / (double)(sampleCount - 1);
-                double wx = worldX0 + (worldX1 - worldX0) * t;
-                double wy = worldY0 + (worldY1 - worldY0) * t;
-                var (col, row) = geoReference.WorldToPixel(wx, wy);
-                float? value = BilinearSample(raster, col, row);
-                result.Add(new ProfileSample(totalDistance * t, wx, wy, value));
+                double x = x0 + dx * t, y = y0 + dy * t;
+                result.Add(new ProfileSample(totalDistance * t, x, y, sample(x, y)));
             }
             return result;
         }
@@ -102,36 +97,9 @@ namespace RasterField.Rasters
             Func<Raster, double, double, float?>? sampler = null)
         {
             if (raster == null) throw new ArgumentNullException(nameof(raster));
-            if (geoReference == null) throw new ArgumentNullException(nameof(geoReference));
-            if (vertices == null) throw new ArgumentNullException(nameof(vertices));
-            if (vertices.Count < 2) throw new ArgumentException("A path needs at least two vertices.", nameof(vertices));
-            if (!(spacing > 0)) throw new ArgumentOutOfRangeException(nameof(spacing), "The sample spacing must be positive.");
-            if (!geoReference.IsInvertible) throw new InvalidOperationException("The georeference is not invertible.");
             sampler ??= BilinearSample;
-
-            var result = new List<ProfileSample>();
-            double travelled = 0;
-            void Add(double wx, double wy, double distance)
-            {
-                var (col, row) = geoReference.WorldToPixel(wx, wy);
-                result.Add(new ProfileSample(distance, wx, wy, sampler(raster, col, row)));
-            }
-
-            Add(vertices[0].X, vertices[0].Y, 0);
-            for (int i = 1; i < vertices.Count; i++)
-            {
-                var (ax, ay) = vertices[i - 1];
-                var (bx, by) = vertices[i];
-                double len = Math.Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
-                int steps = Math.Max(1, (int)Math.Ceiling(len / spacing));
-                for (int s = 1; s <= steps; s++)
-                {
-                    double t = s / (double)steps;
-                    Add(ax + (bx - ax) * t, ay + (by - ay) * t, travelled + len * t);
-                }
-                travelled += len;
-            }
-            return result;
+            return SamplePolylineWorldCore(geoReference, vertices, spacing,
+                (col, row) => sampler(raster, col, row), CancellationToken.None);
         }
 
         /// <summary>
@@ -146,15 +114,24 @@ namespace RasterField.Rasters
             int band = 0, int tileSize = 256, CancellationToken cancellationToken = default)
         {
             if (source == null) throw new ArgumentNullException(nameof(source));
+            if (band < 0 || band >= source.BandCount) throw new ArgumentOutOfRangeException(nameof(band));
+            if (tileSize < 2) throw new ArgumentOutOfRangeException(nameof(tileSize), "A source tile must be at least 2 × 2 cells.");
+            var sampler = new WindowedBilinearSampler(source, band, tileSize, cancellationToken);
+            return SamplePolylineWorldCore(geoReference, vertices, spacing, sampler.Sample, cancellationToken);
+        }
+
+        private static IReadOnlyList<ProfileSample> SamplePolylineWorldCore(
+            RasterGeoReference geoReference, IReadOnlyList<(double X, double Y)> vertices,
+            double spacing, Func<double, double, float?> sample, CancellationToken cancellationToken)
+        {
             if (geoReference == null) throw new ArgumentNullException(nameof(geoReference));
             if (vertices == null) throw new ArgumentNullException(nameof(vertices));
             if (vertices.Count < 2) throw new ArgumentException("A path needs at least two vertices.", nameof(vertices));
-            if (!(spacing > 0)) throw new ArgumentOutOfRangeException(nameof(spacing), "The sample spacing must be positive.");
+            if (!(spacing > 0) || double.IsInfinity(spacing)) throw new ArgumentOutOfRangeException(nameof(spacing));
             if (!geoReference.IsInvertible) throw new InvalidOperationException("The georeference is not invertible.");
-            if (band < 0 || band >= source.BandCount) throw new ArgumentOutOfRangeException(nameof(band));
-            if (tileSize < 2) throw new ArgumentOutOfRangeException(nameof(tileSize), "A source tile must be at least 2 × 2 cells.");
-
-            var sampler = new WindowedBilinearSampler(source, band, tileSize, cancellationToken);
+            foreach (var point in vertices)
+                if (double.IsNaN(point.X) || double.IsInfinity(point.X) || double.IsNaN(point.Y) || double.IsInfinity(point.Y))
+                    throw new ArgumentException("Path coordinates must be finite.", nameof(vertices));
             var result = new List<ProfileSample>();
             double travelled = 0;
 
@@ -162,7 +139,7 @@ namespace RasterField.Rasters
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var (col, row) = geoReference.WorldToPixel(wx, wy);
-                result.Add(new ProfileSample(distance, wx, wy, sampler.Sample(col, row)));
+                result.Add(new ProfileSample(distance, wx, wy, sample(col, row)));
             }
 
             Add(vertices[0].X, vertices[0].Y, 0);
@@ -171,7 +148,10 @@ namespace RasterField.Rasters
                 var (ax, ay) = vertices[i - 1];
                 var (bx, by) = vertices[i];
                 double len = Math.Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
-                int steps = Math.Max(1, (int)Math.Ceiling(len / spacing));
+                double requiredSteps = Math.Ceiling(len / spacing);
+                if (requiredSteps >= int.MaxValue)
+                    throw new ArgumentOutOfRangeException(nameof(spacing), "The path requires too many samples.");
+                int steps = Math.Max(1, (int)requiredSteps);
                 for (int s = 1; s <= steps; s++)
                 {
                     double t = s / (double)steps;
@@ -193,36 +173,48 @@ namespace RasterField.Rasters
         public static float? BilinearSample(Raster raster, double col, double row)
         {
             if (raster == null) throw new ArgumentNullException(nameof(raster));
-            if (col < 0 || row < 0 || col > raster.Width || row > raster.Height) return null;
+            return SampleBilinear(new LoadedGrid(raster), col, row);
+        }
 
-            // Shift into cell-centre space so a query exactly at a cell's centre resolves to
-            // that cell alone, rather than averaging with its neighbour.
-            double u = col - 0.5;
-            double v = row - 0.5;
-            int c0 = (int)Math.Floor(u);
-            int r0 = (int)Math.Floor(v);
-            int c1 = c0 + 1;
-            int r1 = r0 + 1;
-            double fx = u - c0;
-            double fy = v - r0;
+        private interface ISampleGrid
+        {
+            int Width { get; }
+            int Height { get; }
+            float? Read(int col, int row);
+        }
 
+        private readonly struct LoadedGrid : ISampleGrid
+        {
+            private readonly Raster _raster;
+            public LoadedGrid(Raster raster) => _raster = raster;
+            public int Width => _raster.Width;
+            public int Height => _raster.Height;
+            public float? Read(int col, int row) => _raster.GetValueOrNull(row, col);
+        }
+
+        // Generic accessor avoids allocating a delegate/boxing per sample in terrain rendering.
+        private static float? SampleBilinear<T>(T grid, double col, double row) where T : ISampleGrid
+        {
+            if (!(col >= 0 && row >= 0 && col <= grid.Width && row <= grid.Height)) return null;
+            double u = col - 0.5, v = row - 0.5;
+            int c0 = (int)Math.Floor(u), r0 = (int)Math.Floor(v);
+            double fx = u - c0, fy = v - r0;
             double weightSum = 0, valueSum = 0;
-            AccumulateCorner(raster, c0, r0, (1 - fx) * (1 - fy), ref weightSum, ref valueSum);
-            AccumulateCorner(raster, c1, r0, fx * (1 - fy), ref weightSum, ref valueSum);
-            AccumulateCorner(raster, c0, r1, (1 - fx) * fy, ref weightSum, ref valueSum);
-            AccumulateCorner(raster, c1, r1, fx * fy, ref weightSum, ref valueSum);
-
+            AccumulateCorner(grid, c0, r0, (1 - fx) * (1 - fy), ref weightSum, ref valueSum);
+            AccumulateCorner(grid, c0 + 1, r0, fx * (1 - fy), ref weightSum, ref valueSum);
+            AccumulateCorner(grid, c0, r0 + 1, (1 - fx) * fy, ref weightSum, ref valueSum);
+            AccumulateCorner(grid, c0 + 1, r0 + 1, fx * fy, ref weightSum, ref valueSum);
             return weightSum > 0 ? (float)(valueSum / weightSum) : (float?)null;
         }
 
-        private static void AccumulateCorner(Raster raster, int c, int r, double weight, ref double weightSum, ref double valueSum)
+        private static void AccumulateCorner<T>(T grid, int col, int row, double weight,
+            ref double weightSum, ref double valueSum) where T : ISampleGrid
         {
-            if (weight <= 0) return;
-            if ((uint)c >= (uint)raster.Width || (uint)r >= (uint)raster.Height) return;
-            float v = raster[r, c];
-            if (raster.IsNoData(v)) return;
+            if (weight <= 0 || (uint)col >= (uint)grid.Width || (uint)row >= (uint)grid.Height) return;
+            float? value = grid.Read(col, row);
+            if (!value.HasValue) return;
             weightSum += weight;
-            valueSum += weight * v;
+            valueSum += weight * value.Value;
         }
 
         /// <summary>
@@ -230,7 +222,7 @@ namespace RasterField.Rasters
         /// profile normally touches each tile once; keeping a few recent neighbours also avoids
         /// repeated reads where bilinear interpolation crosses a tile edge or the path bends.
         /// </summary>
-        private sealed class WindowedBilinearSampler
+        private sealed class WindowedBilinearSampler : ISampleGrid
         {
             private const int MaxCachedTiles = 16;
             private readonly IRasterSource _source;
@@ -248,36 +240,14 @@ namespace RasterField.Rasters
                 _cancellationToken = cancellationToken;
             }
 
-            public float? Sample(double col, double row)
+            public int Width => _source.Width;
+            public int Height => _source.Height;
+            public float? Sample(double col, double row) => SampleBilinear(this, col, row);
+
+            public float? Read(int col, int row)
             {
-                if (col < 0 || row < 0 || col > _source.Width || row > _source.Height) return null;
-
-                double u = col - 0.5;
-                double v = row - 0.5;
-                int c0 = (int)Math.Floor(u);
-                int r0 = (int)Math.Floor(v);
-                int c1 = c0 + 1;
-                int r1 = r0 + 1;
-                double fx = u - c0;
-                double fy = v - r0;
-
-                double weightSum = 0, valueSum = 0;
-                Accumulate(c0, r0, (1 - fx) * (1 - fy), ref weightSum, ref valueSum);
-                Accumulate(c1, r0, fx * (1 - fy), ref weightSum, ref valueSum);
-                Accumulate(c0, r1, (1 - fx) * fy, ref weightSum, ref valueSum);
-                Accumulate(c1, r1, fx * fy, ref weightSum, ref valueSum);
-                return weightSum > 0 ? (float)(valueSum / weightSum) : (float?)null;
-            }
-
-            private void Accumulate(int col, int row, double weight, ref double weightSum, ref double valueSum)
-            {
-                if (weight <= 0 || (uint)col >= (uint)_source.Width || (uint)row >= (uint)_source.Height) return;
-
                 Raster tile = GetTile(col / _tileSize, row / _tileSize);
-                float value = tile[row % _tileSize, col % _tileSize];
-                if (tile.IsNoData(value)) return;
-                weightSum += weight;
-                valueSum += weight * value;
+                return tile.GetValueOrNull(row % _tileSize, col % _tileSize);
             }
 
             private Raster GetTile(int tileX, int tileY)

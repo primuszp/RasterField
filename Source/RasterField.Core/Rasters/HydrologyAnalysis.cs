@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 
 namespace RasterField.Rasters
 {
@@ -23,13 +22,6 @@ namespace RasterField.Rasters
     /// </remarks>
     public static class HydrologyAnalysis
     {
-        /// <summary>D8 direction codes, Esri convention (clockwise from east, 0 = sink).</summary>
-        private static readonly (int Code, int Dx, int Dy)[] Directions =
-        {
-            (1, 1, 0), (2, 1, 1), (4, 0, 1), (8, -1, 1),
-            (16, -1, 0), (32, -1, -1), (64, 0, -1), (128, 1, -1),
-        };
-
         /// <summary>
         /// Computes the D8 flow direction for every cell: the code (see the type remarks) of the
         /// neighbour with the steepest downhill slope. No-data elevation cells remain no-data.
@@ -53,7 +45,7 @@ namespace RasterField.Rasters
                     int bestCode = 0;
                     double bestSlope = 0.0; // strictly positive required: must be a genuine descent
 
-                    foreach (var (code, dx, dy) in Directions)
+                    foreach (var (code, dx, dy) in D8FlowGraph.Directions)
                     {
                         int nc = c + dx, nr = r + dy;
                         if ((uint)nc >= (uint)w || (uint)nr >= (uint)h) continue;
@@ -65,7 +57,7 @@ namespace RasterField.Rasters
                         double dist = (dx != 0 && dy != 0)
                             ? Math.Sqrt(cellSizeX * cellSizeX + cellSizeY * cellSizeY)
                             : (dx != 0 ? cellSizeX : cellSizeY);
-                        double slope = (z - nz) / dist;
+                        double slope = ((double)z - nz) / dist;
 
                         if (slope > bestSlope) { bestSlope = slope; bestCode = code; }
                     }
@@ -97,71 +89,17 @@ namespace RasterField.Rasters
         public static Raster FlowAccumulation(Raster flowDirection)
         {
             if (flowDirection == null) throw new ArgumentNullException(nameof(flowDirection));
-            int w = flowDirection.Width, h = flowDirection.Height;
-            int n = w * h;
-
-            var target = new int[n]; // flat index this cell flows into, or -1 (sink / no-data)
-            var inDegree = new int[n];
-            var isValid = new bool[n];
-
-            for (int r = 0; r < h; r++)
+            var graph = D8FlowGraph.Build(flowDirection);
+            var accumulation = new double[flowDirection.Samples.Length];
+            foreach (int cell in graph.Order)
             {
-                for (int c = 0; c < w; c++)
-                {
-                    int idx = r * w + c;
-                    float code = flowDirection[r, c];
-                    if (flowDirection.IsNoData(code)) { target[idx] = -1; continue; }
-
-                    isValid[idx] = true;
-                    var (dx, dy) = DecodeDirection((int)Math.Round(code));
-                    if (dx == 0 && dy == 0) { target[idx] = -1; continue; } // sink (code 0)
-
-                    int nc = c + dx, nr = r + dy;
-                    if ((uint)nc >= (uint)w || (uint)nr >= (uint)h) { target[idx] = -1; continue; }
-
-                    int t = nr * w + nc;
-                    if (flowDirection.IsNoData(flowDirection.Samples[t])) { target[idx] = -1; continue; }
-                    target[idx] = t;
-                    inDegree[t]++;
-                }
+                int next = graph.Downstream[cell];
+                if (next >= 0) accumulation[next] += accumulation[cell] + 1;
             }
-
-            var acc = new double[n];
-            var queue = new Queue<int>();
-            for (int i = 0; i < n; i++)
-                if (isValid[i] && inDegree[i] == 0) queue.Enqueue(i);
-
-            int processed = 0;
-            while (queue.Count > 0)
-            {
-                int cell = queue.Dequeue();
-                processed++;
-                int t = target[cell];
-                if (t < 0) continue;
-
-                acc[t] += acc[cell] + 1.0;
-                if (--inDegree[t] == 0) queue.Enqueue(t);
-            }
-
-            int validCount = 0;
-            for (int i = 0; i < n; i++)
-                if (isValid[i]) validCount++;
-            if (processed != validCount)
-                throw new ArgumentException("Flow directions contain a cycle; accumulation requires an acyclic drainage network.", nameof(flowDirection));
-
-            var output = new Raster(w, h, noDataValue: -1);
-            for (int i = 0; i < n; i++)
-                output.Samples[i] = isValid[i] ? (float)acc[i] : float.NaN;
-
-            output.InvalidateStatistics();
+            var output = new Raster(flowDirection.Width, flowDirection.Height, noDataValue: -1);
+            for (int i = 0; i < accumulation.Length; i++)
+                output.Samples[i] = graph.Valid[i] ? (float)accumulation[i] : float.NaN;
             return output;
-        }
-
-        private static (int Dx, int Dy) DecodeDirection(int code)
-        {
-            foreach (var (c, dx, dy) in Directions)
-                if (c == code) return (dx, dy);
-            return (0, 0); // 0 (sink) or an unrecognised code — treated the same, as "no target"
         }
     }
 }

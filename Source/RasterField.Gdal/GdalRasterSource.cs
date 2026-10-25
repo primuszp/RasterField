@@ -78,17 +78,10 @@ namespace RasterField.Gdal
             if (stepY < 1) throw new ArgumentOutOfRangeException(nameof(stepY));
             ValidateBand(band);
 
-            int x0 = Math.Max(0, x);
-            int y0 = Math.Max(0, y);
-            int x1 = Math.Min(Width, x + Math.Max(0, width));
-            int y1 = Math.Min(Height, y + Math.Max(0, height));
-            int sourceWidth = x1 - x0;
-            int sourceHeight = y1 - y0;
-            if (sourceWidth <= 0 || sourceHeight <= 0)
-                return new Raster(0, 0, GetNoDataValue(band));
-
-            int outputWidth = (sourceWidth + stepX - 1) / stepX;
-            int outputHeight = (sourceHeight + stepY - 1) / stepY;
+            var window = RasterReadWindow.Create(Width, Height, x, y, width, height, stepX, stepY);
+            int x0 = window.X, y0 = window.Y, sourceWidth = window.Width, sourceHeight = window.Height;
+            int outputWidth = window.OutputWidth, outputHeight = window.OutputHeight;
+            if (outputWidth == 0 || outputHeight == 0) return new Raster(0, 0, GetNoDataValue(band));
             var samples = new float[checked(outputWidth * outputHeight)];
             double noData;
 
@@ -108,11 +101,7 @@ namespace RasterField.Gdal
 
         public Raster ReadOverview(int maxWidth, int maxHeight, int band = 0)
         {
-            if (maxWidth < 1) throw new ArgumentOutOfRangeException(nameof(maxWidth));
-            if (maxHeight < 1) throw new ArgumentOutOfRangeException(nameof(maxHeight));
-            int stepX = Math.Max(1, (Width + maxWidth - 1) / maxWidth);
-            int stepY = Math.Max(1, (Height + maxHeight - 1) / maxHeight);
-            int step = Math.Max(stepX, stepY);
+            int step = RasterReadWindow.OverviewStep(Width, Height, maxWidth, maxHeight);
             return ReadWindow(0, 0, Width, Height, step, step, band);
         }
 

@@ -18,16 +18,11 @@ namespace RasterField.Rasters
             if (width <= 0 || height <= 0) throw new ArgumentOutOfRangeException(nameof(width), "Width and height must be positive.");
 
             var result = new Raster(width, height, source.NoDataValue);
-            if (double.IsNaN(source.NoDataValue))
-            {
-                // No declared no-data value: pre-fill the out-of-source margin with NaN so it
-                // reads as "no data" rather than a stray zero.
-                var buf = result.Samples;
-                for (int i = 0; i < buf.Length; i++) buf[i] = float.NaN;
-            }
-
-            int srcX0 = Math.Max(0, x), srcY0 = Math.Max(0, y);
-            int srcX1 = Math.Min(source.Width, x + width), srcY1 = Math.Min(source.Height, y + height);
+            float noData = (float)source.NoDataValue;
+            for (int i = 0; i < result.Samples.Length; i++) result.Samples[i] = noData;
+            var window = RasterReadWindow.Create(source.Width, source.Height, x, y, width, height);
+            int srcX0 = window.X, srcY0 = window.Y;
+            int srcX1 = srcX0 + window.Width, srcY1 = srcY0 + window.Height;
 
             for (int sy = srcY0; sy < srcY1; sy++)
             {

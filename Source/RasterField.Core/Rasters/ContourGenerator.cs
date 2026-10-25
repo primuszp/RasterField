@@ -26,19 +26,8 @@ namespace RasterField.Rasters
         public bool IsClosed => Points.Count > 2 && Points[0].X == Points[Points.Count - 1].X && Points[0].Y == Points[Points.Count - 1].Y;
 
         /// <summary>Total length of the polyline, in world units.</summary>
-        public double Length
-        {
-            get
-            {
-                double len = 0;
-                for (int i = 1; i < Points.Count; i++)
-                {
-                    double dx = Points[i].X - Points[i - 1].X, dy = Points[i].Y - Points[i - 1].Y;
-                    len += Math.Sqrt(dx * dx + dy * dy);
-                }
-                return len;
-            }
-        }
+        public double Length => Measurement.Length(Points);
+
     }
 
     /// <summary>Parameters for <see cref="ContourGenerator.Trace(Raster, RasterGeoReference, ContourOptions)"/>.</summary>

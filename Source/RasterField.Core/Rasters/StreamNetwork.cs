@@ -31,12 +31,6 @@ namespace RasterField.Rasters
     /// </summary>
     public static class StreamNetwork
     {
-        private static readonly (int Code, int Dx, int Dy)[] Directions =
-        {
-            (1, 1, 0), (2, 1, 1), (4, 0, 1), (8, -1, 1),
-            (16, -1, 0), (32, -1, -1), (64, 0, -1), (128, 1, -1),
-        };
-
         /// <summary>Extracts the network of cells with accumulation ≥ <paramref name="threshold"/>.</summary>
         public static IReadOnlyList<StreamSegment> Extract(Raster flowDirection, Raster flowAccumulation, RasterGeoReference geoReference, double threshold)
         {
@@ -48,54 +42,33 @@ namespace RasterField.Rasters
 
             int w = flowDirection.Width, h = flowDirection.Height, n = w * h;
             var isStream = new bool[n];
-            var down = new int[n];
             for (int i = 0; i < n; i++)
             {
-                down[i] = -1;
                 float acc = flowAccumulation.Samples[i];
                 isStream[i] = !flowAccumulation.IsNoData(acc) && acc >= threshold;
             }
-
-            var inDegree = new int[n];
-            for (int r = 0; r < h; r++)
-                for (int c = 0; c < w; c++)
-                {
-                    int i = r * w + c;
-                    if (!isStream[i]) continue;
-                    float code = flowDirection.Samples[i];
-                    if (flowDirection.IsNoData(code)) continue;
-                    var (dx, dy) = Decode((int)Math.Round(code));
-                    int nc = c + dx, nr = r + dy;
-                    if ((dx == 0 && dy == 0) || (uint)nc >= (uint)w || (uint)nr >= (uint)h) continue;
-                    int j = nr * w + nc;
-                    if (!isStream[j]) continue; // cannot really happen (accumulation grows downstream), but be safe
-                    down[i] = j;
-                    inDegree[j]++;
-                }
-
-            // Segment heads: sources (in-degree 0) and confluences (in-degree ≥ 2).
-            var heads = new List<int>();
-            for (int i = 0; i < n; i++)
-                if (isStream[i] && inDegree[i] != 1) heads.Add(i);
-            // Upstream first: accumulation strictly increases downstream along D8 paths.
-            heads.Sort((a, b) => flowAccumulation.Samples[a].CompareTo(flowAccumulation.Samples[b]));
-
-            var ordersArrivingAt = new Dictionary<int, List<int>>(); // confluence cell → orders of reaches ending there
-            var result = new List<StreamSegment>(heads.Count);
-            foreach (int head in heads)
+            var graph = D8FlowGraph.Build(flowDirection, isStream);
+            var down = graph.Downstream;
+            var inDegree = graph.InDegree;
+            var orders = new int[n];
+            var maximumIncoming = new int[n];
+            var maximumCount = new int[n];
+            foreach (int cell in graph.Order)
             {
-                int order = 1;
-                if (inDegree[head] >= 2 && ordersArrivingAt.TryGetValue(head, out var incoming))
-                {
-                    int max = 0, countMax = 0;
-                    foreach (int o in incoming)
-                    {
-                        if (o > max) { max = o; countMax = 1; }
-                        else if (o == max) countMax++;
-                    }
-                    order = countMax >= 2 ? max + 1 : max;
-                }
+                int order = inDegree[cell] == 0 ? 1
+                    : maximumIncoming[cell] + (maximumCount[cell] >= 2 ? 1 : 0);
+                orders[cell] = order;
+                int next = down[cell];
+                if (next < 0) continue;
+                if (order > maximumIncoming[next]) { maximumIncoming[next] = order; maximumCount[next] = 1; }
+                else if (order == maximumIncoming[next]) maximumCount[next]++;
+            }
 
+            var result = new List<StreamSegment>();
+            foreach (int head in graph.Order)
+            {
+                if (inDegree[head] == 1) continue;
+                int order = orders[head];
                 var points = new List<(double X, double Y)> { CellCentre(geoReference, head, w) };
                 int cell = head;
                 while (true)
@@ -105,11 +78,7 @@ namespace RasterField.Rasters
                     points.Add(CellCentre(geoReference, next, w));
                     cell = next;
                     if (inDegree[next] != 1)
-                    {
-                        if (!ordersArrivingAt.TryGetValue(next, out var list)) ordersArrivingAt[next] = list = new List<int>();
-                        list.Add(order);
                         break;
-                    }
                 }
 
                 if (points.Count >= 2)
@@ -121,11 +90,5 @@ namespace RasterField.Rasters
         private static (double X, double Y) CellCentre(RasterGeoReference geo, int index, int width) =>
             geo.CellCentreToWorld(index % width, index / width);
 
-        private static (int Dx, int Dy) Decode(int code)
-        {
-            foreach (var (c, dx, dy) in Directions)
-                if (c == code) return (dx, dy);
-            return (0, 0);
-        }
     }
 }

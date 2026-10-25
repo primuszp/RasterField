@@ -49,30 +49,11 @@ namespace RasterField.Rasters
         {
             if (raster == null) throw new ArgumentNullException(nameof(raster));
 
-            float[] s = raster.Samples;
-            long count = 0;
-            double min = double.PositiveInfinity, max = double.NegativeInfinity;
-            double mean = 0.0, m2 = 0.0;
-
-            for (int i = 0; i < s.Length; i++)
-            {
-                float v = s[i];
-                if (raster.IsNoData(v)) continue;
-
-                count++;
-                if (v < min) min = v;
-                if (v > max) max = v;
-
-                double delta = v - mean;
-                mean += delta / count;
-                m2 += delta * (v - mean);
-            }
-
-            if (count == 0)
-                return new RasterStatistics(0, 0, 0, 0, 0);
-
-            double variance = count > 1 ? m2 / count : 0.0;
-            return new RasterStatistics(count, min, max, mean, Math.Sqrt(variance));
+            var stats = new SampleStatistics();
+            foreach (float value in raster.Samples)
+                if (!raster.IsNoData(value)) stats.Add(value);
+            return stats.Count == 0 ? new RasterStatistics(0, 0, 0, 0, 0)
+                : new RasterStatistics(stats.Count, stats.Minimum, stats.Maximum, stats.Mean, stats.StandardDeviation);
         }
     }
 }
