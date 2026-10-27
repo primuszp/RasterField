@@ -59,9 +59,10 @@ namespace RasterField.Rasters
     /// prescribed horizontal step and at the prescribed global profile elevation.
     /// Within each bilinear patch a straight segment has a quadratic elevation profile;
     /// its extrema and endpoint derivatives provide a whole-segment acceptance check.
-    /// No smoothing, gap filling, branch switching or endpoint snapping is performed.
+    /// A bracketed circle search recovers alternatives when local correction fails.
+    /// No smoothing, gap filling or endpoint snapping is performed.
     /// </summary>
-    public static class NeutralLineTracer
+    public static partial class NeutralLineTracer
     {
         /// <summary>Traces both initial branches. Cancellation throws and returns no partial result.</summary>
         public static IReadOnlyList<NeutralLineBranch> Trace(Raster raster, RasterGeoReference geo,
@@ -93,14 +94,15 @@ namespace RasterField.Rasters
                 samples.Add(new ProfileSample(0, startX, startY, (float)z0));
                 double x = startX, y = startY, s = 0, previousX = 0, previousY = 0;
                 double maxHeight = 0, maxGrade = 0, grade = options.GradePercent / 100;
-                double baseStep = surface.CellScale * 0.25;
+                double nextStep = surface.CellScale * 0.25;
+                double maximumStep = surface.CellScale;
                 var stop = NeutralLineStop.StepLimit;
                 for (int iteration = 0; iteration < options.MaximumSteps; iteration++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (options.MaximumLength - s <= 1e-9 * Math.Max(1, options.MaximumLength))
                     { stop = NeutralLineStop.MaximumLength; break; }
-                    if (!surface.At(x, y, out _, out double gx, out double gy))
+                    if (!surface.GradientAhead(x, y, previousX, previousY, out double gx, out double gy))
                     { stop = NeutralLineStop.BoundaryOrNoData; break; }
                     double q = Math.Sqrt(gx * gx + gy * gy);
                     if (q < Math.Abs(grade) - 1e-12) { stop = NeutralLineStop.InsufficientSlope; break; }
@@ -108,47 +110,84 @@ namespace RasterField.Rasters
                     double along = grade / q, across = Math.Sqrt(Math.Max(0, 1 - along * along));
                     double dx = along * gx / q - side * across * gy / q;
                     double dy = along * gy / q + side * across * gx / q;
-                    // Preserve the initial oriented field; never jump to the opposite branch.
-                    if (iteration > 0 && dx * previousX + dy * previousY <= 0)
-                    { stop = NeutralLineStop.ToleranceLimit; break; }
-                    double h = Math.Min(baseStep, options.MaximumLength - s);
+                    // At a bilinear patch boundary the gradient can jump. Continue the
+                    // geometric branch by its incoming heading instead of an arbitrary
+                    // +/- label of the new patch's gradient.
+                    if (iteration > 0)
+                    {
+                        double otherX = along * gx / q + side * across * gy / q;
+                        double otherY = along * gy / q - side * across * gx / q;
+                        if (otherX * previousX + otherY * previousY > dx * previousX + dy * previousY)
+                        { dx = otherX; dy = otherY; }
+                    }
+                    double heading = iteration == 0 ? Math.Atan2(dy, dx) : Math.Atan2(previousY, previousX);
+                    double predicted = Math.Atan2(dy, dx);
+                    double h = Math.Min(nextStep, options.MaximumLength - s);
                     bool accepted = false;
                     stop = NeutralLineStop.ToleranceLimit;
                     for (int retry = 0; retry < 20; retry++, h *= 0.5)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
                         if (h < surface.CellScale * 1e-7) break;
-                        double theta = Math.Atan2(dy, dx), target = z0 + grade * (s + h);
-                        bool corrected = false;
-                        for (int k = 0; k < 16; k++)
+                        double target = z0 + grade * (s + h);
+                        double rootTolerance = Math.Max(32 * 2.220446049250313e-16 * Math.Max(1, Math.Abs(target)),
+                            Math.Min(options.HeightTolerance * 0.001, h * 1e-8));
+                        var angles = new List<double>();
+                        if (surface.CorrectAngle(x, y, h, target, predicted, rootTolerance, out double corrected, out bool invalidTerrain))
+                            angles.Add(corrected);
+                        if (invalidTerrain) stop = NeutralLineStop.BoundaryOrNoData;
+
+                        // The fast local solve is normally enough. If it is unusable, search
+                        // all circle arcs and test alternatives before reducing step length.
+                        SegmentCheck? chosen = null;
+                        double chosenAngle = 0, chosenLength = h;
+                        var events = surface.BoundaryCandidates(x, y, h, z0 + grade * s, grade, heading);
+                        events.Sort((a, b) => AngleDistance(a.Angle, heading).CompareTo(AngleDistance(b.Angle, heading)));
+                        foreach (var boundary in events)
                         {
-                            double nx = x + h * Math.Cos(theta), ny = y + h * Math.Sin(theta);
-                            if (!surface.At(nx, ny, out double z, out double ex, out double ey))
-                            { stop = NeutralLineStop.BoundaryOrNoData; break; }
-                            double residual = z - target;
-                            if (Math.Abs(residual) <= Math.Min(options.HeightTolerance * 0.001, h * 1e-8))
-                            { corrected = true; break; }
-                            double derivative = h * (-ex * Math.Sin(theta) + ey * Math.Cos(theta));
-                            if (Math.Abs(derivative) < 1e-14) break;
-                            double correction = residual / derivative;
-                            if (Math.Abs(correction) > 0.3) correction = Math.Sign(correction) * 0.3;
-                            theta -= correction;
-                            if (Math.Cos(theta) * dx + Math.Sin(theta) * dy < 0.7) break;
+                            TryCandidate(boundary.Angle, boundary.Length);
+                            if (chosen != null) break;
                         }
-                        if (!corrected) continue;
-                        double endX = x + h * Math.Cos(theta), endY = y + h * Math.Sin(theta);
-                        var check = surface.Check(x, y, endX, endY, s, z0, grade);
-                        if (check == null) { stop = NeutralLineStop.BoundaryOrNoData; continue; }
-                        if (check.HeightError > options.HeightTolerance || check.GradeError * 100 > options.GradeTolerancePercent)
-                        { stop = NeutralLineStop.ToleranceLimit; continue; }
-                        samples.AddRange(check.Samples);
-                        maxHeight = Math.Max(maxHeight, check.HeightError);
-                        maxGrade = Math.Max(maxGrade, check.GradeError * 100);
-                        previousX = (endX - x) / h; previousY = (endY - y) / h;
+                        if (chosen == null && angles.Count > 0) TryCandidate(angles[0], h);
+                        if (chosen == null)
+                        {
+                            angles = surface.CircleRoots(x, y, h, target, rootTolerance, cancellationToken);
+                            angles.Sort((a, b) => AngleDistance(a, heading).CompareTo(AngleDistance(b, heading)));
+                            foreach (double angle in angles)
+                            {
+                                cancellationToken.ThrowIfCancellationRequested();
+                                TryCandidate(angle, h);
+                                if (chosen != null) break;
+                            }
+                        }
+                        if (chosen == null) continue;
+                        h = chosenLength;
+                        double endX = x + h * Math.Cos(chosenAngle), endY = y + h * Math.Sin(chosenAngle);
+                        samples.AddRange(chosen.Samples);
+                        maxHeight = Math.Max(maxHeight, chosen.HeightError);
+                        maxGrade = Math.Max(maxGrade, chosen.GradeError * 100);
+                        previousX = Math.Cos(chosenAngle); previousY = Math.Sin(chosenAngle);
                         x = endX; y = endY; s += h;
+                        // Grow only after a segment has passed the whole-profile check.
+                        nextStep = Math.Min(maximumStep, h * 1.5);
                         accepted = true;
                         stop = NeutralLineStop.ToleranceLimit;
                         break;
+
+                        void TryCandidate(double angle, double length)
+                        {
+                            if (Math.Cos(angle - heading) <= 0) return; // never double back
+                            // At the start keep the two sides distinct, even for nearby roots.
+                            if (iteration == 0 && side * (gx * Math.Sin(angle) - gy * Math.Cos(angle)) < -1e-12 * q) return;
+                            double ex = x + length * Math.Cos(angle), ey = y + length * Math.Sin(angle);
+                            var check = surface.Check(x, y, ex, ey, s, z0, grade);
+                            if (check == null) { stop = NeutralLineStop.BoundaryOrNoData; return; }
+                            if (check.HeightError > options.HeightTolerance || check.GradeError * 100 > options.GradeTolerancePercent)
+                            { stop = NeutralLineStop.ToleranceLimit; return; }
+                            chosen = check;
+                            chosenAngle = angle;
+                            chosenLength = length;
+                        }
                     }
                     if (!accepted) break;
                     if (iteration == options.MaximumSteps - 1) stop = NeutralLineStop.StepLimit;
@@ -157,6 +196,8 @@ namespace RasterField.Rasters
                 return new NeutralLineBranch(samples, stop, maxHeight, maxGrade);
             }
         }
+
+        private static double AngleDistance(double a, double b) => Math.Abs(Math.Atan2(Math.Sin(a - b), Math.Cos(a - b)));
 
         private static bool Finite(double v) => !double.IsNaN(v) && !double.IsInfinity(v);
         private static bool Positive(double v) => Finite(v) && v > 0;
@@ -167,7 +208,7 @@ namespace RasterField.Rasters
             public double HeightError, GradeError;
         }
 
-        private sealed class Surface
+        private sealed partial class Surface
         {
             private readonly Raster _raster;
             private readonly RasterGeoReference _geo;
@@ -181,15 +222,19 @@ namespace RasterField.Rasters
                 // Lower bound for the smallest singular value, also safe for skewed cells.
                 CellScale = Math.Abs(_det) / Math.Sqrt(_b * _b + _c * _c + _e * _e + _f * _f);
             }
-            public bool At(double x, double y, out double z, out double gx, out double gy)
+            public bool At(double x, double y, out double z, out double gx, out double gy) =>
+                At(x, y, out z, out gx, out gy, out _);
+
+            private bool At(double x, double y, out double z, out double gx, out double gy, out double mixed)
             {
-                z = gx = gy = 0;
+                z = gx = gy = mixed = 0;
                 var pixel = _geo.WorldToPixel(x, y);
                 double u = pixel.Column - 0.5, v = pixel.Row - 0.5;
                 if (u < 0 || v < 0 || u > _raster.Width - 1 || v > _raster.Height - 1 || _raster.Width < 2 || _raster.Height < 2) return false;
                 int col = Math.Min((int)Math.Floor(u), _raster.Width - 2), row = Math.Min((int)Math.Floor(v), _raster.Height - 2);
                 double a = _raster[row, col], b = _raster[row, col + 1], c = _raster[row + 1, col], d = _raster[row + 1, col + 1];
                 if (!Valid(a) || !Valid(b) || !Valid(c) || !Valid(d)) return false;
+                mixed = a - b - c + d;
                 u -= col; v -= row;
                 z = a * (1-u) * (1-v) + b * u * (1-v) + c * (1-u) * v + d * u * v;
                 double du = (b-a) * (1-v) + (d-c) * v, dv = (c-a) * (1-u) + (d-b) * u;
@@ -214,18 +259,26 @@ namespace RasterField.Rasters
                     if (span < 1e-12) continue;
                     double tm = (ta+tb)/2;
                     if (!At(x+dx*ta, y+dy*ta, out double za, out _, out _) ||
-                        !At(x+dx*tm, y+dy*tm, out double zm, out _, out _) ||
+                        !At(x+dx*tm, y+dy*tm, out double zm, out double gx, out double gy, out double mixed) ||
                         !At(x+dx*tb, y+dy*tb, out double zb, out _, out _)) return null;
-                    // z(u)=a*u²+b*u+c on this patch, u in [0,1].
-                    double a = 2*(za+zb-2*zm), b = zb-za-a, length = h*span;
+                    // Evaluate exact bilinear derivatives instead of differencing close
+                    // elevations. Tiny intervals next to patch boundaries otherwise amplify
+                    // floating-point subtraction into a spurious local-grade violation.
+                    double length = h * span;
+                    double colRate = (_f * dx - _c * dy) / (_det * h);
+                    double rowRate = (-_e * dx + _b * dy) / (_det * h);
+                    double curvature = mixed * colRate * rowRate;
+                    double midpointGrade = (gx * dx + gy * dy) / h;
                     result.GradeError = Math.Max(result.GradeError,
-                        Math.Max(Math.Abs(b/length-grade), Math.Abs((2*a+b)/length-grade)));
+                        Math.Max(Math.Abs(midpointGrade - curvature * length - grade),
+                            Math.Abs(midpointGrade + curvature * length - grade)));
                     double ea = za-(z0+grade*(s+h*ta)), eb = zb-(z0+grade*(s+h*tb));
                     result.HeightError = Math.Max(result.HeightError, Math.Max(Math.Abs(ea), Math.Abs(eb)));
-                    double linearError = b-grade*length;
-                    double extremum = Math.Abs(a) > 1e-18 ? -linearError/(2*a) : -1;
+                    double quadratic = curvature * length * length;
+                    double linear = (midpointGrade - curvature * length - grade) * length;
+                    double extremum = Math.Abs(quadratic) > 1e-24 ? -linear/(2*quadratic) : -1;
                     if (extremum > 0 && extremum < 1)
-                        result.HeightError = Math.Max(result.HeightError, Math.Abs(ea+linearError*extremum+a*extremum*extremum));
+                        result.HeightError = Math.Max(result.HeightError, Math.Abs(ea + linear * extremum + quadratic * extremum * extremum));
                     result.Samples.Add(new ProfileSample(s+h*tm, x+dx*tm, y+dy*tm, (float)zm));
                     result.Samples.Add(new ProfileSample(s+h*tb, x+dx*tb, y+dy*tb, (float)zb));
                 }

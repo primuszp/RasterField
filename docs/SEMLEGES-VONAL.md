@@ -20,9 +20,14 @@ A megjelenítési Bézier-simítás ezt nem módosítja. A hossz vízszintes, ha
 vonalhossz: `z(s) = z0 + (esés / 100) * s`.
 
 A gradiensből kapott két egységirány előrejelzi a következő pontot. A korrektor
-rögzített vízszintes lépéshosszú körön keresi az előírt magasságot. Hibás lépésnél
-feleződik a lépéshossz. A követő megtartja az induló ágat, nem vált át a másik
-iránymezőre, és nem illeszt utólag simító görbét a pontokra.
+vízszintes lépéshosszú körön keresi az előírt magasságot. Ha a helyi korrekció nem
+ad használható lépést, több körmetszést keres, és az érkező haladási irányhoz
+legközelebbi, ellenőrzött folytatást választja. A kezdeti két irányt külön tartja.
+Sikeres lépés után növeli, sikertelennél felezi a lépéshosszt. A cellahatáron külön
+kiszámított törésponttal folytatja a vonalat; utólagos simító görbét nem illeszt.
+A körkeresés véges szögfelosztású, így a leállás nem bizonyítja, hogy nincs más
+lehetséges folytatás. A módszer részletes összehasonlítása:
+[Forest Road Designer és RasterField](SEMLEGES-VONAL-FRD-OSSZEVETES.md).
 
 Az ellenőrzés minden szakaszt feloszt az érintett bilineáris foltok határainál.
 Egy folton belül az egyenes szakasz magassága másodfokú függvény. A szélsőérték
@@ -60,5 +65,5 @@ a projektből újraszámolt koordinátákat és az ERV export visszaolvasását 
 
 A natív macOS felületen kipróbált esetek: 12,5%-os analitikus síklejtőn +5%-os,
 30 m-es kétágú vonal; a repó `P_00_01.ers` mintáján +0,2%-os, 10 000 m-es ágak.
-Az utóbbi első ágának kijelzett legnagyobb hibája 0,0014 m és 0,0028 százalékpont
-volt (kezdőpont közelítőleg E=532263,785; N=229342,899).
+A javított változat első ágának kijelzett legnagyobb hibája 0,0012 m és
+0,0007 százalékpont volt (kezdőpont közelítőleg E=532263,785; N=229342,899).

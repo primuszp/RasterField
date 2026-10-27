@@ -96,6 +96,76 @@ public class NeutralLineTracerTests
         Assert.All(NeutralLineTracer.Trace(nodata, geo, 50, 50, new NeutralLineOptions()), b => Assert.Empty(b.Samples));
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(-1)]
+    public void Circle_search_continues_both_branches_through_a_wavy_patch_transition(int sign)
+    {
+        // Legacy local-only correction stopped at 0.205 m / 0.319 m here.
+        var (raster, geo) = Terrain((x, y) => sign *
+            (0.1*x + 0.375*Math.Sin(y/6 + 4.6) + 0.1*Math.Sin(0.9*x + 2.8)));
+        var options = new NeutralLineOptions { GradePercent = sign*5, MaximumLength = 1 };
+        var branches = NeutralLineTracer.Trace(raster, geo, 50.2, 50.3, options);
+        foreach (var branch in branches)
+        {
+            Assert.Equal(NeutralLineStop.MaximumLength, branch.Stop);
+            Assert.Equal(1, branch.Length, 8);
+            VerifyDenseProfile(raster, geo, branch, options);
+        }
+        Assert.NotEqual(branches[0].Samples[^1].Y, branches[1].Samples[^1].Y);
+    }
+
+    [Fact]
+    public void Validated_step_growth_reaches_length_within_a_small_step_budget()
+    {
+        var (raster, geo) = Terrain((x, _) => 0.125*x);
+        var options = new NeutralLineOptions { MaximumLength = 10, MaximumSteps = 40 };
+        foreach (var branch in NeutralLineTracer.Trace(raster, geo, 50, 50, options))
+        {
+            // The legacy quarter-cell steps exhausted this budget at 7.071 m.
+            Assert.Equal(NeutralLineStop.MaximumLength, branch.Stop);
+            Assert.Equal(10, branch.Length, 8);
+            VerifyDenseProfile(raster, geo, branch, options);
+        }
+    }
+
+    [Fact]
+    public void Contour_following_handles_periodic_angles_and_keeps_the_initial_sides_distinct()
+    {
+        var (raster, geo) = Terrain((x, y) => 0.01*((x-50)*(x-50)+(y-50)*(y-50)));
+        var options = new NeutralLineOptions { GradePercent = 0, MaximumLength = 10, GradeTolerancePercent = 0.05 };
+        var branches = NeutralLineTracer.Trace(raster, geo, 70.2, 50.3, options);
+        foreach (var branch in branches)
+        {
+            Assert.Equal(NeutralLineStop.MaximumLength, branch.Stop);
+            VerifyDenseProfile(raster, geo, branch, options);
+        }
+        Assert.True(branches[0].Samples[^1].Y > 50.3);
+        Assert.True(branches[1].Samples[^1].Y < 50.3);
+    }
+
+    private static void VerifyDenseProfile(Raster raster, RasterGeoReference geo, NeutralLineBranch branch, NeutralLineOptions options)
+    {
+        Assert.True(branch.MaximumHeightError <= options.HeightTolerance);
+        Assert.True(branch.MaximumGradeErrorPercent <= options.GradeTolerancePercent);
+        var profile = RasterProfiler.SamplePolylineWorld(raster, geo,
+            branch.Samples.Select(p => (p.X, p.Y)).ToArray(), 0.005);
+        var start = geo.WorldToPixel(branch.Samples[0].X, branch.Samples[0].Y);
+        double z0 = RasterProfiler.BilinearSample(raster, start.Column, start.Row)!.Value;
+        for (int i = 1; i < profile.Count; i++)
+        {
+            var a = profile[i-1]; var b = profile[i];
+            Assert.NotNull(b.Value);
+            Assert.InRange(Math.Abs(b.Value.Value-z0-options.GradePercent/100*b.Distance), 0, options.HeightTolerance+0.00001);
+            if (b.Distance-a.Distance > 0.0001)
+            {
+                double grade = 100*(b.Value.Value-a.Value!.Value)/(b.Distance-a.Distance);
+                // Independent float samples have limited vertical precision.
+                Assert.InRange(Math.Abs(grade-options.GradePercent), 0, options.GradeTolerancePercent+0.02);
+            }
+        }
+    }
+
     [Fact]
     public void Invalid_start_cancellation_and_step_budget_are_explicit()
     {
