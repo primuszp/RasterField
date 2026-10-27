@@ -76,6 +76,21 @@ namespace RasterField
                     return new RecipeResult(result, null, null, null, $"{src.Name} · Bézier ×{o.Factor}", lineage, default);
                 }
 
+                case "neutral-line":
+                {
+                    var options = new NeutralLineOptions
+                    {
+                        GradePercent = recipe.Get("grade", 5.0), MaximumLength = recipe.Get("length", 1000.0),
+                        HeightTolerance = recipe.Get("heightTolerance", 0.02), GradeTolerancePercent = recipe.Get("gradeTolerance", 0.1),
+                    };
+                    int band = recipe.Get("band", 0), branch = recipe.Get("branch", 0);
+                    if (branch < 0 || branch > 1 || band < 0 || band >= doc.Bands.Count)
+                        throw new InvalidOperationException("Invalid neutral-line branch or source band.");
+                    var results = await Task.Run(() => NeutralLineTracer.Trace(doc.Bands[band], doc.GeoReference,
+                        recipe.Get("x", 0.0), recipe.Get("y", 0.0), options, cancellationToken), cancellationToken);
+                    return NeutralRecipeResult(src, recipe, results[branch]);
+                }
+
                 case "contours":
                 {
                     var o = new ContourOptions

@@ -199,7 +199,8 @@ namespace RasterField
                     new Cmd("Flow acc_umulation", () => _ = ComputeFlowAccumulationAsync()),
                     null,
                     new Cmd("_Stream network…", () => _ = GenerateStreamNetworkAsync())),
-                new Cmd("Generate _contours…", () => _ = GenerateContoursAsync()));
+                new Cmd("Generate _contours…", () => _ = GenerateContoursAsync()),
+                new Cmd("Neutral line…", () => SetPathTool(PathTool.NeutralLine)));
 
             var tools = new Cmd("T_ools").Add(
                 new Cmd("_Identify (click the map)", () => SetIdentifyToolActive(!_view.IdentifyMode), isChecked: () => _view.IdentifyMode, toolKey: Key.I),

@@ -34,6 +34,16 @@ RasterField.slnx        solution
 P_00_01.ers / P_00_01.dat   sample dataset (640×450 IEEE4, EOV)
 ```
 
+## Constant-grade terrain tracing
+
+**Analysis → Neutral line…** traces both constant-grade branches from a clicked
+start point. Enter a signed grade (%), maximum horizontal length, height tolerance
+and local grade tolerance. Each branch becomes a saveable vector layer; the
+profile compares terrain elevations with the target straight grade line and
+supports CSV export. Projects retain the calculation recipe. Loaded, metric
+terrain rasters are supported; streaming datasets must first be clipped.
+See [Semleges vonal — usage, method and limits](docs/SEMLEGES-VONAL.md).
+
 ## Library
 
 ### ER Mapper text format — `RasterField.ErMapper`

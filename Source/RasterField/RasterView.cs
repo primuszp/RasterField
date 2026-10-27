@@ -186,6 +186,8 @@ namespace RasterField
         /// coordinate (the host lists every layer's value there).
         /// </summary>
         public event EventHandler<RasterReadoutEventArgs>? IdentifyRequested;
+        /// <summary>A start point selected for constant-grade tracing.</summary>
+        public event EventHandler<RasterReadoutEventArgs>? NeutralStartRequested;
 
         /// <summary>Background fill behind the raster.</summary>
         public IBrush Background { get; set; }
@@ -1934,7 +1936,7 @@ namespace RasterField
             if (_hasSelection)
                 DrawSelection(context);
 
-            if (_path.Count > 0 && activeInvertible)
+            if ((_path.Count > 0 || _profileHoverWorld.HasValue) && activeInvertible)
                 DrawPath(context, active);
 
             if (comparisonValid)
@@ -2346,7 +2348,7 @@ namespace RasterField
                     context.DrawLine(new Pen(brush, 1, new DashStyle(new double[] { 4, 3 }, 0)), pts[pts.Count - 1], pts[0]);
             }
 
-            if (_pathTool == PathTool.Profile && _profileHoverWorld is { } hover)
+            if ((_pathTool == PathTool.Profile || _pathTool == PathTool.NeutralLine) && _profileHoverWorld is { } hover)
             {
                 Point point = WorldToScreen(active, hover.X, hover.Y);
                 context.DrawEllipse(Brushes.White, new Pen(Brushes.Black, 2), point, 7, 7);
@@ -2487,7 +2489,16 @@ namespace RasterField
                 return;
             }
 
-            if (_pathTool != PathTool.None && Document != null)
+            if (_pathTool == PathTool.NeutralLine && Document != null && p.Properties.IsLeftButtonPressed)
+            {
+                Point cell = ScreenToCell(p.Position);
+                var world = Document.GeoReference.PixelToWorld(cell.X, cell.Y);
+                NeutralStartRequested?.Invoke(this, new RasterReadoutEventArgs { WorldX = world.X, WorldY = world.Y });
+                e.Handled = true;
+                return;
+            }
+
+            if (_pathTool != PathTool.None && _pathTool != PathTool.NeutralLine && Document != null)
             {
                 if (p.Properties.IsRightButtonPressed) { FinishPath(); e.Handled = true; return; }
                 if (p.Properties.IsLeftButtonPressed)
@@ -2808,6 +2819,8 @@ namespace RasterField
 
         /// <summary>A polygon zone for zonal statistics.</summary>
         Zone,
+        /// <summary>Select a single start point for both constant-grade branches.</summary>
+        NeutralLine,
     }
 
     /// <summary>How a raster layer is composited onto what is below it.</summary>

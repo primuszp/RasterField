@@ -143,6 +143,8 @@ namespace RasterField
 
         public IReadOnlyList<ProfileSeries> Series => _series;
 
+        public string? EmptyMessage { get; set; }
+
         public event EventHandler<ProfileHoverEventArgs>? HoverChanged;
 
         public void SetSeries(IReadOnlyList<ProfileSeries> series, string distanceUnit, string? valueUnit)
@@ -162,7 +164,7 @@ namespace RasterField
 
             if (!_hasPlot)
             {
-                DrawCentredText(context, bounds, L.T("Draw a path on the map (click to add points, double-click to finish)."));
+                DrawCentredText(context, bounds, EmptyMessage ?? L.T("Draw a path on the map (click to add points, double-click to finish)."));
                 return;
             }
 

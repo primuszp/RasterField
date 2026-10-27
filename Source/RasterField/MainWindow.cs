@@ -214,6 +214,9 @@ namespace RasterField
             _busyCancellation?.Cancel();
             _busyCancellation = null;
             _profileGeneration++;
+            _neutralCts?.Cancel();
+            _neutralCts?.Dispose();
+            _neutralCts = null;
             _profileCts?.Cancel();
             _profileCts?.Dispose();
             _profileCts = null;
@@ -492,6 +495,7 @@ namespace RasterField
             _view.ComparisonChanged += (_, _) => RefreshMenuChecks();
             _view.HistoryChanged += (_, _) => RefreshMenuChecks();
             _view.IdentifyRequested += OnIdentifyRequested;
+            _view.NeutralStartRequested += async (_, e) => await TraceNeutralLineAsync(e.WorldX, e.WorldY);
 
             _bandBox.SelectionChanged += (_, _) => { if (!_syncing) _view.SetActiveBand(_bandBox.SelectedIndex); };
             _rgbCompositeBox.IsCheckedChanged += (_, _) => { if (!_syncing) _view.ShowRgbComposite = _rgbCompositeBox.IsChecked == true; };

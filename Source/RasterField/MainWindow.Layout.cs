@@ -205,7 +205,7 @@ namespace RasterField
             var measurePanel = new StackPanel { Margin = new Thickness(10, 8), Spacing = 8, Children = { measureTools, _measureText } };
             var measureTab = new TabItem { Header = T("Measure / zone"), Content = new ScrollViewer { Content = measurePanel } };
 
-            _analysisTabs.ItemsSource = new[] { identifyTab, profileTab, measureTab };
+            _analysisTabs.ItemsSource = new[] { identifyTab, profileTab, measureTab, BuildNeutralLineTab() };
             _analysisTabs.SelectedIndex = 0;
 
             var split = new Grid { RowDefinitions = new RowDefinitions("*,Auto,*") };
@@ -416,6 +416,7 @@ namespace RasterField
 
         private void SetPathTool(PathTool tool)
         {
+            if (tool != PathTool.NeutralLine) _neutralCts?.Cancel();
             if (tool != PathTool.Profile)
             {
                 _profileGeneration++;
@@ -431,13 +432,14 @@ namespace RasterField
                 SetClipToolActive(false);
                 _view.IdentifyMode = false;
                 if (!_leftDockVisible) { _leftDockVisible = true; ApplyDockVisibility(); }
-                _analysisTabs.SelectedIndex = tool == PathTool.Profile ? 1 : 2;
+                _analysisTabs.SelectedIndex = tool == PathTool.NeutralLine ? 3 : tool == PathTool.Profile ? 1 : 2;
             }
             _view.PathToolMode = tool;
-            _pathBar.IsVisible = tool != PathTool.None;
+            _pathBar.IsVisible = tool != PathTool.None && tool != PathTool.NeutralLine;
             _pathTitleText.Text = tool switch
             {
                 PathTool.Profile => T("Profile —"),
+                PathTool.NeutralLine => T("Neutral line"),
                 PathTool.Measure => T("Measure —"),
                 PathTool.Zone => T("Zone —"),
                 _ => "",
@@ -453,6 +455,7 @@ namespace RasterField
             _pathInfoText.Text = n == 0
                 ? T("click to add points · drag a point to move it · drag a segment midpoint to insert a point · double-click / right-click / Enter to finish · Backspace removes the last point")
                 : L.F("{0} point(s) — double-click / Enter to finish, Backspace to undo a point, Esc to clear", n);
+            if (tool == PathTool.NeutralLine) _pathInfoText.Text = T("Click the terrain to trace both branches.");
             switch (tool)
             {
                 case PathTool.Profile: UpdateProfile(); break;
