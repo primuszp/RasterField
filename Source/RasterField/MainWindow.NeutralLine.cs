@@ -20,6 +20,11 @@ namespace RasterField
         private readonly NumericUpDown _neutralLength = new() { Value = 1000, Minimum = 1, Maximum = 100000, Increment = 100, Width = 115 };
         private readonly NumericUpDown _neutralHeightTolerance = new() { Value = 0.02m, Minimum = 0.001m, Maximum = 10, Increment = 0.01m, FormatString = "0.###", Width = 115 };
         private readonly NumericUpDown _neutralGradeTolerance = new() { Value = 0.1m, Minimum = 0.001m, Maximum = 5, Increment = 0.01m, FormatString = "0.###", Width = 115 };
+        private readonly ComboBox _neutralMode = new() { MinWidth = 180, SelectedIndex = 0 };
+        private readonly NumericUpDown _neutralSearchStates = new() { Value = 25000, Minimum = 1, Maximum = 200000, Increment = 1000, Width = 115 };
+        private readonly TextBlock _neutralPoints = new() { TextWrapping = TextWrapping.Wrap };
+        private NeutralRouteResult? _neutralRouteResult;
+        private (double X, double Y, RasterLayer Source, int Band)? _neutralPendingStart;
         private readonly ComboBox _neutralBranch = new() { MinWidth = 100, SelectedIndex = 0 };
         private readonly TextBlock _neutralStatus = new() { TextWrapping = TextWrapping.Wrap };
         private readonly ProfileChartControl _neutralChart = new() { MinHeight = 140 };
@@ -32,27 +37,61 @@ namespace RasterField
         private TabItem BuildNeutralLineTab()
         {
             var rows = new StackPanel { Spacing = 5 };
-            void Field(string label, Control input)
+            DockPanel Field(string label, Control input)
             {
                 var row = new DockPanel();
                 DockPanel.SetDock(input, Dock.Right);
                 row.Children.Add(input);
                 row.Children.Add(new TextBlock { Text = T(label), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap });
                 rows.Children.Add(row);
+                return row;
             }
+            _neutralMode.ItemsSource = new[] { T("Two branches from start"), T("Between two points") };
+            _neutralMode.SelectedIndex = 0;
+            rows.Children.Add(_neutralMode);
             Field("Grade (%) · + rise / − fall", _neutralGrade);
-            Field("Maximum length per branch (m)", _neutralLength);
+            Field("Maximum length (m)", _neutralLength);
             Field("Height tolerance (m)", _neutralHeightTolerance);
             Field("Grade tolerance (percentage points)", _neutralGradeTolerance);
+            var searchRow = Field("Maximum search states", _neutralSearchStates);
+            searchRow.IsVisible = false;
+            rows.Children.Add(_neutralPoints);
+            _neutralPoints.IsVisible = false;
             rows.Children.Add(new TextBlock { Text = T("Elevation values must be in metres. Uses the bilinear terrain, including between vertices."), TextWrapping = TextWrapping.Wrap, FontSize = 11 });
             var start = new Button { Content = T("Select start point") };
-            start.Click += (_, _) => SetPathTool(PathTool.NeutralLine);
+            start.Click += (_, _) =>
+            {
+                _neutralCts?.Cancel();
+                _neutralPendingStart = null;
+                _view.ClearPath();
+                _neutralStatus.Text = T(_neutralMode.SelectedIndex == 1 ? "Click start point A, then endpoint B." : "Click the terrain to trace both branches.");
+                SetPathTool(PathTool.NeutralLine);
+            };
             var cancel = new Button { Content = T("Cancel") };
-            cancel.Click += (_, _) => { _neutralCts?.Cancel(); SetPathTool(PathTool.None); };
+            cancel.Click += (_, _) => { _neutralCts?.Cancel(); _neutralPendingStart = null; SetPathTool(PathTool.None); };
             var buttons = new WrapPanel(); buttons.Children.Add(start); buttons.Children.Add(cancel);
             rows.Children.Add(buttons);
             _neutralBranch.ItemsSource = new[] { T("Branch 1"), T("Branch 2") };
             _neutralBranch.SelectedIndex = 0;
+            _neutralMode.SelectionChanged += (_, _) =>
+            {
+                _neutralCts?.Cancel();
+                _neutralPendingStart = null;
+                _neutralRouteResult = null;
+                _neutralResults = Array.Empty<NeutralLineBranch>();
+                _neutralSeries = Array.Empty<ProfileSeries>();
+                _neutralChart.SetSeries(_neutralSeries, "m", "m");
+                _view.ClearPath();
+                bool route = _neutralMode.SelectedIndex == 1;
+                searchRow.IsVisible = route;
+                _neutralPoints.IsVisible = route;
+                _neutralPoints.Text = "";
+                _neutralBranch.IsEnabled = !route;
+                _neutralBranch.ItemsSource = route ? new[] { T("Connection A → B") } : new[] { T("Branch 1"), T("Branch 2") };
+                _neutralBranch.SelectedIndex = 0;
+                _neutralStatus.Text = T(route ? "Click start point A, then endpoint B." : "Click the terrain to trace both branches.");
+                _neutralChart.EmptyMessage = _neutralStatus.Text;
+            };
             _neutralBranch.SelectionChanged += (_, _) => ShowNeutralBranch();
             var csv = new Button { Content = "CSV…" };
             csv.Click += async (_, _) => await ProfileWindow.ExportCsvAsync(this, _neutralSeries, "m");
@@ -74,24 +113,10 @@ namespace RasterField
             _neutralCts?.Dispose();
             var cts = _neutralCts = new CancellationTokenSource();
             var token = cts.Token;
-            UseElevationSourceForTerrain();
-            var loaded = await TryGetLoadedRasterAsync(T("Neutral line"));
+            var loaded = await NeutralSourceAsync();
             if (loaded == null || token.IsCancellationRequested) return;
-            var source = _view.ActiveLayer!;
+            var source = loaded.Value.Source;
             int sourceBand = source.ActiveBand;
-            var space = source.Document.Header.CoordinateSpace;
-            // "natural" is common for EOV headers without an explicit Units field.
-            string units = space.EffectiveUnits.ToUpperInvariant();
-            bool metres = units is "M" or "METER" or "METERS" or "METRE" or "METRES" ||
-                          (units == "NATURAL" && space.EpsgCode == 23700);
-            var bands = source.Document.Header.RasterInfo.Bands;
-            string zUnits = source.ActiveBand < bands.Count ? bands[source.ActiveBand].Units ?? "" : "";
-            bool zMetres = string.IsNullOrWhiteSpace(zUnits) || zUnits.ToUpperInvariant() is "M" or "METER" or "METERS" or "METRE" or "METRES";
-            if (space.CoordinateType == ErsCoordinateType.Ll || !metres || !zMetres)
-            {
-                await MessageAsync(T("Neutral line"), T("Use a projected terrain model with horizontal and elevation units in metres. For missing elevation metadata, metres are assumed."));
-                return;
-            }
             if (_neutralGrade.Value == null || _neutralLength.Value == null || _neutralHeightTolerance.Value == null || _neutralGradeTolerance.Value == null) return;
             var options = new NeutralLineOptions
             {
@@ -100,6 +125,7 @@ namespace RasterField
                 HeightTolerance = (double)_neutralHeightTolerance.Value.Value,
                 GradeTolerancePercent = (double)_neutralGradeTolerance.Value.Value,
             };
+            _neutralRouteResult = null;
             _neutralResults = Array.Empty<NeutralLineBranch>();
             _neutralSeries = Array.Empty<ProfileSeries>();
             _neutralChart.SetSeries(_neutralSeries, "m", "m");
@@ -137,6 +163,27 @@ namespace RasterField
             catch (Exception ex) { if (ReferenceEquals(_neutralCts, cts)) _neutralStatus.Text = ex.Message; }
         }
 
+        private async Task<(Raster Raster, RasterLayer Source)?> NeutralSourceAsync()
+        {
+            UseElevationSourceForTerrain();
+            var loaded = await TryGetLoadedRasterAsync(T("Neutral line"));
+            if (loaded == null) return null;
+            var source = _view.ActiveLayer!;
+            var space = source.Document.Header.CoordinateSpace;
+            string units = space.EffectiveUnits.ToUpperInvariant();
+            bool metres = units is "M" or "METER" or "METERS" or "METRE" or "METRES" ||
+                          (units == "NATURAL" && space.EpsgCode == 23700);
+            var bands = source.Document.Header.RasterInfo.Bands;
+            string zUnits = source.ActiveBand < bands.Count ? bands[source.ActiveBand].Units ?? "" : "";
+            bool zMetres = string.IsNullOrWhiteSpace(zUnits) || zUnits.ToUpperInvariant() is "M" or "METER" or "METERS" or "METRE" or "METRES";
+            if (space.CoordinateType == ErsCoordinateType.Ll || !metres || !zMetres)
+            {
+                await MessageAsync(T("Neutral line"), T("Use a projected terrain model with horizontal and elevation units in metres. For missing elevation metadata, metres are assumed."));
+                return null;
+            }
+            return (loaded.Value.Raster, source);
+        }
+
         private static RecipeResult NeutralRecipeResult(RasterLayer source, LayerRecipe recipe, NeutralLineBranch branch)
         {
             var space = source.Document.Header.CoordinateSpace;
@@ -160,6 +207,7 @@ namespace RasterField
 
         private void ShowNeutralBranch()
         {
+            if (_neutralRouteResult != null) { ShowNeutralRoute(); return; }
             int index = _neutralBranch.SelectedIndex;
             if (index < 0 || index >= _neutralResults.Count) return;
             var branch = _neutralResults[index];

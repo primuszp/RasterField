@@ -68,21 +68,12 @@ namespace RasterField.Rasters
         public static IReadOnlyList<NeutralLineBranch> Trace(Raster raster, RasterGeoReference geo,
             double startX, double startY, NeutralLineOptions options, CancellationToken cancellationToken = default)
         {
-            if (raster == null) throw new ArgumentNullException(nameof(raster));
-            if (geo == null) throw new ArgumentNullException(nameof(geo));
             if (options == null) throw new ArgumentNullException(nameof(options));
-            if (!geo.IsInvertible || geo.Width != raster.Width || geo.Height != raster.Height)
-                throw new ArgumentException("An invertible, matching georeference is required.", nameof(geo));
             if (!Finite(startX) || !Finite(startY) || !Finite(options.GradePercent) ||
                 !Positive(options.MaximumLength) || !Positive(options.HeightTolerance) ||
                 !Positive(options.GradeTolerancePercent) || options.MaximumSteps < 1)
                 throw new ArgumentOutOfRangeException(nameof(options));
-            var transform = geo.GeoTransform;
-            if (!Finite(transform.A) || !Finite(transform.B) || !Finite(transform.C) ||
-                !Finite(transform.D) || !Finite(transform.E) || !Finite(transform.F))
-                throw new ArgumentException("Georeference coefficients must be finite.", nameof(geo));
-            var surface = new Surface(raster, geo);
-            if (!Positive(surface.CellScale)) throw new ArgumentException("Invalid cell scale.", nameof(geo));
+            var surface = CreateSurface(raster, geo);
             cancellationToken.ThrowIfCancellationRequested();
             return new[] { Follow(1), Follow(-1) };
 
@@ -195,6 +186,21 @@ namespace RasterField.Rasters
                 if (Math.Abs(s - options.MaximumLength) <= 1e-9 * Math.Max(1, s)) stop = NeutralLineStop.MaximumLength;
                 return new NeutralLineBranch(samples, stop, maxHeight, maxGrade);
             }
+        }
+
+        private static Surface CreateSurface(Raster raster, RasterGeoReference geo)
+        {
+            if (raster == null) throw new ArgumentNullException(nameof(raster));
+            if (geo == null) throw new ArgumentNullException(nameof(geo));
+            if (!geo.IsInvertible || geo.Width != raster.Width || geo.Height != raster.Height)
+                throw new ArgumentException("An invertible, matching georeference is required.", nameof(geo));
+            var transform = geo.GeoTransform;
+            if (!Finite(transform.A) || !Finite(transform.B) || !Finite(transform.C) ||
+                !Finite(transform.D) || !Finite(transform.E) || !Finite(transform.F))
+                throw new ArgumentException("Georeference coefficients must be finite.", nameof(geo));
+            var surface = new Surface(raster, geo);
+            if (!Positive(surface.CellScale)) throw new ArgumentException("Invalid cell scale.", nameof(geo));
+            return surface;
         }
 
         private static double AngleDistance(double a, double b) => Math.Abs(Math.Atan2(Math.Sin(a - b), Math.Cos(a - b)));

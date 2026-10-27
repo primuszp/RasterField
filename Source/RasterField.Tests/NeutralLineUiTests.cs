@@ -73,4 +73,60 @@ public sealed class NeutralLineUiTests
             Directory.Delete(directory,true);
         }
     },CancellationToken.None);
+    [Theory]
+    [InlineData(1)]
+    [InlineData(-1)]
+    public Task Two_point_selection_profile_and_project_restore_a_complete_connection(int sign) => _session.Dispatch(async () =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "neutral-route-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string settings = AppSettings.SettingsPath();
+        byte[]? priorSettings = File.Exists(settings) ? File.ReadAllBytes(settings) : null;
+        try
+        {
+            var raster = new Raster(100,100);
+            for (int r = 0; r < 100; r++)
+            for (int c = 0; c < 100; c++) raster[r,c] = (float)(100+0.125*(c+0.5));
+            string sourcePath = Path.Combine(directory,"terrain.ers");
+            ErsDocument.Create(raster,0,100,1,1).Save(sourcePath);
+            using var window = new MainWindow();
+            var view = Field<RasterView>(window,"_view");
+            view.AddLayerFromPath(sourcePath);
+            Field<ComboBox>(window,"_neutralMode").SelectedIndex = 1;
+            Field<NumericUpDown>(window,"_neutralGrade").Value = sign*5;
+            Field<NumericUpDown>(window,"_neutralLength").Value = 20;
+            await Call(window,"HandleNeutralPointAsync",40.0,50.0);
+            Assert.Single(view.CurrentPath);
+            Assert.Empty(view.DrawOrder.OfType<VectorLayer>());
+            await Call(window,"HandleNeutralPointAsync",40.0+sign*4,50.0);
+            var layer = Assert.Single(view.DrawOrder.OfType<VectorLayer>());
+            Assert.Equal("neutral-route",layer.Recipe!.Operation);
+            Assert.Equal(2,view.CurrentPath.Count);
+            var result = Field<NeutralRouteResult>(window,"_neutralRouteResult");
+            Assert.True(result.Found);
+            Assert.Equal(10,result.Length,6);
+            var profile = Field<ProfileSeries[]>(window,"_neutralSeries");
+            Assert.Equal(2,profile.Length);
+            Assert.InRange(Math.Abs(profile[0].Samples[^1].Value!.Value-profile[1].Samples[^1].Value!.Value),0,0.00002);
+            string path = Path.Combine(directory,"route.rfproj");
+            typeof(MainWindow).GetField("_projectPath",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(window,path);
+            await Call(window,"SaveProjectAsync",false);
+            using var restored = new MainWindow();
+            await restored.LoadProjectAsync(path);
+            var regenerated = Assert.Single(Field<RasterView>(restored,"_view").DrawOrder.OfType<VectorLayer>());
+            var expected = Assert.IsType<VectorPolyline>(Assert.Single(layer.Document.Objects));
+            var actual = Assert.IsType<VectorPolyline>(Assert.Single(regenerated.Document.Objects));
+            Assert.Equal(expected.Points,actual.Points);
+            string export = Path.Combine(directory,"route.erv");
+            layer.Document.Save(export);
+            Assert.Equal(expected.Points,Assert.IsType<VectorPolyline>(Assert.Single(ErvDocument.Load(export).Objects)).Points);
+        }
+        finally
+        {
+            if (priorSettings != null) File.WriteAllBytes(settings,priorSettings);
+            else if (File.Exists(settings)) File.Delete(settings);
+            Directory.Delete(directory,true);
+        }
+    },CancellationToken.None);
+
 }

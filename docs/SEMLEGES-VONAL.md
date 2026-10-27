@@ -1,7 +1,7 @@
-# Semleges vonal – kezdőpontból induló követés
+# Semleges vonal – nyomozás és kétpontos keresés
 
 Az **Elemzés → Semleges vonal…** menü vagy a bal oldali **Semleges vonal** fül
-nyitja az eszközt. Állítsd be az előjeles esést (pozitív: emelkedés; negatív:
+nyitja az eszközt. A **Két ág a kezdőpontból** módhoz állítsd be az előjeles esést (pozitív: emelkedés; negatív:
 lejtés), az ágankénti maximális hosszt, a magassági tűrést és a helyi eséstűrést.
 A **Kezdőpont kijelölése** után kattints a terepre. Új kattintás új eredményrétegeket
 hoz létre; a korábbi eredmények megmaradnak.
@@ -52,8 +52,9 @@ A magassági tűrés numerikus követési tűrés, nem a bemeneti terep mérési
   is keletkezhet. A leállási ok külön megjelenik; ez nem bizonyítja, hogy más
   útvonalon nincs megoldás.
 - A számítás megszakítható. Új kattintás megszakítja a folyamatban lévő keresést.
-- Ez kezdőpontból induló nyomozás; két rögzített végpont összekötése és közúti
-  ívsugár-korlátok érvényesítése még nem része.
+- A **Két pont között** mód két rögzített végpont összekötését keresi.
+  [Használat, matematikai feltételek és ellenőrzés](SEMLEGES-VONAL-KETPONT.md).
+  Közúti ívsugár-korlátot egyik mód sem érvényesít.
 
 ## Ellenőrzés
 

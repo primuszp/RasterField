@@ -2332,7 +2332,7 @@ namespace RasterField
             var pts = _path.Select(p => WorldToScreen(active, p.X, p.Y)).ToList();
 
             bool polygon = _pathTool == PathTool.Zone || (_pathTool == PathTool.Measure && _pathFinished);
-            if (pts.Count >= 2)
+            if (pts.Count >= 2 && _pathTool != PathTool.NeutralLine)
             {
                 var geometry = new StreamGeometry();
                 using (var gc = geometry.Open())
@@ -2358,12 +2358,23 @@ namespace RasterField
             // Midpoint handles (hollow, smaller): drag one to insert a new vertex on that segment.
             var midFill = new SolidColorBrush(Colors.White, 0.85);
             var midPen = new Pen(brush, 1.5);
-            foreach (var (_, midpoint) in PathMidpoints(active)) context.DrawEllipse(midFill, midPen, midpoint, 3.5, 3.5);
+            foreach (var (_, midpoint) in _pathTool == PathTool.NeutralLine ? Enumerable.Empty<(int, Point)>() : PathMidpoints(active)) context.DrawEllipse(midFill, midPen, midpoint, 3.5, 3.5);
 
             var outline = new Pen(Brushes.Black, 1);
-            foreach (var pt in pts) context.DrawEllipse(brush, outline, pt, 4.5, 4.5);
+            for (int i = 0; i < pts.Count; i++)
+            {
+                context.DrawEllipse(brush, outline, pts[i], 4.5, 4.5);
+                if (_pathTool == PathTool.NeutralLine)
+                {
+                    var label = new FormattedText(i == 0 ? "A" : "B", System.Globalization.CultureInfo.InvariantCulture,
+                        FlowDirection.LeftToRight, Typeface.Default, 13, Brushes.Black);
+                    Point at = new Point(pts[i].X + 8, pts[i].Y - 20);
+                    context.FillRectangle(Brushes.White, new Rect(at.X - 2, at.Y - 1, label.Width + 4, label.Height + 2), 2);
+                    context.DrawText(label, at);
+                }
+            }
 
-            if (pts.Count >= 2)
+            if (pts.Count >= 2 && _pathTool != PathTool.NeutralLine)
             {
                 string unit = L.UnitName(active.Document.Header.CoordinateSpace.EffectiveUnits);
                 string label = FormatDistance(Measurement.Length(_path)) + " " + unit;

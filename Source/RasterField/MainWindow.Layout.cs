@@ -416,7 +416,7 @@ namespace RasterField
 
         private void SetPathTool(PathTool tool)
         {
-            if (tool != PathTool.NeutralLine) _neutralCts?.Cancel();
+            if (tool != PathTool.NeutralLine) { _neutralCts?.Cancel(); _neutralPendingStart = null; }
             if (tool != PathTool.Profile)
             {
                 _profileGeneration++;

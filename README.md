@@ -42,6 +42,9 @@ and local grade tolerance. Each branch becomes a saveable vector layer; the
 profile compares terrain elevations with the target straight grade line and
 supports CSV export. Projects retain the calculation recipe. Loaded, metric
 terrain rasters are supported; streaming datasets must first be clipped.
+The **Between two points** mode searches for a fully checked connection to an exact
+endpoint, retaining chainage and direction in a bounded continuous-terrain search.
+See [two-point search, feasibility and limits](docs/SEMLEGES-VONAL-KETPONT.md).
 See [Semleges vonal — usage, method and limits](docs/SEMLEGES-VONAL.md).
 
 ## Library

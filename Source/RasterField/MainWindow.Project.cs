@@ -76,6 +76,16 @@ namespace RasterField
                     return new RecipeResult(result, null, null, null, $"{src.Name} · Bézier ×{o.Factor}", lineage, default);
                 }
 
+                case "neutral-route":
+                {
+                    int band = recipe.Get("band", 0);
+                    if (band < 0 || band >= doc.Bands.Count) throw new InvalidOperationException("Invalid neutral-route source band.");
+                    var options = NeutralRouteRecipeOptions(recipe);
+                    var result = await Task.Run(() => NeutralLineTracer.FindRoute(doc.Bands[band], doc.GeoReference,
+                        recipe.Get("x", 0.0), recipe.Get("y", 0.0), recipe.Get("endX", 0.0), recipe.Get("endY", 0.0), options, cancellationToken), cancellationToken);
+                    return NeutralRouteRecipeResult(src, recipe, result);
+                }
+
                 case "neutral-line":
                 {
                     var options = new NeutralLineOptions
