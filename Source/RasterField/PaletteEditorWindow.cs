@@ -45,7 +45,8 @@ namespace RasterField
 
             Title = T("Palette editor");
             Width = 560;
-            Height = 420;
+            Height = 500;
+            Background = AppTheme.PanelBackground;
             CanResize = true;
             WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
@@ -60,63 +61,77 @@ namespace RasterField
             }
         }
 
-        private ScrollViewer BuildLayout()
+        private DockPanel BuildLayout()
         {
-            var root = new StackPanel { Margin = new Avalonia.Thickness(12), Spacing = 8 };
+            var root = new StackPanel { Margin = new Avalonia.Thickness(20, 8, 20, 20), Spacing = 4 };
 
-            var startRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-            startRow.Children.Add(new TextBlock { Text = T("Start from:"), VerticalAlignment = VerticalAlignment.Center });
-            startRow.Children.Add(_startFromBox);
-            var loadBtn = new Button { Content = T("Load") };
+            // Start from an existing palette.
+            root.Children.Add(AppTheme.SectionLabel(T("Start from:").TrimEnd(':')));
+            var loadBtn = new Button { Content = T("Load"), Margin = new Avalonia.Thickness(6, 0, 0, 0), MinWidth = 72 };
             loadBtn.Click += (_, _) => LoadSeed();
-            startRow.Children.Add(loadBtn);
-            root.Children.Add(startRow);
+            Grid.SetColumn(loadBtn, 1);
+            root.Children.Add(new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Children = { _startFromBox, loadBtn } });
 
-            root.Children.Add(new TextBlock { Text = T("Name") });
+            root.Children.Add(AppTheme.SectionLabel(T("Name")));
             root.Children.Add(_nameBox);
 
-            root.Children.Add(new TextBlock { Text = T("Gradient — click the bar to add a stop, drag a marker to move it, Delete to remove") });
+            root.Children.Add(AppTheme.SectionLabel(T("Gradient")));
+            root.Children.Add(new TextBlock
+            {
+                Text = T("Gradient — click the bar to add a stop, drag a marker to move it, Delete to remove"),
+                TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+                FontSize = AppTheme.FontCaption,
+                Foreground = AppTheme.TextSecondary,
+                Margin = new Avalonia.Thickness(0, 0, 0, 4),
+            });
             root.Children.Add(_editor);
 
-            var editRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,90,Auto,80,Auto,80,Auto,80,Auto,90"), Margin = new Avalonia.Thickness(0, 6) };
-            void Col(Control c, int i) { Grid.SetColumn(c, i); editRow.Children.Add(c); }
-            Col(new TextBlock { Text = T("Pos %"), VerticalAlignment = VerticalAlignment.Center }, 0);
-            Col(_posBox, 1);
-            Col(new TextBlock { Text = "R", VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 2);
-            Col(_rBox, 3);
-            Col(new TextBlock { Text = "G", VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 4);
-            Col(_gBox, 5);
-            Col(new TextBlock { Text = "B", VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 6);
-            Col(_bBox, 7);
-            Col(new TextBlock { Text = T("Hex"), VerticalAlignment = VerticalAlignment.Center, Margin = new Avalonia.Thickness(8, 0, 0, 0) }, 8);
-            Col(_hexBox, 9);
+            // The selected stop: five equal columns, each a caption over its field.
+            root.Children.Add(AppTheme.SectionLabel(T("Selected stop")));
+            var editRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,8,*,8,*,8,*,8,*") };
+            void Col(string caption, Control field, int i)
+            {
+                field.Width = double.NaN;
+                field.HorizontalAlignment = HorizontalAlignment.Stretch;
+                var cell = new StackPanel { Children = { AppTheme.Caption(caption), field } };
+                Grid.SetColumn(cell, i * 2);
+                editRow.Children.Add(cell);
+            }
+            Col(T("Pos %"), _posBox, 0);
+            Col("R", _rBox, 1);
+            Col("G", _gBox, 2);
+            Col("B", _bBox, 3);
+            Col(T("Hex"), _hexBox, 4);
             root.Children.Add(editRow);
 
-            var toolRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
             var addBtn = new Button { Content = T("Add stop") };
             addBtn.Click += (_, _) => _editor.AddStopAt(0.5);
             var removeBtn = new Button { Content = T("Remove stop") };
             removeBtn.Click += (_, _) => _editor.RemoveSelected();
             var reverseBtn = new Button { Content = T("Reverse") };
             reverseBtn.Click += (_, _) => _editor.Reverse();
-            toolRow.Children.Add(addBtn);
-            toolRow.Children.Add(removeBtn);
-            toolRow.Children.Add(reverseBtn);
-            root.Children.Add(toolRow);
+            root.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Avalonia.Thickness(0, 10, 0, 0), Children = { addBtn, removeBtn, reverseBtn } });
 
-            var bottomRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Avalonia.Thickness(0, 12, 0, 0) };
+            // Footer: saving on the right, the library save as the primary action.
             var saveLibBtn = new Button { Content = T("Save to palette list") };
+            saveLibBtn.Classes.Add("accent");
             saveLibBtn.Click += (_, _) => SaveToLibrary();
             var saveFileBtn = new Button { Content = T("Save as .pal file…") };
             saveFileBtn.Click += async (_, _) => await SaveAsFileAsync();
-            var closeBtn = new Button { Content = T("Close") };
+            var closeBtn = new Button { Content = T("Close"), IsCancel = true, MinWidth = 88 };
             closeBtn.Click += (_, _) => Close();
-            bottomRow.Children.Add(saveLibBtn);
-            bottomRow.Children.Add(saveFileBtn);
-            bottomRow.Children.Add(closeBtn);
-            root.Children.Add(bottomRow);
-
-            return new ScrollViewer { Content = root };
+            var footer = new Border
+            {
+                BorderThickness = new Avalonia.Thickness(0, 1, 0, 0),
+                BorderBrush = AppTheme.Border,
+                Padding = new Avalonia.Thickness(20, 12),
+                Child = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, HorizontalAlignment = HorizontalAlignment.Right, Children = { saveFileBtn, closeBtn, saveLibBtn } },
+            };
+            var layout = new DockPanel();
+            DockPanel.SetDock(footer, Dock.Bottom);
+            layout.Children.Add(footer);
+            layout.Children.Add(new ScrollViewer { Content = root });
+            return layout;
         }
 
         private void WireEvents()

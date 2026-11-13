@@ -31,6 +31,11 @@ namespace RasterField
         private const double BarTop = 4, BarHeight = 32;
         private const double MarkerY = BarTop + BarHeight + 14;
         private const double HitRadius = 9;
+        // The bar is inset by half a marker, so the end stops (0 % and 100 %) are drawn whole.
+        private const double Inset = 9;
+
+        private double ToX(double position) => Inset + position * Math.Max(1, Bounds.Width - 2 * Inset);
+        private double ToPosition(double x) => Clamp01((x - Inset) / Math.Max(1, Bounds.Width - 2 * Inset));
 
         public PaletteEditorControl()
         {
@@ -136,8 +141,7 @@ namespace RasterField
 
         public override void Render(DrawingContext context)
         {
-            double w = Math.Max(1, Bounds.Width);
-            var barRect = new Rect(0, BarTop, w, BarHeight);
+            var barRect = new Rect(Inset, BarTop, Math.Max(1, Bounds.Width - 2 * Inset), BarHeight);
 
             if (_stops.Count > 0)
             {
@@ -151,14 +155,14 @@ namespace RasterField
                     EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative),
                     GradientStops = gradientStops,
                 };
-                context.FillRectangle(brush, barRect);
+                context.FillRectangle(brush, barRect, 4);
             }
-            context.DrawRectangle(null, new Pen(Brushes.Black, 1), barRect);
+            context.DrawRectangle(null, new Pen(AppTheme.IsDark ? new SolidColorBrush(Colors.White, 0.14) : new SolidColorBrush(Colors.Black, 0.16), 1), barRect.Deflate(0.5), 4, 4);
 
             for (int i = 0; i < _stops.Count; i++)
             {
                 var s = _stops[i];
-                double x = s.Position * w;
+                double x = ToX(s.Position);
                 bool sel = i == _selected;
 
                 var marker = new Point(x, MarkerY);
@@ -175,7 +179,7 @@ namespace RasterField
                     new Pen(sel ? Brushes.White : Brushes.Black, sel ? 2 : 1), geo);
 
                 // thin connector line from the marker up to the gradient bar for clarity
-                context.DrawLine(new Pen(Brushes.Gray, 1), new Point(x, BarTop + BarHeight), new Point(x, MarkerY - 8));
+                context.DrawLine(new Pen(AppTheme.TextSecondary, 1), new Point(x, BarTop + BarHeight), new Point(x, MarkerY - 8));
             }
         }
 
@@ -186,9 +190,7 @@ namespace RasterField
             base.OnPointerPressed(e);
             Focus();
             Point p = e.GetPosition(this);
-            double w = Math.Max(1, Bounds.Width);
-
-            int hit = HitTestMarker(p, w);
+            int hit = HitTestMarker(p);
             if (hit >= 0)
             {
                 _selected = hit;
@@ -200,7 +202,7 @@ namespace RasterField
             }
 
             if (p.Y >= BarTop && p.Y <= BarTop + BarHeight)
-                AddStopAt(p.X / w);
+                AddStopAt(ToPosition(p.X));
         }
 
         protected override void OnPointerMoved(PointerEventArgs e)
@@ -208,9 +210,8 @@ namespace RasterField
             base.OnPointerMoved(e);
             if (!_dragging || (uint)_selected >= (uint)_stops.Count) return;
 
-            double w = Math.Max(1, Bounds.Width);
             var s = _stops[_selected];
-            s.Position = Clamp01(e.GetPosition(this).X / w);
+            s.Position = ToPosition(e.GetPosition(this).X);
             SortStops();
             _selected = _stops.IndexOf(s);
             RaiseChanged();
@@ -236,11 +237,11 @@ namespace RasterField
             }
         }
 
-        private int HitTestMarker(Point p, double w)
+        private int HitTestMarker(Point p)
         {
             for (int i = 0; i < _stops.Count; i++)
             {
-                double x = _stops[i].Position * w;
+                double x = ToX(_stops[i].Position);
                 double dx = p.X - x, dy = p.Y - MarkerY;
                 if (Math.Sqrt(dx * dx + dy * dy) <= HitRadius) return i;
             }

@@ -13,7 +13,8 @@ memóriabeli, illetve fájlból olvasott feldolgozás közös számítási alapj
 | Raszterablak és előnézet | `RasterReadWindow` | Közös határmetszés és kimeneti méret a memória-, BIL- és GDAL-adapterhez. |
 | Geometriai leképezés | `RasterGeoReference` | Pixel–világ transzformáció; a funkciók nem végeznek vetületi átszámítást. |
 | Kivágás, mozaik, hézagkitöltés | `RasterClipper`, `RasterMosaic`, `NoDataFiller`, `ConvexHull` | Eltérő műveletek; a kivágó megtartja a kért méretet és NoData-val tölti a kilógást, az olvasó csak a metszetet adja. |
-| Profil és interpoláció | `RasterProfiler`, `BezierPatchInterpolator` | Egy bilineáris súlyozás és egy polivonal-bejárás; a Bézier külön interpolációs módszer. |
+| Felületmintavétel és finomítás | `Interpolation`: `SurfaceSampler`, `ISurfaceSampler`, `RasterResampler` | Közös bilineáris, Bézier és B-spline matematikai mag; pontmintavétel, ablakos gyorsítótár és raszter-előállítás. A `BezierPatchInterpolator` kompatibilitási belépési pont. |
+| Profil | `RasterProfiler` | Polivonal-bejárás és lánchossz; a mintavételt a közös interpolációs modul végzi. |
 | Domborzat és szűrés | `TerrainAnalysis`, `ConvolutionFilter`, `ReliefShader` | Terepi deriváltak, képi szűrők és színes relief külön fogalmak; a relief a közös hillshade-et hívja. |
 | Raszteralgebra | `RasterAlgebra` | Kifejezésnyelv és sávonkénti kiértékelés; nem felületi képletkezelő. |
 | Statisztika | `SampleStatistics`, `RasterStatistics` | Közös Welford/Chan átlag- és szórásakkumulátor, összevonható részeredményekkel. |
@@ -30,8 +31,10 @@ maradnak, a menük és dialógusok azokat hívják.
 
 ## Közös számítási szabályok
 
-- A minták a cellaközéppontban vannak. A bilineáris interpoláció a hiányzó
-  sarkokat kihagyja, és a megmaradó súlyokat normalizálja.
+- A minták a cellaközéppontban vannak. A profil régi bilineáris belépési pontja
+  a hiányzó sarkokat kihagyja, és a megmaradó súlyokat normalizálja. Az új közös
+  mintavevő szigorú módban elutasítja a hiányzó, nem nulla súlyú hozzájárulást;
+  megengedő módban az újranormalizálást külön jelzi.
 - A poligon páros–páratlan szabállyal töltődik. A sorintervallum balról zárt,
   jobbról nyitott; a függőleges intervallum szintén félig nyitott. Közös határ
   és nulla szélességű önmetszési intervallum nem számolhat cellát kétszer.
@@ -65,3 +68,15 @@ ellen; átnevezett vagy szerkezetileg eltérő, azonos célú kódhoz továbbra 
 A regressziós tesztek a nagy poligonokat, önmetszési határesetet, nagy alapérték
 melletti kis eltérést, D8 ciklust/hibás kódot, azonos gyűjtőérték melletti ágrendet,
 profilt a csempehatáron, NoData-s kivágást és túlméretes olvasási ablakot fedik le.
+
+
+### Interaktív semlegesvonal-munkamenet
+
+A `NeutralDesignSession` és `NeutralCandidateSolver` a közös interpolációs modult használja.
+A `NeutralDesignDraft` tárolja a változatot, a célkört, az elfogadott geometriát és a redo-profilsorokat;
+a `NeutralDesignSession.Review` ugyanazokkal a szakaszszabályokkal vizsgál meglévő vonalat.
+A `MainWindow.NeutralWorkspace` vezérli a folyamatos módot, a változatokat és a forrásazonosság ellenőrzését.
+A projektformátum 2-es verziója beágyazott `NeutralDesigns` és rétegenkénti `DesignData` adatokat tartalmaz.
+A raszteradat továbbra is külső; a geometria hiányzó DEM esetén is betölthető.
+A régi projektverzió és az automatikus receptek olvasása megmaradt. A meglévő `ProfileWindow` interakcióit
+az új modul nem módosítja.

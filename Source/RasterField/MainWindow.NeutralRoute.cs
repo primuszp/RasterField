@@ -27,8 +27,7 @@ namespace RasterField
                 _view.SetProfileHover(null);
                 _view.SetPath(new[] { (x, y) });
                 _neutralPoints.Text = L.F("A: {0:0.###}, {1:0.###}", x, y);
-                _neutralStatus.Text = T("Start A selected. Click endpoint B.");
-                _neutralChart.EmptyMessage = _neutralStatus.Text;
+                SetNeutralStage(NeutralStage.PickEnd);
                 return;
             }
             var start = _neutralPendingStart.Value;
@@ -36,7 +35,7 @@ namespace RasterField
             if (!ReferenceEquals(start.Source, _view.ActiveLayer) || start.Band != start.Source.ActiveBand)
             {
                 _view.ClearPath();
-                _neutralStatus.Text = T("Source layer changed; select a new start point.");
+                SetNeutralStage(NeutralStage.Failed, T("Source layer changed; select a new start point."));
                 return;
             }
             _view.SetPath(new[] { (start.X, start.Y), (x, y) });
@@ -68,14 +67,14 @@ namespace RasterField
             _neutralResults = Array.Empty<NeutralLineBranch>();
             _neutralSeries = Array.Empty<ProfileSeries>();
             _neutralChart.SetSeries(_neutralSeries, "m", "m");
-            _neutralStatus.Text = T("Searching for a checked connection A → B…");
+            SetNeutralStage(NeutralStage.Working);
             try
             {
                 var result = await Task.Run(() => NeutralLineTracer.FindRoute(loaded.Value.Raster, source.Document.GeoReference,
                     ax, ay, bx, by, options, token), token);
                 if (token.IsCancellationRequested) return;
                 if (!ReferenceEquals(source, _view.ActiveLayer) || !_view.Layers.Contains(source) || source.ActiveBand != band)
-                { _neutralStatus.Text = T("Source layer changed; select a new start point."); return; }
+                { SetNeutralStage(NeutralStage.Failed, T("Source layer changed; select a new start point.")); return; }
                 _neutralRouteResult = result;
                 _neutralSourceName = source.Name;
                 _neutralResultGrade = options.GradePercent;
@@ -96,8 +95,8 @@ namespace RasterField
                 }
                 ShowNeutralRoute();
             }
-            catch (OperationCanceledException) { if (ReferenceEquals(_neutralCts, cts)) _neutralStatus.Text = T("Cancelled."); }
-            catch (Exception ex) { if (ReferenceEquals(_neutralCts, cts)) _neutralStatus.Text = ex.Message; }
+            catch (OperationCanceledException) { if (ReferenceEquals(_neutralCts, cts)) SetNeutralStage(NeutralStage.Ready, T("Cancelled.")); }
+            catch (Exception ex) { if (ReferenceEquals(_neutralCts, cts)) SetNeutralStage(NeutralStage.Failed, ex.Message); }
         }
 
         private static NeutralRouteOptions NeutralRouteRecipeOptions(LayerRecipe recipe) => new()
@@ -134,13 +133,14 @@ namespace RasterField
                     new ProfileSample(p.Distance, p.X, p.Y, (float)(result.StartElevation + _neutralResultGrade / 100 * p.Distance))).ToArray(), Avalonia.Media.Colors.OrangeRed, dashed: true),
             } : Array.Empty<ProfileSeries>();
             _neutralChart.SetSeries(_neutralSeries, "m", "m");
-            _neutralStatus.Text = _neutralSourceName + "\n" + NeutralRouteStatusText(result.Status);
+            string message = _neutralSourceName + " · " + NeutralRouteStatusText(result.Status);
             if (result.RequiredLength.HasValue)
-                _neutralStatus.Text += "\n" + L.F("Nominal required length: {0:0.###} m", result.RequiredLength.Value);
-            if (result.Found)
-                _neutralStatus.Text += "\n" + L.F("Length {0:0.##} m · max |Δz| {1:0.####} m · max |Δgrade| {2:0.####} pp", result.Length, result.MaximumHeightError, result.MaximumGradeErrorPercent);
-            _neutralStatus.Text += "\n" + L.F("Expanded search states: {0}", result.ExpandedStates);
-            _neutralChart.EmptyMessage = result.Found ? "" : NeutralRouteStatusText(result.Status);
+                message += "\n" + L.F("Nominal required length: {0:0.###} m", result.RequiredLength.Value);
+            message += "\n" + L.F("Expanded search states: {0}", result.ExpandedStates);
+            if (result.Found) SetNeutralStats(result.Length, result.MaximumHeightError, result.MaximumGradeErrorPercent);
+            else SetNeutralStats(null, null, null);
+            if (_neutralUnitNote != null) message += "\n" + _neutralUnitNote;
+            SetNeutralStage(result.Found ? NeutralStage.Done : NeutralStage.Failed, message);
         }
 
         private static string NeutralRouteStatusText(NeutralRouteStatus status) => T(status switch

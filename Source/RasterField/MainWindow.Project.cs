@@ -56,6 +56,8 @@ namespace RasterField
 
             switch (op)
             {
+                case "neutral-design":
+                    return NeutralDesignRecipeResult(src, recipe);
                 case "bezier":
                 {
                     var o = new BezierPatchOptions
@@ -477,9 +479,10 @@ namespace RasterField
             _view.DrawOrder.Select(o => o switch
             {
                 RasterLayer { IsFrame: false, IsUnsaved: true } r => r.Name,
-                VectorLayer { IsUnsaved: true } v => v.Name,
+                VectorLayer { IsUnsaved: true } v when !_designOfflineLayers.Contains(v) => v.Name,
                 _ => null,
-            }).Where(n => n != null).Select(n => n!).ToList();
+            }).Where(n => n != null).Select(n => n!)
+            .Concat(HasUnfinishedDesign ? new[] { T("Unfinished neutral-line trial") } : Array.Empty<string>()).ToList();
 
         private async Task<bool> ConfirmDiscardAsync(string action)
         {
@@ -493,6 +496,7 @@ namespace RasterField
         private async Task NewProjectAsync()
         {
             if (!await ConfirmDiscardAsync(T("New project"))) return;
+            ResetDesignWorkspace();
             _view.ClearAll();
             _bookmarks.Clear();
             _projectPath = null;
@@ -503,7 +507,6 @@ namespace RasterField
 
         private async Task OpenProjectDialogAsync()
         {
-            if (!await ConfirmDiscardAsync(T("Open project"))) return;
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
                 Title = T("Open RasterField project"),
@@ -521,6 +524,9 @@ namespace RasterField
             try { project = ProjectDocument.Load(path); }
             catch (Exception ex) { await MessageAsync(T("Could not open project"), ex.Message); return; }
 
+            if (!await ConfirmDiscardAsync(T("Open project"))) return;
+            ResetDesignWorkspace();
+
             SetBusy(true, T("Opening project…"));
             _view.ClearAll();
             _bookmarks.Clear();
@@ -533,7 +539,15 @@ namespace RasterField
                     try
                     {
                         object? layer = null;
-                        if (pl.Path != null)
+                        if (pl.DesignData != null)
+                        {
+                            pl.DesignData.Validate();
+                            var vector = CreateStoredDesignLayer(pl.DesignData, pl.Name);
+                            if (pl.Recipe?.SourceLayerId is { } sourceId && byId.TryGetValue(sourceId, out var source))
+                                vector.Recipe = new LayerRecipe(pl.Recipe.Operation, source, pl.Recipe.Parameters);
+                            layer = vector;
+                        }
+                        else if (pl.Path != null)
                         {
                             if (!File.Exists(pl.Path)) { problems.Add(L.F("{0}: file not found ({1})", pl.Name, pl.Path)); continue; }
                             layer = pl.Kind == "vector" ? AddVectorFromFile(pl.Path) : _view.AddLayerFromPath(pl.Path, CurrentPalette());
@@ -559,6 +573,19 @@ namespace RasterField
                     _view.SetActiveLayer(ar);
                 if (project.View is { } v) _view.SetViewState(v.CenterX, v.CenterY, v.WorldPerPixel);
                 _bookmarks.AddRange(project.Bookmarks);
+                foreach (var draft in project.NeutralDesigns)
+                {
+                    _designDrafts.Add(draft);
+                    if (draft.SourceLayerId != null && byId.TryGetValue(draft.SourceLayerId, out var source) && source is RasterLayer raster)
+                        _designDraftSources[draft] = raster;
+                    else
+                    {
+                        var preview = CreateStoredDesignLayer(draft, draft.Name);
+                        _designOfflineLayers.Add(preview); _view.SetVectorLayerVisible(preview, draft.Visible);
+                    }
+                }
+                _savedDesigns = System.Text.Json.JsonSerializer.Serialize(_designDrafts);
+                RebuildDesignVariants();
                 // SetActiveLayer is a no-op when the final loaded layer is already active.
                 // Refresh only after all persisted display properties have been restored.
                 OnRasterLoaded();
@@ -616,6 +643,7 @@ namespace RasterField
 
         private async Task SaveProjectAsync(bool saveAs)
         {
+            CaptureActiveDesign();
             string? path = saveAs ? null : _projectPath;
             if (path == null)
             {
@@ -628,6 +656,7 @@ namespace RasterField
             var skipped = new List<string>();
             foreach (var item in _view.DrawOrder)
             {
+                if (item is VectorLayer offline && _designOfflineLayers.Contains(offline)) continue;
                 if (item is RasterLayer { IsFrame: true }) continue;
                 var pl = new ProjectLayer();
                 ids[item] = pl.Id;
@@ -649,18 +678,30 @@ namespace RasterField
                         pl.Recipe = r.IsUnsaved ? ToProjectRecipe(r.Recipe, ids) : null;
                         break;
                     case VectorLayer v:
+                        pl.DesignData = v.DesignData;
                         pl.Kind = "vector"; pl.Name = v.Name; pl.Visible = v.IsVisible; pl.Lineage = v.Lineage;
                         pl.Color = FormatHex(v.Color); pl.LineWidth = v.LineWidth;
                         pl.Path = v.IsUnsaved ? null : v.Document.HeaderPath ?? v.SourcePath;
-                        pl.Recipe = v.IsUnsaved ? ToProjectRecipe(v.Recipe, ids) : null;
+                        pl.Recipe = v.IsUnsaved || v.DesignData!=null ? ToProjectRecipe(v.Recipe, ids) : null;
                         break;
                 }
-                if (pl.Path == null && pl.Recipe == null) { skipped.Add(pl.Name); ids.Remove(item); continue; }
+                if (pl.Path == null && pl.Recipe == null && pl.DesignData == null) { skipped.Add(pl.Name); ids.Remove(item); continue; }
                 project.Layers.Add(pl);
             }
             if (_view.ActiveLayer is { IsFrame: false } a && ids.TryGetValue(a, out var activeId)) project.ActiveLayerId = activeId;
             if (_view.GetViewState() is { } vs) project.View = new ProjectView { CenterX = vs.X, CenterY = vs.Y, WorldPerPixel = vs.WorldPerPixel };
             project.Bookmarks.AddRange(_bookmarks);
+            foreach (var draft in _designDrafts)
+            {
+                if (_designDraftSources.TryGetValue(draft, out var source))
+                {
+                    if(!_view.Layers.Contains(source))draft.SourceLayerId=null;
+                    else if (!ids.TryGetValue(source, out var id))
+                    { await MessageAsync(T("Save project"), T("Save the trial's terrain layer as a file before saving this project.")); return; }
+                    else draft.SourceLayerId = id;
+                }
+                project.NeutralDesigns.Add(draft);
+            }
 
             if (skipped.Count > 0 && !await ConfirmAsync(T("Save project"),
                     L.F("These layers exist only in memory and have no recipe, so they can't be stored in the project (save them as files first):\n• {0}", string.Join("\n• ", skipped)),
@@ -670,6 +711,7 @@ namespace RasterField
             try
             {
                 project.Save(path!);
+                _savedDesigns = System.Text.Json.JsonSerializer.Serialize(_designDrafts);
                 _projectPath = Path.GetFullPath(path!);
                 _settings.LastProjectPath = _projectPath;
                 _settings.AddRecentFile(_projectPath);

@@ -188,6 +188,16 @@ namespace RasterField.Rasters
             }
         }
 
+        /// <summary>
+        /// The steepest grade of the bilinear terrain at a point, in percent — the largest grade a
+        /// neutral line can start with there — or <see langword="null"/> outside valid terrain.
+        /// </summary>
+        public static double? SlopePercentAt(Raster raster, RasterGeoReference geo, double x, double y)
+        {
+            var surface = CreateSurface(raster, geo);
+            return surface.At(x, y, out _, out double gx, out double gy) ? 100 * Math.Sqrt(gx * gx + gy * gy) : null;
+        }
+
         private static Surface CreateSurface(Raster raster, RasterGeoReference geo)
         {
             if (raster == null) throw new ArgumentNullException(nameof(raster));

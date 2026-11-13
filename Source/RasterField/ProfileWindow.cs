@@ -49,6 +49,7 @@ namespace RasterField
             Title = L.T("Profile");
             Width = 760;
             Height = 460;
+            Background = AppTheme.PanelBackground;
             MinWidth = 420;
             MinHeight = 280;
             WindowStartupLocation = WindowStartupLocation.CenterOwner;

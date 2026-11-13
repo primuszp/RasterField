@@ -10,13 +10,14 @@ namespace RasterField.Projects
     /// <summary>
     /// A RasterField project (<c>.rfproj</c>, JSON): the layer stack with each layer's source file,
     /// display settings and — for a derived layer — the recipe it can be recomputed from, plus the
-    /// view and bookmarks. Data is never embedded; file paths are stored relative to the project
+    /// view and bookmarks. Raster data stays external; neutral-design geometry and drafts are embedded.
+    /// File paths are stored relative to the project
     /// file so a project folder can be moved or shared as a whole.
     /// </summary>
     public sealed class ProjectDocument
     {
         /// <summary>The file-format version this code writes.</summary>
-        public const int CurrentVersion = 1;
+        public const int CurrentVersion = 2;
 
         private static readonly JsonSerializerOptions Options = new JsonSerializerOptions
         {
@@ -40,12 +41,17 @@ namespace RasterField.Projects
         /// <summary>Saved views.</summary>
         public List<ProjectBookmark> Bookmarks { get; set; } = new List<ProjectBookmark>();
 
+        /// <summary>Embedded interactive trials, including variants and redo history (version 2).</summary>
+        public List<Rasters.NeutralDesignDraft> NeutralDesigns { get; set; } = new List<Rasters.NeutralDesignDraft>();
+
         /// <summary>Serialises the project; every layer path is written relative to <paramref name="projectPath"/>'s folder when possible.</summary>
         public void Save(string projectPath)
         {
             if (projectPath == null) throw new ArgumentNullException(nameof(projectPath));
+            ValidateDesigns();
             string dir = Path.GetDirectoryName(Path.GetFullPath(projectPath)) ?? ".";
             var copy = (ProjectDocument)MemberwiseClone();
+            copy.Version=CurrentVersion;
             copy.Layers = new List<ProjectLayer>();
             foreach (var layer in Layers)
             {
@@ -67,6 +73,7 @@ namespace RasterField.Projects
             string dir = Path.GetDirectoryName(Path.GetFullPath(projectPath)) ?? ".";
             project.Layers ??= new List<ProjectLayer>();
             project.Bookmarks ??= new List<ProjectBookmark>();
+            project.ValidateDesigns();
             foreach (var layer in project.Layers)
                 if (layer.Path != null && !Path.IsPathRooted(layer.Path))
                     layer.Path = Path.GetFullPath(Path.Combine(dir, layer.Path));
@@ -77,8 +84,24 @@ namespace RasterField.Projects
         public string ToJson() => JsonSerializer.Serialize(this, Options);
 
         /// <summary>Parses JSON (paths as they are).</summary>
-        public static ProjectDocument FromJson(string json) =>
-            JsonSerializer.Deserialize<ProjectDocument>(json, Options) ?? throw new FormatException("The project JSON is empty.");
+        public static ProjectDocument FromJson(string json)
+        {
+            var project=JsonSerializer.Deserialize<ProjectDocument>(json, Options) ?? throw new FormatException("The project JSON is empty.");
+            if(project.Version<1 || project.Version>CurrentVersion)throw new FormatException("Unsupported project version.");
+            project.ValidateDesigns();
+            return project;
+        }
+
+        private void ValidateDesigns()
+        {
+            NeutralDesigns ??= new List<Rasters.NeutralDesignDraft>();
+            foreach(var draft in NeutralDesigns)
+            {
+                if(draft==null)throw new FormatException("Empty neutral design draft.");
+                draft.Validate();
+            }
+            foreach(var layer in Layers)layer.DesignData?.Validate();
+        }
 
         private static string MakeRelative(string baseDir, string path)
         {
@@ -154,6 +177,9 @@ namespace RasterField.Projects
 
         /// <summary>How a derived layer is recomputed from another layer.</summary>
         public ProjectRecipe? Recipe { get; set; }
+
+        /// <summary>Exact designed geometry and metadata, usable even if its terrain source is absent.</summary>
+        public Rasters.NeutralDesignDraft? DesignData { get; set; }
 
         /// <summary>Human-readable description of how a derived layer was made.</summary>
         public string? Lineage { get; set; }

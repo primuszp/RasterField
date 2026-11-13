@@ -70,11 +70,15 @@ namespace RasterField
         private static readonly IBrush DarkBorder = new SolidColorBrush(Color.FromRgb(0x2E, 0x34, 0x3E));
         private static readonly IBrush LightBorder = new SolidColorBrush(Color.FromRgb(0xD6, 0xDB, 0xE1));
 
-        private static readonly IBrush DarkTextPrimary = new SolidColorBrush(Color.FromRgb(0xE2, 0xE5, 0xEA));
-        private static readonly IBrush LightTextPrimary = new SolidColorBrush(Color.FromRgb(0x1F, 0x26, 0x30));
+        internal static readonly IBrush DarkTextPrimaryBrush = new SolidColorBrush(Color.FromRgb(0xE2, 0xE5, 0xEA));
+        internal static readonly IBrush LightTextPrimaryBrush = new SolidColorBrush(Color.FromRgb(0x1F, 0x26, 0x30));
+        private static IBrush DarkTextPrimary => DarkTextPrimaryBrush;
+        private static IBrush LightTextPrimary => LightTextPrimaryBrush;
 
-        private static readonly IBrush DarkTextSecondary = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0xA2));
-        private static readonly IBrush LightTextSecondary = new SolidColorBrush(Color.FromRgb(0x62, 0x6C, 0x7A));
+        internal static readonly IBrush DarkTextSecondaryBrush = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0xA2));
+        internal static readonly IBrush LightTextSecondaryBrush = new SolidColorBrush(Color.FromRgb(0x62, 0x6C, 0x7A));
+        private static IBrush DarkTextSecondary => DarkTextSecondaryBrush;
+        private static IBrush LightTextSecondary => LightTextSecondaryBrush;
 
         private static readonly IBrush DarkScrim = new SolidColorBrush(Color.FromArgb(150, 0x0B, 0x0D, 0x10));
         private static readonly IBrush LightScrim = new SolidColorBrush(Color.FromArgb(90, 0x1F, 0x26, 0x30));
@@ -116,6 +120,54 @@ namespace RasterField
             LetterSpacing = 0.8,
             Foreground = TextSecondary,
             Margin = new Thickness(0, 14, 0, 5),
+        };
+
+        /// <summary>Stroked line icons on a 14 × 14 grid (drawn, so they sit exactly centred, unlike font fallback glyphs).</summary>
+        public static class Icons
+        {
+            public static readonly Geometry Rising = Geometry.Parse("M2.5,11.5 L11.5,2.5 M5.5,2.5 H11.5 V8.5");
+            public static readonly Geometry Falling = Geometry.Parse("M2.5,2.5 L11.5,11.5 M11.5,5.5 V11.5 H5.5");
+            public static readonly Geometry ChevronRight = Geometry.Parse("M5,2.5 L9.5,7 L5,11.5");
+            public static readonly Geometry Target = Geometry.Parse("M7,0.5 V3.5 M7,10.5 V13.5 M0.5,7 H3.5 M10.5,7 H13.5 M7,2.8 A4.2,4.2 0 1 1 6.99,2.8");
+            public static readonly Geometry Close = Geometry.Parse("M3,3 L11,11 M11,3 L3,11");
+            public static readonly Geometry Ruler = Geometry.Parse("M1.5,9.5 L9.5,1.5 L12.5,4.5 L4.5,12.5 Z M4,7 L5.5,8.5 M6,5 L7.5,6.5 M8,3 L9.5,4.5");
+            public static readonly Geometry Polygon = Geometry.Parse("M2,4.5 L7,1.5 L12.5,5 L10.5,12 L3,11 Z");
+            public static readonly Geometry Profile = Geometry.Parse("M1,11 L4.5,6 L7,8.5 L10,3 L13,7 M1,13 H13");
+            public static readonly Geometry Layers = Geometry.Parse("M7,1.5 L12.5,4.5 L7,7.5 L1.5,4.5 Z M1.5,7.5 L7,10.5 L12.5,7.5 M1.5,10 L7,13 L12.5,10");
+        }
+
+        /// <summary>A stroked icon that takes the surrounding text colour.</summary>
+        public static Avalonia.Controls.Shapes.Path Icon(Geometry data, double size = 14, double stroke = 1.5)
+        {
+            var path = new Avalonia.Controls.Shapes.Path
+            {
+                Data = data,
+                Width = 14,
+                Height = 14,
+                Stretch = Stretch.None,
+                StrokeThickness = stroke,
+                StrokeLineCap = PenLineCap.Round,
+                StrokeJoin = PenLineJoin.Round,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+            };
+            if (size != 14) path.RenderTransform = new ScaleTransform(size / 14, size / 14);
+            path.Bind(Avalonia.Controls.Shapes.Shape.StrokeProperty, path.GetObservable(Avalonia.Controls.Documents.TextElement.ForegroundProperty));
+            return path;
+        }
+
+        /// <summary>An icon and a label side by side, both centred on the same line.</summary>
+        public static Avalonia.Controls.StackPanel IconLabel(Geometry icon, string text, FontWeight? weight = null) => new Avalonia.Controls.StackPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            Spacing = 6,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+            Children =
+            {
+                Icon(icon),
+                new Avalonia.Controls.TextBlock { Text = text, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center, FontWeight = weight ?? FontWeight.Normal },
+            },
         };
 
         /// <summary>A small caption above a control.</summary>

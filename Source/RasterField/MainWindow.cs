@@ -211,6 +211,10 @@ namespace RasterField
         /// <summary>Releases background analysis work, rendered bitmaps and streaming readers.</summary>
         public void Dispose()
         {
+            StopContinuousDesign();
+            _designCts?.Cancel();
+            _designCts?.Dispose();
+            _designGeneration++;
             _busyCancellation?.Cancel();
             _busyCancellation = null;
             _profileGeneration++;
@@ -495,7 +499,7 @@ namespace RasterField
             _view.ComparisonChanged += (_, _) => RefreshMenuChecks();
             _view.HistoryChanged += (_, _) => RefreshMenuChecks();
             _view.IdentifyRequested += OnIdentifyRequested;
-            _view.NeutralStartRequested += async (_, e) => await HandleNeutralPointAsync(e.WorldX, e.WorldY);
+            _view.NeutralStartRequested += async (_, e) => await DispatchNeutralPointAsync(e.WorldX, e.WorldY);
 
             _bandBox.SelectionChanged += (_, _) => { if (!_syncing) _view.SetActiveBand(_bandBox.SelectedIndex); };
             _rgbCompositeBox.IsCheckedChanged += (_, _) => { if (!_syncing) _view.ShowRgbComposite = _rgbCompositeBox.IsChecked == true; };

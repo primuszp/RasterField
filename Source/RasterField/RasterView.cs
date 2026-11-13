@@ -1939,6 +1939,8 @@ namespace RasterField
             if ((_path.Count > 0 || _profileHoverWorld.HasValue) && activeInvertible)
                 DrawPath(context, active);
 
+            if (activeInvertible) DrawNeutralDesign(context, active);
+
             if (comparisonValid)
                 DrawComparisonOverlay(context);
 
@@ -2360,19 +2362,14 @@ namespace RasterField
             var midPen = new Pen(brush, 1.5);
             foreach (var (_, midpoint) in _pathTool == PathTool.NeutralLine ? Enumerable.Empty<(int, Point)>() : PathMidpoints(active)) context.DrawEllipse(midFill, midPen, midpoint, 3.5, 3.5);
 
-            var outline = new Pen(Brushes.Black, 1);
-            for (int i = 0; i < pts.Count; i++)
+            if (_pathTool == PathTool.NeutralLine)
             {
-                context.DrawEllipse(brush, outline, pts[i], 4.5, 4.5);
-                if (_pathTool == PathTool.NeutralLine)
-                {
-                    var label = new FormattedText(i == 0 ? "A" : "B", System.Globalization.CultureInfo.InvariantCulture,
-                        FlowDirection.LeftToRight, Typeface.Default, 13, Brushes.Black);
-                    Point at = new Point(pts[i].X + 8, pts[i].Y - 20);
-                    context.FillRectangle(Brushes.White, new Rect(at.X - 2, at.Y - 1, label.Width + 4, label.Height + 2), 2);
-                    context.DrawText(label, at);
-                }
+                DrawNeutralMarkers(context, active, pts);
+                return;
             }
+
+            var outline = new Pen(Brushes.Black, 1);
+            for (int i = 0; i < pts.Count; i++) context.DrawEllipse(brush, outline, pts[i], 4.5, 4.5);
 
             if (pts.Count >= 2 && _pathTool != PathTool.NeutralLine)
             {
@@ -2385,6 +2382,55 @@ namespace RasterField
                 Point at = new Point(pts[pts.Count - 1].X + 10, pts[pts.Count - 1].Y - text.Height - 6);
                 context.FillRectangle(new SolidColorBrush(color, 0.92), new Rect(at.X - 3, at.Y - 1, text.Width + 6, text.Height + 2), 3);
                 context.DrawText(text, at);
+            }
+        }
+
+        /// <summary>Neutral line: draw the start/end markers as lettered A/B pins (else one unlabelled start pin).</summary>
+        public bool NeutralRouteMarkers { get => _neutralRouteMarkers; set { _neutralRouteMarkers = value; InvalidateVisual(); } }
+        private bool _neutralRouteMarkers;
+
+        /// <summary>Neutral line: while waiting for endpoint B, a dashed guide follows the pointer from A.</summary>
+        public bool NeutralGuideActive { get => _neutralGuideActive; set { _neutralGuideActive = value; InvalidateVisual(); } }
+        private bool _neutralGuideActive;
+        private Point? _neutralPointer;
+
+        private static readonly Color NeutralStartColor = Color.FromRgb(0x2F, 0xA8, 0x9C);
+        private static readonly Color NeutralEndColor = Color.FromRgb(0xF0, 0x8A, 0x3C);
+
+        private void DrawNeutralMarkers(DrawingContext context, RasterLayer active, List<Point> pts)
+        {
+            // The guide: A → pointer, dashed over a dark halo, with the straight-line distance at its middle.
+            if (_neutralGuideActive && pts.Count == 1 && _neutralPointer is { } pointer && ScreenToWorld(pointer) is { } world)
+            {
+                var a = pts[0];
+                context.DrawLine(new Pen(new SolidColorBrush(Colors.Black, 0.45), 4, lineCap: PenLineCap.Round), a, pointer);
+                context.DrawLine(new Pen(Brushes.White, 1.6, new DashStyle(new double[] { 3, 3 }, 0), PenLineCap.Round), a, pointer);
+                context.DrawEllipse(null, new Pen(new SolidColorBrush(NeutralEndColor), 2), pointer, 7, 7);
+                double distance = Measurement.Length(new[] { _path[0], world });
+                string unit = L.UnitName(active.Document.Header.CoordinateSpace.EffectiveUnits);
+                var text = new FormattedText(FormatDistance(distance) + " " + unit, System.Globalization.CultureInfo.CurrentCulture,
+                    FlowDirection.LeftToRight, new Typeface(FontFamily.Default, FontStyle.Normal, FontWeight.SemiBold), 11, Brushes.White);
+                var mid = new Point((a.X + pointer.X) / 2, (a.Y + pointer.Y) / 2);
+                var pill = new Rect(mid.X - text.Width / 2 - 7, mid.Y - text.Height / 2 - 3, text.Width + 14, text.Height + 6);
+                context.DrawRectangle(new SolidColorBrush(Color.FromArgb(220, 0x1B, 0x1F, 0x25)), null, pill, pill.Height / 2, pill.Height / 2);
+                context.DrawText(text, new Point(pill.X + 7, pill.Y + 3));
+            }
+
+            for (int i = 0; i < pts.Count; i++)
+            {
+                var color = i == 0 ? NeutralStartColor : NeutralEndColor;
+                var p = pts[i];
+                if (_neutralGuideActive && i == 0) // the waiting start point gets a soft halo
+                    context.DrawEllipse(new SolidColorBrush(color, 0.22), null, p, 17, 17);
+                context.DrawEllipse(new SolidColorBrush(Colors.Black, 0.35), null, new Point(p.X, p.Y + 1.5), 10.5, 10.5);
+                context.DrawEllipse(new SolidColorBrush(color), new Pen(Brushes.White, 2), p, 9.5, 9.5);
+                if (_neutralRouteMarkers)
+                {
+                    var letter = new FormattedText(i == 0 ? "A" : "B", System.Globalization.CultureInfo.InvariantCulture,
+                        FlowDirection.LeftToRight, new Typeface(FontFamily.Default, FontStyle.Normal, FontWeight.Bold), 11, Brushes.White);
+                    context.DrawText(letter, new Point(p.X - letter.Width / 2, p.Y - letter.Height / 2));
+                }
+                else context.DrawEllipse(Brushes.White, null, p, 3, 3);
             }
         }
 
@@ -2629,6 +2675,9 @@ namespace RasterField
         {
             base.OnPointerMoved(e);
             Point pos = e.GetPosition(this);
+            if (NeutralDesignActive && ScreenToWorld(pos) is { } designWorld)
+                NeutralDesignPointerMoved?.Invoke(this, new RasterReadoutEventArgs { WorldX = designWorld.X, WorldY = designWorld.Y });
+            if (_neutralGuideActive && _pathTool == PathTool.NeutralLine) { _neutralPointer = pos; InvalidateVisual(); }
 
             if (_draggingSwipe)
             {
@@ -2743,6 +2792,11 @@ namespace RasterField
         protected override void OnKeyDown(KeyEventArgs e)
         {
             base.OnKeyDown(e);
+            if (NeutralDesignActive)
+            {
+                NeutralDesignKey?.Invoke(this, e);
+                if (e.Handled) return;
+            }
             const double step = 40;
             switch (e.Key)
             {

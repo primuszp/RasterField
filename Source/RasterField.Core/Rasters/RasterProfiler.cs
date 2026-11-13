@@ -102,6 +102,17 @@ namespace RasterField.Rasters
                 (col, row) => sampler(raster, col, row), CancellationToken.None);
         }
 
+        /// <summary>Samples a path using any shared interpolation method, without creating a refined raster.</summary>
+        public static IReadOnlyList<ProfileSample> SamplePolylineWorld(
+            Interpolation.ISurfaceSampler surface, RasterGeoReference geoReference,
+            IReadOnlyList<(double X, double Y)> vertices, double spacing, CancellationToken cancellationToken = default)
+        {
+            // Validate the surface/transform pairing before evaluating any point.
+            _ = new Interpolation.WorldSurfaceSampler(surface, geoReference);
+            return SamplePolylineWorldCore(geoReference, vertices, spacing,
+                (x, y) => (float?)surface.Sample(x, y).Value, cancellationToken);
+        }
+
         /// <summary>
         /// Samples a multi-vertex world-space path directly from a windowed raster source. Only
         /// the small source tiles touched by the path are read, so profiles over very large
@@ -116,8 +127,8 @@ namespace RasterField.Rasters
             if (source == null) throw new ArgumentNullException(nameof(source));
             if (band < 0 || band >= source.BandCount) throw new ArgumentOutOfRangeException(nameof(band));
             if (tileSize < 2) throw new ArgumentOutOfRangeException(nameof(tileSize), "A source tile must be at least 2 × 2 cells.");
-            var sampler = new WindowedBilinearSampler(source, band, tileSize, cancellationToken);
-            return SamplePolylineWorldCore(geoReference, vertices, spacing, sampler.Sample, cancellationToken);
+            var sampler = Interpolation.SurfaceSampler.Bilinear(source, band, strict: false, tileSize: tileSize, cancellationToken: cancellationToken);
+            return SamplePolylineWorldCore(geoReference, vertices, spacing, (x, y) => (float?)sampler.Sample(x, y).Value, cancellationToken);
         }
 
         private static IReadOnlyList<ProfileSample> SamplePolylineWorldCore(
@@ -173,125 +184,8 @@ namespace RasterField.Rasters
         public static float? BilinearSample(Raster raster, double col, double row)
         {
             if (raster == null) throw new ArgumentNullException(nameof(raster));
-            return SampleBilinear(new LoadedGrid(raster), col, row);
+            return (float?)Interpolation.Sampling.Bilinear(new Interpolation.LoadedSampleGrid(raster), col, row, false).Value;
         }
 
-        private interface ISampleGrid
-        {
-            int Width { get; }
-            int Height { get; }
-            float? Read(int col, int row);
-        }
-
-        private readonly struct LoadedGrid : ISampleGrid
-        {
-            private readonly Raster _raster;
-            public LoadedGrid(Raster raster) => _raster = raster;
-            public int Width => _raster.Width;
-            public int Height => _raster.Height;
-            public float? Read(int col, int row) => _raster.GetValueOrNull(row, col);
-        }
-
-        // Generic accessor avoids allocating a delegate/boxing per sample in terrain rendering.
-        private static float? SampleBilinear<T>(T grid, double col, double row) where T : ISampleGrid
-        {
-            if (!(col >= 0 && row >= 0 && col <= grid.Width && row <= grid.Height)) return null;
-            double u = col - 0.5, v = row - 0.5;
-            int c0 = (int)Math.Floor(u), r0 = (int)Math.Floor(v);
-            double fx = u - c0, fy = v - r0;
-            double weightSum = 0, valueSum = 0;
-            AccumulateCorner(grid, c0, r0, (1 - fx) * (1 - fy), ref weightSum, ref valueSum);
-            AccumulateCorner(grid, c0 + 1, r0, fx * (1 - fy), ref weightSum, ref valueSum);
-            AccumulateCorner(grid, c0, r0 + 1, (1 - fx) * fy, ref weightSum, ref valueSum);
-            AccumulateCorner(grid, c0 + 1, r0 + 1, fx * fy, ref weightSum, ref valueSum);
-            return weightSum > 0 ? (float)(valueSum / weightSum) : (float?)null;
-        }
-
-        private static void AccumulateCorner<T>(T grid, int col, int row, double weight,
-            ref double weightSum, ref double valueSum) where T : ISampleGrid
-        {
-            if (weight <= 0 || (uint)col >= (uint)grid.Width || (uint)row >= (uint)grid.Height) return;
-            float? value = grid.Read(col, row);
-            if (!value.HasValue) return;
-            weightSum += weight;
-            valueSum += weight * value.Value;
-        }
-
-        /// <summary>
-        /// Small bounded LRU cache around <see cref="IRasterSource.ReadWindow"/>. A sequential
-        /// profile normally touches each tile once; keeping a few recent neighbours also avoids
-        /// repeated reads where bilinear interpolation crosses a tile edge or the path bends.
-        /// </summary>
-        private sealed class WindowedBilinearSampler : ISampleGrid
-        {
-            private const int MaxCachedTiles = 16;
-            private readonly IRasterSource _source;
-            private readonly int _band;
-            private readonly int _tileSize;
-            private readonly CancellationToken _cancellationToken;
-            private readonly Dictionary<long, CachedTile> _tiles = new Dictionary<long, CachedTile>();
-            private readonly LinkedList<long> _recent = new LinkedList<long>();
-
-            public WindowedBilinearSampler(IRasterSource source, int band, int tileSize, CancellationToken cancellationToken)
-            {
-                _source = source;
-                _band = band;
-                _tileSize = tileSize;
-                _cancellationToken = cancellationToken;
-            }
-
-            public int Width => _source.Width;
-            public int Height => _source.Height;
-            public float? Sample(double col, double row) => SampleBilinear(this, col, row);
-
-            public float? Read(int col, int row)
-            {
-                Raster tile = GetTile(col / _tileSize, row / _tileSize);
-                return tile.GetValueOrNull(row % _tileSize, col % _tileSize);
-            }
-
-            private Raster GetTile(int tileX, int tileY)
-            {
-                long key = ((long)tileY << 32) | (uint)tileX;
-                if (_tiles.TryGetValue(key, out CachedTile? cached))
-                {
-                    _recent.Remove(cached.Node);
-                    _recent.AddFirst(cached.Node);
-                    return cached.Raster;
-                }
-
-                _cancellationToken.ThrowIfCancellationRequested();
-                int x = tileX * _tileSize;
-                int y = tileY * _tileSize;
-                int width = Math.Min(_tileSize, _source.Width - x);
-                int height = Math.Min(_tileSize, _source.Height - y);
-                Raster raster = _source.ReadWindow(x, y, width, height, band: _band);
-                var node = _recent.AddFirst(key);
-                _tiles.Add(key, new CachedTile(raster, node));
-
-                if (_tiles.Count > MaxCachedTiles)
-                {
-                    LinkedListNode<long>? oldest = _recent.Last;
-                    if (oldest != null)
-                    {
-                        _recent.RemoveLast();
-                        _tiles.Remove(oldest.Value);
-                    }
-                }
-                return raster;
-            }
-
-            private sealed class CachedTile
-            {
-                public CachedTile(Raster raster, LinkedListNode<long> node)
-                {
-                    Raster = raster;
-                    Node = node;
-                }
-
-                public Raster Raster { get; }
-                public LinkedListNode<long> Node { get; }
-            }
-        }
     }
 }

@@ -125,6 +125,19 @@ namespace RasterField
 
         private static TextBlock Header(string text) => AppTheme.SectionLabel(text);
 
+        /// <summary>A panel's main action: a full-width accented button with an icon, the text centred.</summary>
+        private static Button PrimaryAction(Avalonia.Media.Geometry icon, string text)
+        {
+            var button = new Button
+            {
+                Content = AppTheme.IconLabel(icon, text, FontWeight.SemiBold),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                MinHeight = 34,
+            };
+            button.Classes.Add("accent");
+            return button;
+        }
+
         private Border BuildLeftDock()
         {
             var addLayerBtn = new Button
@@ -167,48 +180,53 @@ namespace RasterField
             };
             var profileCsvBtn = new Button { Content = "CSV…" };
             profileCsvBtn.Click += async (_, _) => await ProfileWindow.ExportCsvAsync(this, _lastProfile, DistanceUnit());
-            var profileStart = new Button { Content = T("Draw profile (P)") };
+            var profileStart = PrimaryAction(AppTheme.Icons.Profile, T("Draw profile (P)"));
             profileStart.Click += (_, _) => SetPathTool(PathTool.Profile);
-            var profilePanel = new DockPanel { Margin = new Thickness(10, 6, 10, 10) };
-            var profileOptions = new WrapPanel { Orientation = Orientation.Horizontal };
-            foreach (var c in new Control[] { profileStart, _profileBezierBox, _profileAllLayersBox, profileWindowBtn, profileCsvBtn })
-            {
-                c.Margin = new Thickness(0, 0, 6, 4);
-                profileOptions.Children.Add(c);
-            }
-            DockPanel.SetDock(profileOptions, Dock.Top);
-            profilePanel.Children.Add(profileOptions);
-            // Under the chart: the Δ toggle and the measured Bézier − bilinear difference.
-            var deltaRow = new DockPanel { Margin = new Thickness(0, 4, 0, 0) };
+            // Top: the action and the two options; bottom: Δ toggle + its reading, then the exports.
+            var profileTop = new StackPanel { Spacing = 6, Children = { profileStart, _profileBezierBox, _profileAllLayersBox } };
+            var profileExports = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, HorizontalAlignment = HorizontalAlignment.Right, Children = { profileWindowBtn, profileCsvBtn } };
+            var deltaRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0) };
             _profileDeltaBox.Margin = new Thickness(0, 0, 8, 0);
             DockPanel.SetDock(_profileDeltaBox, Dock.Left);
             deltaRow.Children.Add(_profileDeltaBox);
             deltaRow.Children.Add(_profileDeltaText);
-            DockPanel.SetDock(deltaRow, Dock.Bottom);
-            profilePanel.Children.Add(deltaRow);
+            var profileBottom = new StackPanel { Spacing = 8, Margin = new Thickness(0, 8, 0, 0), Children = { deltaRow, profileExports } };
+            var profilePanel = new DockPanel { Margin = new Thickness(10, 4, 10, 10) };
+            _profileChart.Margin = new Thickness(0, 10, 0, 0);
+            DockPanel.SetDock(profileTop, Dock.Top);
+            DockPanel.SetDock(profileBottom, Dock.Bottom);
+            profilePanel.Children.Add(profileTop);
+            profilePanel.Children.Add(profileBottom);
             profilePanel.Children.Add(_profileChart);
             var profileTab = new TabItem { Header = T("Profile"), Content = profilePanel };
 
-            var measureBtn = new Button { Content = T("Measure (M)") };
+            // Measure / zone: two equal tool buttons, the by-layer variant under them, then a hint.
+            var measureBtn = new Button { Content = AppTheme.IconLabel(AppTheme.Icons.Ruler, T("Measure (M)")), HorizontalAlignment = HorizontalAlignment.Stretch };
             measureBtn.Click += (_, _) => SetPathTool(PathTool.Measure);
-            var zoneBtn = new Button { Content = T("Zone (Z)") };
+            var zoneBtn = new Button { Content = AppTheme.IconLabel(AppTheme.Icons.Polygon, T("Zone (Z)")), HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(6, 0, 0, 0) };
             zoneBtn.Click += (_, _) => SetPathTool(PathTool.Zone);
-            var zonalLayerBtn = new Button { Content = T("By polygon layer…") };
+            Grid.SetColumn(zoneBtn, 1);
+            var zonalLayerBtn = new Button { Content = AppTheme.IconLabel(AppTheme.Icons.Layers, T("By polygon layer…")), HorizontalAlignment = HorizontalAlignment.Stretch };
             zonalLayerBtn.Click += async (_, _) => await ZonalByLayerAsync(null);
-            var measureTools = new WrapPanel();
-            foreach (var c in new Control[] { measureBtn, zoneBtn, zonalLayerBtn })
-            {
-                c.Margin = new Thickness(0, 0, 6, 4);
-                measureTools.Children.Add(c);
-            }
+            var measureTools = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*"), Children = { measureBtn, zoneBtn } };
             _measureText.Text = T("Measure: click points on the map; double-click to close the polygon for its area.\nZone: draw a polygon to get the statistics of every visible raster inside it.");
-            var measurePanel = new StackPanel { Margin = new Thickness(10, 8), Spacing = 8, Children = { measureTools, _measureText } };
+            var measureHint = new Border { Child = _measureText };
+            measureHint.Classes.Add("callout");
+            var measurePanel = new StackPanel { Margin = new Thickness(10, 4, 10, 10), Spacing = 8, Children = { measureTools, zonalLayerBtn, measureHint } };
             var measureTab = new TabItem { Header = T("Measure / zone"), Content = new ScrollViewer { Content = measurePanel } };
 
             _analysisTabs.ItemsSource = new[] { identifyTab, profileTab, measureTab, BuildNeutralLineTab() };
             _analysisTabs.SelectedIndex = 0;
+            // A segmented strip: four equal pills in one row when the dock is wide enough, else 2 × 2.
+            _analysisTabs.Classes.Add("segmented");
+            Avalonia.Controls.Primitives.UniformGrid? tabStrip = null;
+            int TabColumns() => _analysisTabs.Bounds.Width >= 360 ? 4 : 2;
+            _analysisTabs.ItemsPanel = new Avalonia.Controls.Templates.FuncTemplate<Panel?>(() =>
+                tabStrip = new Avalonia.Controls.Primitives.UniformGrid { Columns = TabColumns(), Margin = new Thickness(10, 2, 10, 6) });
+            _analysisTabs.SizeChanged += (_, _) => { if (tabStrip != null) tabStrip.Columns = TabColumns(); };
 
-            var split = new Grid { RowDefinitions = new RowDefinitions("*,Auto,*") };
+            // The analysis tools need more room than a typical short layer list.
+            var split = new Grid { RowDefinitions = new RowDefinitions("2*,Auto,3*") };
             Grid.SetRow(layersScroll, 0);
             var hSplitter = new GridSplitter { Height = 5, ResizeDirection = GridResizeDirection.Rows };
             Grid.SetRow(hSplitter, 1);
@@ -344,8 +362,10 @@ namespace RasterField
             var legendGroup = new DockPanel { Margin = new Thickness(8, 0, 8, 8) };
             // The legend sits below a hairline, its label aligned with the section labels above.
             var legendLabel = AppTheme.SectionLabel(T("Legend"));
-            legendLabel.Margin = new Thickness(14, 10, 0, 4);
-            _legend.Height = 136;
+            legendLabel.Margin = new Thickness(14, 12, 0, 6);
+            _legend.Height = 164;
+            _legend.Margin = new Thickness(14, 0, 0, 0);
+            _legend.HorizontalAlignment = HorizontalAlignment.Left;
             var legendBox = new DockPanel();
             DockPanel.SetDock(legendLabel, Dock.Top);
             legendBox.Children.Add(legendLabel);
@@ -416,7 +436,14 @@ namespace RasterField
 
         private void SetPathTool(PathTool tool)
         {
-            if (tool != PathTool.NeutralLine) { _neutralCts?.Cancel(); _neutralPendingStart = null; }
+            OnDesignToolChanging(tool);
+            if (tool != PathTool.NeutralLine)
+            {
+                _neutralCts?.Cancel();
+                _neutralPendingStart = null;
+                if (_neutralStage is NeutralStage.PickStart or NeutralStage.PickEnd) SetNeutralStage(NeutralStage.Ready);
+            }
+            else if (_neutralStage is NeutralStage.Ready or NeutralStage.Failed) SetNeutralStage(NeutralStage.PickStart);
             if (tool != PathTool.Profile)
             {
                 _profileGeneration++;
@@ -1298,11 +1325,21 @@ namespace RasterField
             foreach (var top in BuildMenuModel()) Walk(top, "");
 
             var box = new TextBox { Watermark = T("Type a command… (e.g. contour, bézier, undo)") };
-            var list = new ListBox { Height = 340 };
+            var list = new ListBox { Height = 340, Background = Avalonia.Media.Brushes.Transparent };
+            AppStyles.UseSoftSelectionBrushes(list);
             list.ItemTemplate = new Avalonia.Controls.Templates.FuncDataTemplate<(string Path, string Keys, Action Run)>((c, _) =>
             {
-                var row = new DockPanel();
-                var keys = new TextBlock { Text = c.Keys, Foreground = AppTheme.TextSecondary, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+                // Right margin keeps the shortcut clear of the overlay scrollbar.
+                var row = new DockPanel { Margin = new Thickness(0, 0, 10, 0) };
+                var keys = new TextBlock
+                {
+                    Text = c.Keys,
+                    Foreground = AppTheme.TextSecondary,
+                    FontSize = AppTheme.FontCaption,
+                    FontFeatures = new FontFeatureCollection { FontFeature.Parse("tnum") },
+                    Margin = new Thickness(12, 0, 0, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
                 DockPanel.SetDock(keys, Dock.Right);
                 row.Children.Add(keys);
                 row.Children.Add(new TextBlock { Text = c.Path, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center });

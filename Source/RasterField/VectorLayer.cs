@@ -49,6 +49,9 @@ namespace RasterField
         /// <summary>How a derived layer can be recomputed; null for a file layer.</summary>
         public LayerRecipe? Recipe { get; internal set; }
 
+        /// <summary>Embedded designed geometry, independent of terrain availability.</summary>
+        public Rasters.NeutralDesignDraft? DesignData { get; internal set; }
+
         /// <summary>The GeoJSON / CSV file this layer was imported from (an .erv layer uses its document's HeaderPath).</summary>
         public string? SourcePath { get; internal set; }
 
